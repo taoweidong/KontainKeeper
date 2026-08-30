@@ -125,16 +125,25 @@ exec "$@"   # 原 vscode-server 启动命令（Docker 参数注入），用户�
 ```
 kk-server/
 ├── __main__.py        # python -m kk_server 入口
-├── main.py            # create_app 工厂：REST + /ws/agent + 静态托管 + 清理线程
-├── hub.py             # 连接表 {pod: websocket}，指令路由、离线补发
-├── store.py           # SQLite：容器/心跳/命令/审计/会话，小时聚合与过期清理
-├── api/
+├── main.py            # create_app 工厂：装配 M/C/V + 静态托管 + 清理线程
+├── config.py          # KK_* 环境变量解析（Settings），生产口令校验
+├── models/            # M：数据模型与持久化
+│   ├── store.py       # SQLite：容器/心跳/命令/审计/会话，小时聚合与过期清理
+│   └── version.py     # 版本号比较工具
+├── services/          # 业务服务层（不依赖 HTTP 框架细节）
+│   ├── hub.py         # 连接表 {pod: websocket}，指令路由、离线补发、心跳超时
+│   └── security.py    # 命令黑名单校验（安全红线，纯逻辑可单测）
+├── controllers/       # C：HTTP/WS 控制器（对外接口契约 /api/* 与 /ws/agent）
 │   ├── deps.py        # 会话鉴权依赖
-│   ├── auth_routes.py # 管理员登录/登出（PBKDF2 + 会话 token）
+│   ├── health.py      # GET /api/health
+│   ├── agent_ws.py    # WS /ws/agent 入口（薄封装 hub）
+│   ├── auth.py        # 管理员登录/登出（PBKDF2 + 会话 token）
 │   ├── containers.py  # 容器列表/详情/指标序列
 │   ├── commands.py    # 下发命令（黑名单 + 审计）、结果查询
-│   └── audit_routes.py# 审计日志查询
-├── web/               # 管理界面（无框架原生 JS 单页，见下）
+│   ├── tokens.py      # 接入 token 查看/吊销/恢复
+│   ├── audit.py       # 审计日志查询
+│   └── agent_update.py# Agent 自更新上传/清单/下载
+├── web/               # V：管理界面（无框架原生 JS 单页，见下）
 └── Dockerfile
 ```
 

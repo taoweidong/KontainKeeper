@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from kk_server.store import Store
+from kk_server.models.store import Store
 
 
 @pytest.fixture

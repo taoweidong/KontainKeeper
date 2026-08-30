@@ -18,7 +18,7 @@ from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .deps import agent_token_auth, current_user
-from ..version import version_lt
+from ..models.version import version_lt
 
 router = APIRouter(prefix="/api/system")
 

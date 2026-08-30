@@ -5,7 +5,7 @@ import logging
 
 from starlette.websockets import WebSocketDisconnect
 
-from .version import version_lt
+from ..models.version import version_lt
 
 log = logging.getLogger("kk.hub")
 

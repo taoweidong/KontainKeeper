@@ -5,8 +5,8 @@ import json
 import pytest
 from starlette.websockets import WebSocketDisconnect
 
-from kk_server.hub import Hub
-from kk_server.store import Store
+from kk_server.services.hub import Hub
+from kk_server.models.store import Store
 
 STOP = object()
 

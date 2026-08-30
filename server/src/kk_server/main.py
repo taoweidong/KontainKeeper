@@ -1,61 +1,48 @@
-"""服务端入口：组装 app、启动清理线程，`python -m kk_server` 运行。"""
+"""服务端装配入口：组装 app、启动清理线程，`python -m kk_server` 运行。
+
+MVC 分层：
+- models/     数据持久化（SQLite store、版本工具）
+- services/   业务服务（Agent 连接中枢 hub、命令黑名单 security）
+- controllers/ HTTP/WS 控制器（REST /api/*、WebSocket /ws/agent）
+- web/        视图：静态管理界面（无框架单页，随包打包）
+"""
 import logging
 import os
 import threading
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from . import PROTO_VER, __version__, api
-from .hub import Hub
-from .store import Store
+from . import PROTO_VER, __version__
+from .config import load_settings
+from .controllers import register
+from .models.store import Store
+from .services.hub import Hub
 
 log = logging.getLogger("kk.server")
 
-DEFAULT_BLACKLIST = "rm -rf /,mkfs,reboot,shutdown,dd if=/dev/zero,chmod -R 777 /"
-
 
 def create_app(env=None):
-    env = dict(os.environ if env is None else env)
+    settings = load_settings(env)
 
-    db_path = env.get("KK_DB_PATH", "kk-server.db")
-    tokens = [t.strip() for t in env.get("KK_AGENT_TOKENS", "dev-token").split(",") if t.strip()]
-    admin_user = env.get("KK_ADMIN_USER", "admin")
-    admin_pass = env.get("KK_ADMIN_PASS", "admin")
-
-    store = Store(db_path)
-    if store.ensure_admin(admin_user, admin_pass):
-        log.info("admin account %r ensured (created or password refreshed)", admin_user)
-    if admin_pass == "admin":
-        if os.environ.get("KK_ENV", "").lower() == "production":
-            raise RuntimeError(
-                "KK_ENV=production 但仍在用默认口令 admin，存在严重安全风险；"
-                "请先通过 KK_ADMIN_PASS 设置强口令再启动")
+    store = Store(settings.db_path)
+    if store.ensure_admin(settings.admin_user, settings.admin_pass):
+        log.info("admin account %r ensured (created or password refreshed)", settings.admin_user)
+    if settings.admin_pass == "admin":
         log.warning("using default admin password 'admin', set KK_ADMIN_PASS before production!")
 
-    blacklist = [p.strip().lower() for p in env.get("KK_CMD_BLACKLIST", DEFAULT_BLACKLIST).split(",") if p.strip()]
-    enforced_raw = env.get("KK_ENFORCED_INTERVAL", "").strip()
-    enforced = int(enforced_raw) if enforced_raw.isdigit() else None
-    hub = Hub(store, tokens, PROTO_VER, enforced)
+    hub = Hub(store, settings.agent_tokens, PROTO_VER, settings.enforced_interval)
 
     app = FastAPI(title="KontainKeeper", version=__version__)
     app.state.store = store
     app.state.hub = hub
-    app.state.cmd_blacklist = blacklist
-    app.state.agent_bin_dir = env.get("KK_AGENT_BIN_DIR", "agent_assets")
+    app.state.cmd_blacklist = settings.cmd_blacklist
+    app.state.agent_bin_dir = settings.agent_bin_dir
 
-    @app.get("/api/health")
-    def health():
-        return {"ok": True, "version": __version__, "agents_online": len(hub.conns)}
+    register(app)
 
-    @app.websocket("/ws/agent")
-    async def agent_ws(ws: WebSocket):
-        await hub.agent_endpoint(ws)
-
-    api.register(app)
-
-    web_dir = Path(env.get("KK_WEB_DIR") or (Path(__file__).resolve().parent / "web"))
+    web_dir = Path(settings.web_dir or (Path(__file__).resolve().parent / "web"))
     if web_dir.is_dir():
         app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="web")
     else:
