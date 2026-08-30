@@ -3,6 +3,11 @@
 #
 # 前提：构建上下文包含 dist/kk-agent（由 agent/build/build_binary.sh 产出）、
 #       src/kk_agent/plugins/ 与 agent/deploy/entrypoint-wrapper.sh。
+#
+# 入口透传采用 Docker 原生机制：kk-entrypoint 作为新 ENTRYPOINT 首元素，
+# 原镜像 ENTRYPOINT 的其余元素以参数形式透传（exec 形式 JSON 数组，不经 shell
+# 解析）；原镜像 CMD 原样保留。运行时 wrapper 后台监管 Agent、前台 exec "$@"
+# 拉起原 IDE，容器生命周期 = 原 IDE 生命周期。
 
 FROM <原 vscode-server 镜像>
 
@@ -13,11 +18,11 @@ COPY agent/deploy/entrypoint-wrapper.sh /usr/local/bin/kk-entrypoint
 RUN chmod +x /opt/kk-agent/kk-agent /usr/local/bin/kk-entrypoint \
     && mkdir -p /var/log
 
-# KK_ORIG_ENTRYPOINT 应设为原镜像的 ENTRYPOINT（JSON 数组字符串），
-# 由 kk-entrypoint 并行拉起，使 Agent 与 IDE 生命周期解耦。
 ENV KK_AGENT_BIN=/opt/kk-agent/kk-agent \
     KK_PLUGIN_DIR=/opt/kk-agent/plugins \
-    KK_LOG=/var/log/kk-agent.log \
-    KK_ORIG_ENTRYPOINT='["/usr/bin/entrypoint.sh"]'
+    KK_LOG=/var/log/kk-agent.log
 
-ENTRYPOINT ["/usr/local/bin/kk-entrypoint"]
+# 示例：原镜像 ENTRYPOINT 为 ["/usr/bin/tini","--","/entrypoint.sh"] 时这样写
+ENTRYPOINT ["/usr/local/bin/kk-entrypoint", "/usr/bin/tini", "--", "/entrypoint.sh"]
+# 原镜像的 CMD 原样保留（若原镜像 CMD 为 shell 形式，需手工改写为等价数组）
+CMD ["code-server", "--auth", "none"]
