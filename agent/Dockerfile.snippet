@@ -1,0 +1,24 @@
+# ============================================================
+# 用法：把本文件内容追加到现有 vscode-server 镜像 Dockerfile 的末尾，
+#       或在 CI 中用下面的构建脚本（scripts/build.sh）自动叠加。
+# 构建期注入（--build-arg）：
+#   KK_SERVER_ARG  服务端地址，如 wss://kk-server.ops:8443/ws/agent
+#   KK_TOKEN_ARG   接入 token（与服务端 KK_AGENT_TOKENS 一致）
+# ============================================================
+
+COPY agent/kk-agent /opt/kk-agent
+COPY agent/entrypoint-wrapper.sh /usr/local/bin/kk-entrypoint
+RUN chmod +x /usr/local/bin/kk-entrypoint \
+    && mkdir -p /var/log
+
+ENV KK_SERVER="${KK_SERVER_ARG}" \
+    KK_TOKEN="${KK_TOKEN_ARG}" \
+    KK_INTERVAL=60 \
+    KK_DISK_PATHS="/,/workspace" \
+    KK_AGENT_DIR=/opt/kk-agent \
+    KK_LOG=/var/log/kk-agent.log
+
+# 假设原镜像的 ENTRYPOINT/CMD 是 vscode-server 启动命令；
+# 若原镜像自定义了 ENTRYPOINT，用 KK_ORIG_ENTRYPOINT 传入原值。
+ENTRYPOINT ["/usr/local/bin/kk-entrypoint"]
+# CMD 保持原镜像不变
