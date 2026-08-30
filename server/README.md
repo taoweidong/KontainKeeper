@@ -110,11 +110,17 @@ docker build -t kk-server:0.1.0 .
 docker run -d -p 8443:8443 -e KK_ADMIN_PASS=<强密码> -v kk-data:/data kk-server:0.1.0
 ```
 
+> **TLS 硬约束（生产必须）**：服务端自身不终结 TLS（uvicorn 监听明文 HTTP/WS）。
+> 生产部署必须**前置 TLS 终结的反向代理**（nginx / HAProxy / 云 LB，回环到
+> `127.0.0.1:8443`），Agent 一律用 `wss://` 连接。切勿让 Agent 直接以 `ws://`
+> 跨网络直连——`hello` 帧中的接入 token 会以明文传输。仅本机开发调试可用
+> `ws://127.0.0.1`。另建议在反代层限制来源 IP（仅容器网段出站可达）。
+
 ## 测试
 
 ```bash
 cd server
-uv run pytest tests -q          # 16 项：存储层 / Hub 生命周期 / 自更新接口 / 端到端集成
+uv run pytest tests -q          # 17 项：存储层 / Hub 生命周期 / 自更新接口 / 端到端集成
 ```
 
 集成测试（`tests/test_integration.py`）会启动真实 uvicorn + 真实 Agent 主循环，验证「连接 → 心跳入库 → 登录 → 下发命令 → 执行回传 → 插件重载 → 黑名单拒绝」全链路。

@@ -69,9 +69,11 @@ cd agent
 ```
 
 `deploy/entrypoint-wrapper.sh` 作为容器 PID1 形态的**独立监管脚本**：
-- 以「独立服务」方式常驻监管 `kk-agent` 二进制，崩溃 5s 后自动拉起；
-- 自更新时 Agent 内部 `os.execv` 复用同一 PID，监管脚本不会误判为退出；
-- 可选并行拉起原 vscode-server 入口（`KK_ORIG_ENTRYPOINT`），Agent 与 IDE 生命周期解耦。
+- 后台常驻监管 `kk-agent` 二进制，崩溃 5s 后自动拉起；
+- 自更新时 Agent 内部 `os.execv` 复用同一 PID，监管循环不会误判为退出；
+- 前台 `exec "$@"` 透传原 vscode-server 入口（参数由 Docker 以 ENTRYPOINT 数组
+  形式注入，不经 shell/JSON 解析），容器生命周期 = 原 IDE 生命周期；
+- 无入口参数（基础镜像无 ENTRYPOINT/CMD）时退化为纯监管模式。
 
 > 二进制形态下自更新才会真正替换自身；源码形态（`python -m`）只下载校验、不 `execv`，避免误改解释器。
 
@@ -106,7 +108,7 @@ cd agent
 
 ```bash
 cd agent
-uv run pytest tests -q          # 36 项：采集 / 执行 / 插件 / 自更新 / ws 帧编解码
+uv run pytest tests -q          # 38 项：采集 / 执行 / 插件 / 自更新 / ws 帧编解码
 ```
 
 ## 约束（重要）

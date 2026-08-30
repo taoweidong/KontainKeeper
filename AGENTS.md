@@ -12,8 +12,8 @@ K8S 下 vscode-server 容器 IDE 的直连管理平台：容器内置 Agent 主�
 ## 常用命令
 
 ```bash
-uv run pytest agent/tests -q      # Agent 单测（36 项）
-uv run pytest server/tests -q      # Server 单测 + 集成（16 项），仓库根目录执行（需先 uv sync）
+uv run pytest agent/tests -q      # Agent 单测（38 项）
+uv run pytest server/tests -q      # Server 单测 + 集成（17 项），仓库根目录执行（需先 uv sync）
 uv run kk-server   # 本地起服务端（默认 admin/admin），仓库根目录执行
 uv run pytest server/tests/test_integration.py -q   # 仅端到端集成（起真实 uvicorn + agent 线程）
 ```

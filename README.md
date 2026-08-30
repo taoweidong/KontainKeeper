@@ -18,7 +18,7 @@ uv.lock                  UV 锁定的依赖版本（uv sync 生成，可复现�
 agent/                   kk-agent 客户端（独立 UV 项目，纯 stdlib，可编译单文件二进制）
   README.md              Agent 架构与使用方式（环境变量/运行形态/部署）
   src/kk_agent/          纯标准库源码；plugins/ 含示例采集插件
-  tests/                 Agent 单元测试（采集/执行/插件/ws/updater，共 36 项）
+  tests/                 Agent 单元测试（采集/执行/插件/ws/updater，共 38 项）
   build/                 PyInstaller 编译单文件二进制的脚本
   deploy/                容器叠加片段 + 独立监管入口脚本（entrypoint-wrapper）
 server/                  服务端（独立 UV 项目，FastAPI + 内置 Web 管理界面）
@@ -63,6 +63,8 @@ docker run -d --name kontainkeeper \
 
 服务端只是一个普通的 WebSocket/HTTP 服务：裸机 systemd、`docker run`、任意 PaaS 均可，唯一要求是**目标容器能出站访问到它**（仅容器 → 服务端方向，容器无需暴露任何端口）。
 
+> **TLS 硬约束（生产必须）**：服务端自身不终结 TLS。生产部署**必须前置 TLS 终结的反向代理**（nginx / HAProxy / 云 LB 均可，回环到 `127.0.0.1:8443`），Agent 一律用 `wss://` 连接。切勿让 Agent 直接以 `ws://` 跨网络直连服务端——`hello` 帧中的接入 token 会以明文传输。仅本机开发调试可用 `ws://127.0.0.1`。
+
 环境变量：
 
 | 变量 | 说明 | 默认 |
@@ -87,7 +89,7 @@ KK_TOKEN=<与 KK_AGENT_TOKENS 一致> \
 
 前提：目标镜像**无需内置 Python**——Agent 已编译为单文件二进制（运行时零依赖）随镜像分发；`agent/src/kk_agent/` 下仍保留纯标准库源码，用于开发、重建二进制与本地调试。
 
-产物镜像用 entrypoint-wrapper 以「独立服务」方式常驻监管 Agent 二进制（崩溃自动拉起、自更新后 `execv` 复用 PID 不误重启），并可选地并行拉起原 vscode-server 入口（`KK_ORIG_ENTRYPOINT`）——两者生命周期解耦，用户看到的 IDE 启动行为不变。
+产物镜像的入口透传采用 Docker 原生机制：构建脚本把原镜像 ENTRYPOINT/CMD 解析为 exec 形式 JSON 数组写入新 Dockerfile，`kk-entrypoint` 作为 ENTRYPOINT 首元素、原入口其余元素以参数透传。运行时 wrapper 后台常驻监管 Agent 二进制（崩溃自动拉起、自更新后 `execv` 复用 PID 不误重启），前台 `exec "$@"` 拉起原 vscode-server 入口——容器生命周期 = 原 IDE 生命周期，用户看到的 IDE 启动行为不变。
 
 ### 3. Agent 环境变量（镜像内已注入，一般无需改动）
 
@@ -144,8 +146,8 @@ def collect():
 
 ```bash
 uv sync --all-packages
-uv run pytest agent/tests -v     # Agent 单元测试（36 项）
-uv run pytest server/tests -v    # Server 单元测试 + 端到端集成（16 项）
+uv run pytest agent/tests -v     # Agent 单元测试（38 项）
+uv run pytest server/tests -v    # Server 单元测试 + 端到端集成（17 项）
 ```
 
 两个项目各持独立单测：`agent/tests`（WebSocket 帧编解码、/proc 采集（伪造 proc 树，跨平台可跑）、命令执行、插件热加载、自更新）与 `server/tests`（存储层、Hub 生命周期、Agent 自更新接口、以及**真实服务端 + 真实 Agent 主循环**的端到端集成测试）。

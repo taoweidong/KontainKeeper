@@ -92,25 +92,30 @@ kk_agent/                 # 独立 Python 包（纯 stdlib，可编译为单文�
 ### 3.3 Dockerfile 介入（用户无感知）
 
 ```dockerfile
-# ---- 在现有 vscode-server 镜像末尾追加 ----
-COPY dist/kk-agent /opt/kk-agent/kk-agent
+# ---- 在现有 vscode-server 镜像末尾追加（由 scripts/build.sh 自动生成） ----
+COPY kk-agent /opt/kk-agent/kk-agent
+COPY plugins /opt/kk-agent/plugins
+COPY kk-entrypoint /usr/local/bin/kk-entrypoint
 ENV KK_SERVER=wss://kk-server.ops.svc:8443/ws/agent \
-    KK_TOKEN=__BUILD_TIME_INJECT__ \
-    KK_INTERVAL=60
-# 包装原 entrypoint：先起 agent 后台，再 exec 原 vscode-server 启动
-COPY entrypoint-wrapper.sh /usr/local/bin/kk-entrypoint
-ENTRYPOINT ["kk-entrypoint"]
+    KK_AGENT_BIN=/opt/kk-agent/kk-agent \
+    KK_PLUGIN_DIR=/opt/kk-agent/plugins \
+    KK_LOG=/var/log/kk-agent.log
+# kk-entrypoint 打头，原镜像 ENTRYPOINT 的元素以参数形式透传（exec 形式数组）
+ENTRYPOINT ["/usr/local/bin/kk-entrypoint", "<原 ENTRYPOINT 元素...>"]
+CMD ["<原 CMD 元素...>"]
 ```
 
-`entrypoint-wrapper.sh`：
+`entrypoint-wrapper.sh`（编译后的二进制形态，容器内无需 Python）：
 
 ```sh
 #!/bin/sh
-python3 -OO /opt/kk-agent/__main__.py >> /var/log/kk-agent.log 2>&1 &
-exec "$@"   # 原 vscode-server 启动命令，用户侧完全不变
+# 后台监管 Agent：崩溃 5s 拉起；自更新 execv 复用 PID 不误判
+( while true; do /opt/kk-agent/kk-agent >>/var/log/kk-agent.log 2>&1; sleep 5; done ) &
+exec "$@"   # 原 vscode-server 启动命令（Docker 参数注入），用户侧完全不变
 ```
 
-- 镜像构建流水线（CI）在 `docker build` 前用 `--build-arg` 注入 token 与 server 地址；上线即连，无需任何运行时配置。
+- 原镜像的 ENTRYPOINT/CMD 由 `scripts/build.sh` 在构建期解析为 exec 形式 JSON 数组写入生成的 Dockerfile（Docker 原生透传，不经 shell/JSON 运行时解析），`KK_TOKEN` 不写入镜像层、由运行时注入。
+- 上线即连，无需任何运行时配置。
 - 日志写到容器内 `/var/log/kk-agent.log` 并限制 1MB 轮转，避免吃磁盘。
 
 ## 4. 服务端 kk-server
