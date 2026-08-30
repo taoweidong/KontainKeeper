@@ -129,8 +129,7 @@ kk-server/
 │   ├── commands.py    # 下发命令（黑名单 + 审计）、结果查询
 │   └── audit_routes.py# 审计日志查询
 ├── web/               # 管理界面（无框架原生 JS 单页，见下）
-├── Dockerfile
-└── deploy.yaml        # K8S Deployment（token/密码走 Secret）
+└── Dockerfile
 ```
 
 管理界面（服务端内置）：
@@ -154,8 +153,7 @@ KontainKeeper/
 ├── server/                   # 服务端
 │   ├── kk-server/
 │   ├── web/
-│   ├── Dockerfile
-│   └── deploy.yaml
+│   └── Dockerfile
 ├── proto/messages.md         # 协议消息定义（双端共用契约）
 ├── tests/                    # 单测 + 端到端集成测试
 ├── scripts/build.sh          # CI：注入 token 构建镜像

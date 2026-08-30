@@ -40,12 +40,20 @@ KK_POD_NAME=demo-pod KK_INTERVAL=5 python agent_main.py
 
 ## 部署到生产
 
-### 1. 服务端
+### 1. 服务端（与 K8S 无关，部署在任何容器可达的机器上）
 
 ```bash
 docker build -t registry.example.com/kontainkeeper-server:0.1.0 server/
-kubectl apply -f server/deploy.yaml   # token 与管理员密码走 Secret
+docker run -d --name kontainkeeper \
+  -p 8443:8443 \
+  -v kontainkeeper-data:/data \
+  -e KK_AGENT_TOKENS=<token> \
+  -e KK_ADMIN_USER=admin \
+  -e KK_ADMIN_PASS=<强密码> \
+  registry.example.com/kontainkeeper-server:0.1.0
 ```
+
+服务端只是一个普通的 WebSocket/HTTP 服务：裸机 systemd、`docker run`、任意 PaaS 均可，唯一要求是**目标容器能出站访问到它**（仅容器 → 服务端方向，容器无需暴露任何端口）。
 
 环境变量：
 
@@ -67,6 +75,8 @@ KK_SERVER=wss://kk-server.ops:8443/ws/agent \
 KK_TOKEN=<与 KK_AGENT_TOKENS 一致> \
   ./scripts/build.sh myregistry/vscode-server-managed:1.2
 ```
+
+前提：基础镜像内含 `python3`（vscode-server 镜像默认具备）；Agent 纯标准库，无需向目标镜像安装任何依赖。
 
 产物镜像用 entrypoint-wrapper 包装原启动命令：先在后台拉起 Agent（带 5 秒自动重启的监督循环），再 `exec` 原 vscode-server 启动命令——用户看到的启动行为完全不变。
 
