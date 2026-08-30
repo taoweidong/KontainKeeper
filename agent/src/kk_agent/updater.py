@@ -78,18 +78,18 @@ def _http_base(server, override=""):
 
 
 def _build_opener(insecure):
+    """返回带 .open() 的 OpenerDirector。
+
+    非 insecure：默认 opener（走系统 CA 校验证书）。
+    insecure：关闭主机名/证书校验（仅 KK_UPDATE_INSECURE=1 时使用，不推荐）。
+    """
     if not insecure:
-        return urllib.request  # 默认校验证书
+        return urllib.request.build_opener()  # 默认 opener，支持 .open()
     import ssl
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
-
-    class _CtxOpener(urllib.request.OpenerDirector):
-        pass
-
-    opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
-    return opener
+    return urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
 
 
 def _http_get(url, token, timeout=15, as_bytes=False, insecure=False):

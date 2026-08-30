@@ -88,3 +88,37 @@ def test_apply_manifest_not_newer_skips(tmp_path, monkeypatch):
     assert updater.apply_manifest(cfg, None, manifest) is False
     assert not called["dl"]
     assert target.read_bytes() == b"old"
+
+
+def test_download_binary_real_http():
+    """回归：_build_opener(False) 必须返回带 .open() 的 opener，真实 http 下载可用。
+
+    早前实现在非 insecure 路径返回 urllib.request 模块本身（无 .open 方法），
+    导致真实 agent 自更新在 http 服务端上崩溃（AttributeError）。本测试走真实网络。
+    """
+    import http.server
+    import threading
+
+    payload = b"\x7fELF-real-download-regression"
+    captured = {}
+
+    class _H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), _H)
+    port = srv.server_address[1]
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        url = "http://127.0.0.1:%d/bin" % port
+        data = updater.download_binary(url, "tok", None)  # insecure 默认 False
+        assert data == payload
+    finally:
+        srv.shutdown()
