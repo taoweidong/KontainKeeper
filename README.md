@@ -64,6 +64,7 @@ docker run -d --name kontainkeeper \
 | `KK_DB_PATH` | SQLite 路径 | `kk-server.db` |
 | `KK_CMD_BLACKLIST` | 命令黑名单（逗号分隔子串） | `rm -rf /,mkfs,reboot,...` |
 | `KK_ENFORCED_INTERVAL` | 强制所有 Agent 的心跳间隔（秒） | 不强制 |
+| `KK_AGENT_BIN_DIR` | 上传的 Agent 二进制存放目录 | `agent_assets` |
 
 ### 2. 容器侧（镜像制作期介入）
 
@@ -78,7 +79,7 @@ KK_TOKEN=<与 KK_AGENT_TOKENS 一致> \
 
 前提：目标镜像**无需内置 Python**——Agent 已编译为单文件二进制（运行时零依赖）随镜像分发；`agent/` 下仍保留纯标准库源码，用于开发、重建二进制与本地调试。
 
-产物镜像用 entrypoint-wrapper 包装原启动命令：先在后台拉起 Agent（带 5 秒自动重启的监督循环），再 `exec` 原 vscode-server 启动命令——用户看到的启动行为完全不变。
+产物镜像用 entrypoint-wrapper 以「独立服务」方式常驻监管 Agent 二进制（崩溃自动拉起、自更新后 `execv` 复用 PID 不误重启），并可选地并行拉起原 vscode-server 入口（`KK_ORIG_ENTRYPOINT`）——两者生命周期解耦，用户看到的 IDE 启动行为不变。
 
 ### 3. Agent 环境变量（镜像内已注入，一般无需改动）
 
@@ -89,6 +90,29 @@ KK_TOKEN=<与 KK_AGENT_TOKENS 一致> \
 | `KK_INTERVAL` | 心跳/采集间隔（秒） | `60` |
 | `KK_DISK_PATHS` | 采集的挂载点 | `/,/workspace` |
 | `KK_PLUGIN_DIR` | 自定义采集插件目录 | `/opt/kk-agent/plugins` |
+| `KK_AGENT_BIN` | 自更新替换目标（运行中的二进制路径） | `sys.executable` |
+| `KK_UPDATE_URL` | 管理 API 基址（缺省由 `KK_SERVER` 的 ws/wss 推导） | 自动推导 |
+| `KK_UPDATE_INTERVAL` | 版本轮询间隔（秒，≥30） | `300` |
+| `KK_UPDATE_DISABLED` | 设为 `1/true` 关闭自更新 | 关闭 |
+| `KK_UPDATE_INSECURE` | 设为 `1/true` 关闭 TLS 校验（不推荐） | 关闭 |
+
+### Agent 自更新（零人工干预）
+
+Agent 作为独立服务运行，内置版本监控：连上服务端时若版本落后会立即收到 `upgrade` 帧，
+运行中亦按 `KK_UPDATE_INTERVAL` 定时轮询。发现新版本后，Agent 用自身 token 下载二进制，
+校验 `sha256` 一致后原子替换自身文件并 `execv` 自重启——**全程无需人工执行更新命令**。
+
+发布新版本（管理员）：
+
+```bash
+# 先编译新二进制
+cd agent && ./build/build_binary.sh
+# 以管理员会话上传（服务端计算 sha256 并记录为最新）
+curl -H "Authorization: Bearer <ADMIN_TOKEN>" -F "version=0.2.0" \
+     -F "file=@dist/kk-agent" https://kk-server.ops:8443/api/system/agent
+```
+
+此后所有在线及后续上线的 Agent 会自动升级到 `0.2.0`。详见 `proto/messages.md`。
 
 ## 自定义采集插件
 

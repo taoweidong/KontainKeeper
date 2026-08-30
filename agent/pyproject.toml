@@ -1,0 +1,20 @@
+[project]
+name = "kk-agent"
+version = "0.1.0"
+description = "KontainKeeper 容器端 Agent（纯标准库，可编译为单文件二进制并支持自更新）"
+requires-python = ">=3.9"
+# 运行时零第三方依赖；pyinstaller 仅用于把源码打包成独立二进制
+dependencies = []
+
+[project.optional-dependencies]
+build = ["pyinstaller>=6.0"]
+
+[project.scripts]
+kk-agent = "kk_agent.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["kk_agent"]

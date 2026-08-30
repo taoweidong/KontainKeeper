@@ -274,6 +274,19 @@ class Store:
     def kv_set(self, k, v):
         self._exec("INSERT INTO kv(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", (k, str(v)))
 
+    # ---- Agent 自更新：最新版本清单（含 sha256） ----
+    def set_agent_latest(self, info):
+        self.kv_set("agent_latest", json.dumps(info, ensure_ascii=False))
+
+    def get_agent_latest(self):
+        raw = self.kv_get("agent_latest")
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except ValueError:
+            return None
+
     def _aggregate_hours(self, now):
         """把已结束的小时聚合进 hourly 表，推进水位线。"""
         last = int(self.kv_get("agg_hour", "0") or 0)

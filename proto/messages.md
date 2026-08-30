@@ -83,6 +83,33 @@ Close codes：`4400` 握手超时/格式错误，`4401` token 无效，`4402` �
 {"t":"cfg","interval":120}
 ```
 
+### upgrade（服务端推送新版本，Agent 自更新）
+
+Agent 连接 `hello` 时若版本落后，或服务端在连接存活期间发布了新版本（Agent 亦按
+`KK_UPDATE_INTERVAL` 定时轮询），服务端下发该帧，Agent 立即下载并自更新：
+
+```json
+{"t":"upgrade","version":"0.2.0","sha256":"<hex>","size":1234567,
+ "url":"/api/system/agent/download"}
+```
+
+- `url` 相对管理 API 基址（`KK_UPDATE_URL`，缺省由 `KK_SERVER` 的 ws/wss 推导为 http/https）
+- Agent 下载后用 `sha256` 校验一致才原子替换自身二进制并 `execv` 自重启
+- 源码形态运行（`python -m kk_agent`）时只下载校验、不自动替换解释器
+
+## Agent 自更新 REST 接口
+
+Agent 二进制作为独立服务运行，内置版本监控与自动更新，无需人工执行更新命令。
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|---|---|---|---|
+| POST | `/api/system/agent` | 管理员会话 | 上传新版本二进制（multipart: `file` + `version`），服务端计算 `sha256` 落盘并记录为最新 |
+| GET | `/api/system/agent/latest?ver=<当前版本>` | Agent token | 返回 `{available, version, sha256, size, url}`；版本不落后或尚未配置则返回 `available:false` |
+| GET | `/api/system/agent/download` | Agent token | 流式下发最新二进制（与 WebSocket `hello` 同一 `KK_AGENT_TOKENS` 令牌池） |
+
+安全边界：下载/查询仅需 Agent token（与 hello 同源，避免明文暴露）；二进制替换前强制 `sha256`
+校验（纯标准库，防损坏/篡改）；`KK_UPDATE_INSECURE=1` 可关闭 TLS 校验（不推荐）。
+
 ## 心跳字段与采集来源（Agent 端承诺）
 
 | 字段 | 来源 |

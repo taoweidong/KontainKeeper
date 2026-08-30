@@ -5,6 +5,8 @@ import logging
 
 from starlette.websockets import WebSocketDisconnect
 
+from .version import version_lt
+
 log = logging.getLogger("kk.hub")
 
 
@@ -19,6 +21,26 @@ class Hub:
     # ---- 在线查询 ----
     def is_online(self, pod):
         return pod in self.conns
+
+    async def _maybe_push_upgrade(self, ws, agent_ver):
+        """Agent 版本落后时下发 upgrade 帧，触发其自动下载并自更新。"""
+        latest = self.store.get_agent_latest()
+        if not latest:
+            return
+        if not version_lt(agent_ver or "", latest.get("version", "")):
+            return
+        try:
+            await ws.send_json({
+                "t": "upgrade",
+                "version": latest["version"],
+                "sha256": latest.get("sha256", ""),
+                "size": latest.get("size", 0),
+                "url": "/api/system/agent/download",
+            })
+            log.info("pushed upgrade %s -> %s to %s", agent_ver, latest["version"], ws.client.host
+                      if hasattr(ws, "client") else "?")
+        except Exception:
+            pass
 
     @property
     def online_pods(self):
@@ -46,6 +68,8 @@ class Hub:
 
         interval = int(hello.get("interval") or 60)
         self.store.upsert_container(pod, hello.get("image", ""), hello.get("agent_ver", ""), interval)
+        # 版本落后则立即下发升级帧，连上即更新（无需人工介入）
+        await self._maybe_push_upgrade(ws, hello.get("agent_ver", ""))
         old = self.conns.get(pod)
         if old is not None and old is not ws:
             try:

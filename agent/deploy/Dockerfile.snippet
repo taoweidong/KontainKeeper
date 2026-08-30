@@ -1,0 +1,23 @@
+# 在原 vscode-server 镜像基础上叠加 KontainKeeper Agent（独立二进制 + 自更新）。
+# 完整构建见 scripts/build.sh；此处为手工叠加参考片段。
+#
+# 前提：构建上下文包含 dist/kk-agent（由 agent/build/build_binary.sh 产出）、
+#       kk_agent/plugins/ 与 agent/deploy/entrypoint-wrapper.sh。
+
+FROM <原 vscode-server 镜像>
+
+COPY dist/kk-agent /opt/kk-agent/kk-agent
+COPY kk_agent/plugins /opt/kk-agent/plugins
+COPY agent/deploy/entrypoint-wrapper.sh /usr/local/bin/kk-entrypoint
+
+RUN chmod +x /opt/kk-agent/kk-agent /usr/local/bin/kk-entrypoint \
+    && mkdir -p /var/log
+
+# KK_ORIG_ENTRYPOINT 应设为原镜像的 ENTRYPOINT（JSON 数组字符串），
+# 由 kk-entrypoint 并行拉起，使 Agent 与 IDE 生命周期解耦。
+ENV KK_AGENT_BIN=/opt/kk-agent/kk-agent \
+    KK_PLUGIN_DIR=/opt/kk-agent/plugins \
+    KK_LOG=/var/log/kk-agent.log \
+    KK_ORIG_ENTRYPOINT='["/usr/bin/entrypoint.sh"]'
+
+ENTRYPOINT ["/usr/local/bin/kk-entrypoint"]

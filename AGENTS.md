@@ -4,7 +4,7 @@ K8S 下 vscode-server 容器 IDE 的直连管理平台：容器内置 Agent 主�
 
 ## 目录与架构边界
 
-- `agent/kk_agent/` — 容器内客户端（**独立 Python 项目**，纯标准库，可编译为单文件二进制直接嵌入容器）。**必须保持纯 Python 标准库**（无 fastapi/psutil 等任何第三方依赖），目标常驻 RSS < 15MB。
+- `agent/kk_agent/` — 容器内客户端（**独立 Python 项目**，纯标准库，可编译为单文件二进制直接嵌入容器）。**必须保持纯 Python 标准库**（无 fastapi/psutil 等任何第三方依赖），目标常驻 RSS < 15MB。新增 `updater.py` 负责自更新（拉取版本清单 / 下载 / `sha256` 校验 / `os.execv` 自重启），**同样禁止第三方依赖**；服务端对应接口在 `server/kk_server/api/agent_update.py`。
 - `server/kk-server/` — FastAPI 服务端（hub 连接中枢 / store SQLite / api REST）；`server/web/` — 管理界面静态文件（无框架单页，由服务端直接托管）。
 - `proto/messages.md` — 双端通信协议契约。改协议必须同步：`agent/kk_agent/config.py` 的 `PROTO_VER`、`server/kk_server/__init__.py` 的 `PROTO_VER`、协议文档、双端测试。
 - `tests/`、`scripts/build.sh`（把 agent 叠加进 vscode-server 镜像的 CI 脚本）。

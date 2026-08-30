@@ -39,6 +39,7 @@ def create_app(env=None):
     app.state.store = store
     app.state.hub = hub
     app.state.cmd_blacklist = blacklist
+    app.state.agent_bin_dir = env.get("KK_AGENT_BIN_DIR", "agent_assets")
 
     @app.get("/api/health")
     def health():
