@@ -74,6 +74,10 @@ CREATE TABLE IF NOT EXISTS sessions(
   created INTEGER NOT NULL,
   expires INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS revoked_tokens(
+  token TEXT PRIMARY KEY,
+  ts INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT NOT NULL);
 """
 
@@ -246,6 +250,21 @@ class Store:
 
     def default_admin_exists(self):
         return self._query_one("SELECT username FROM admins WHERE username='admin'") is not None
+
+    # ---- Agent token 吊销 ----
+    def revoke_token(self, token):
+        self._exec("INSERT OR IGNORE INTO revoked_tokens(token,ts) VALUES(?,?)",
+                   (token, int(time.time())))
+
+    def restore_token(self, token):
+        self._exec("DELETE FROM revoked_tokens WHERE token=?", (token,))
+
+    def is_token_revoked(self, token):
+        return self._query_one("SELECT token FROM revoked_tokens WHERE token=?",
+                               (token,)) is not None
+
+    def revoked_tokens(self):
+        return [r["token"] for r in self._query("SELECT token FROM revoked_tokens ORDER BY ts")]
 
     # ---- 清理与聚合 ----
     def kv_get(self, k, default=None):

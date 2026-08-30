@@ -65,6 +65,16 @@ def test_reject_proto_mismatch(store):
     assert ws.closed == 4402
 
 
+def test_revoked_token_rejected(store):
+    hub = Hub(store, {"tok"})
+    store.revoke_token("tok")
+    ws = FakeWS([hello()])
+    run(hub.agent_endpoint(ws))
+    assert ws.closed == 4401
+    assert hub.conns == {}
+    assert store.list_audit()[0]["action"] == "hello_rejected"
+
+
 def test_lifecycle_pending_flush_and_hb(store):
     hub = Hub(store, {"tok"})
     # Agent 离线期间积累的 pending 命令

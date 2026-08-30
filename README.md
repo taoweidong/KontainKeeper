@@ -13,7 +13,7 @@ K8S 场景下 vscode-server 容器 IDE 的**直连管理与数据提取平台**�
 ## 仓库结构
 
 ```
-agent/      客户端（kk-agent，纯 stdlib，随目标镜像分发）
+agent/      kk-agent 客户端（独立 Python 项目，纯 stdlib，编译为二进制随目标镜像分发）
 server/     服务端（FastAPI + 内置 Web 管理界面）
 proto/      双端通信协议契约
 tests/      单元测试 + 端到端集成测试（39 项）
@@ -31,9 +31,9 @@ KK_PORT=8443 KK_AGENT_TOKENS=dev-token python -m kk_server
 # 浏览器打开 http://127.0.0.1:8443 → 登录管理界面
 
 # 2. 启动一个 Agent（模拟容器内，任意目录）
-cd agent/kk-agent
+cd agent
 KK_SERVER=ws://127.0.0.1:8443/ws/agent KK_TOKEN=dev-token \
-KK_POD_NAME=demo-pod KK_INTERVAL=5 python agent_main.py
+KK_POD_NAME=demo-pod KK_INTERVAL=5 python -m kk_agent
 
 # 3. 管理界面：容器总览出现 demo-pod → 详情页/控制台下发命令 → 结果回传
 ```
@@ -76,7 +76,7 @@ KK_TOKEN=<与 KK_AGENT_TOKENS 一致> \
   ./scripts/build.sh myregistry/vscode-server-managed:1.2
 ```
 
-前提：基础镜像内含 `python3`（vscode-server 镜像默认具备）；Agent 纯标准库，无需向目标镜像安装任何依赖。
+前提：目标镜像**无需内置 Python**——Agent 已编译为单文件二进制（运行时零依赖）随镜像分发；`agent/` 下仍保留纯标准库源码，用于开发、重建二进制与本地调试。
 
 产物镜像用 entrypoint-wrapper 包装原启动命令：先在后台拉起 Agent（带 5 秒自动重启的监督循环），再 `exec` 原 vscode-server 启动命令——用户看到的启动行为完全不变。
 

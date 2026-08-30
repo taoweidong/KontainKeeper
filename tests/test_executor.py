@@ -3,7 +3,7 @@ import queue
 import sys
 import time
 
-import kk_executor as ex
+from kk_agent import executor as ex
 
 
 def test_run_shell_ok():

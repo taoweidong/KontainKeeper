@@ -70,16 +70,17 @@
 ### 3.2 模块划分
 
 ```
-kk-agent/
-├── __main__.py        # 入口（python3 __main__.py，由 entrypoint-wrapper 拉起）
-├── agent_main.py      # 守护主循环：select 事件循环、重连、心跳调度、队列回传
-├── kk_ws.py           # 自研最小 WebSocket 客户端（RFC6455，纯 stdlib）
-├── kk_conn.py         # 连接建立、hello 构建、JSON 发送
-├── kk_config.py       # env: KK_SERVER, KK_TOKEN, KK_INTERVAL, KK_PLUGIN_DIR ...
-├── kk_collector.py    # /proc 采集：cpu/mem/disk/proc/users
-├── kk_executor.py     # 命令执行（timeout + 输出封顶 + 一次性工作线程）
-├── kk_plugins.py      # 插件热加载（按 mtime）
-├── kk_logutil.py      # stderr + 1MB 轮转文件日志
+kk_agent/                 # 独立 Python 包（纯 stdlib，可编译为单文件二进制）
+├── __init__.py        # AGENT_VER / PROTO_VER / __version__
+├── __main__.py        # 入口（python -m kk_agent，或编译后的 ./kk-agent 二进制）
+├── main.py            # 守护主循环：select 事件循环、重连、心跳调度、队列回传
+├── ws.py              # 自研最小 WebSocket 客户端（RFC6455，纯 stdlib）
+├── conn.py            # 连接建立、hello 构建、JSON 发送
+├── config.py          # env: KK_SERVER, KK_TOKEN, KK_INTERVAL, KK_PLUGIN_DIR ...
+├── collector.py       # /proc 采集：cpu/mem/disk/proc/users
+├── executor.py        # 命令执行（timeout + 输出封顶 + 一次性工作线程）
+├── plugin_loader.py   # 插件热加载（按 mtime）
+├── logutil.py         # stderr + 1MB 轮转文件日志
 └── plugins/           # 自定义采集插件：任意 *.py，实现 collect() -> dict
 ```
 
@@ -92,7 +93,7 @@ kk-agent/
 
 ```dockerfile
 # ---- 在现有 vscode-server 镜像末尾追加 ----
-COPY kk-agent /opt/kk-agent
+COPY dist/kk-agent /opt/kk-agent/kk-agent
 ENV KK_SERVER=wss://kk-server.ops.svc:8443/ws/agent \
     KK_TOKEN=__BUILD_TIME_INJECT__ \
     KK_INTERVAL=60
@@ -146,10 +147,11 @@ kk-server/
 KontainKeeper/
 ├── README.md
 ├── docs/design.md            # 本文档
-├── agent/                    # 客户端（随镜像分发）
-│   ├── kk-agent/             # 纯 stdlib Agent 源码
-│   ├── entrypoint-wrapper.sh
-│   └── Dockerfile.snippet    # 叠加到 vscode-server 镜像的片段
+├── agent/                    # kk-agent 客户端（独立 Python 项目）
+│   ├── kk_agent/             # 纯 stdlib Agent 源码（独立包，可编译二进制）
+│   ├── build/                # 二进制构建（PyInstaller spec + 脚本）
+│   ├── deploy/               # 容器嵌入：entrypoint-wrapper.sh + Dockerfile.snippet
+│   └── pyproject.toml        # 独立项目元数据（零运行时依赖）
 ├── server/                   # 服务端
 │   ├── kk-server/
 │   ├── web/

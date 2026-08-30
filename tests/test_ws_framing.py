@@ -4,7 +4,7 @@ import struct
 
 import pytest
 
-from kk_ws import (FrameParser, OP_CLOSE, OP_PING, OP_TEXT, WSError, WSClient,
+from kk_agent.ws import (FrameParser, OP_CLOSE, OP_PING, OP_TEXT, WSError, WSClient,
                    encode_frame)
 
 

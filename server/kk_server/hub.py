@@ -33,7 +33,10 @@ class Hub:
             await ws.close(code=4400)
             return
         pod = str((hello or {}).get("pod") or "")[:120]
-        if not isinstance(hello, dict) or hello.get("t") != "hello" or hello.get("token") not in self.tokens:
+        token = hello.get("token") if isinstance(hello, dict) else None
+        valid = (isinstance(hello, dict) and hello.get("t") == "hello"
+                 and token in self.tokens and not self.store.is_token_revoked(token))
+        if not valid:
             self.store.add_audit("agent", "hello_rejected", {"pod": pod})
             await ws.close(code=4401)
             return

@@ -1,5 +1,5 @@
 """采集器单测：基于伪造 /proc 树。"""
-import kk_collector as c
+from kk_agent import collector as c
 
 
 CFG = {"fs_root": None, "disk_paths": []}

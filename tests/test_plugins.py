@@ -2,7 +2,7 @@
 import os
 import time
 
-import kk_plugins as pl
+from kk_agent import plugin_loader as pl
 
 GOOD = "def collect():\n    return {'v': 1}\n"
 GOOD2 = "def collect():\n    return {'v': 2}\n"

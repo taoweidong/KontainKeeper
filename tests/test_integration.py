@@ -56,8 +56,7 @@ def wait_until(fn, timeout=25, what="condition"):
 def stack(tmp_path):
     import uvicorn
     from kk_server.main import create_app
-    import kk_config
-    import agent_main
+    from kk_agent import config as kk_config, main as agent_main
 
     port = free_port()
     env = {
@@ -166,6 +165,18 @@ def test_full_chain(stack):
     time.sleep(3)
     status, series = http(port, "GET", "/api/containers/it-pod-1/metrics?hours=1", token=tok)
     assert status == 200 and len(series["series"]) >= 2
+
+    # token 管理接口：列表（脱敏）、吊销、恢复
+    status, toks = http(port, "GET", "/api/tokens", token=tok)
+    assert status == 200 and toks["items"] == [{"token": "***", "revoked": False}]
+    status, _ = http(port, "POST", "/api/tokens/revoke", token=tok, body={"token": "it-token"})
+    assert status == 200
+    status, toks = http(port, "GET", "/api/tokens", token=tok)
+    assert toks["items"][0]["revoked"] is True
+    status, _ = http(port, "POST", "/api/tokens/restore", token=tok, body={"token": "it-token"})
+    assert status == 200
+    status, _ = http(port, "POST", "/api/tokens/revoke", token=tok, body={"token": "no-such"})
+    assert status == 404
 
     # 未鉴权访问被拒
     status, _ = http(port, "GET", "/api/containers")

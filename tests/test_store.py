@@ -81,6 +81,17 @@ def test_cleanup_aggregates_and_prunes(store):
     assert raw == []
 
 
+def test_token_revocation(store):
+    assert store.is_token_revoked("t1") is False
+    store.revoke_token("t1")
+    store.revoke_token("t1")  # 幂等
+    assert store.is_token_revoked("t1") is True
+    assert store.revoked_tokens() == ["t1"]
+    store.restore_token("t1")
+    assert store.is_token_revoked("t1") is False
+    assert store.revoked_tokens() == []
+
+
 def test_lost_command_marking(store):
     store.upsert_container("pod-d", "img", "0.1.0", 60)
     cid = store.create_command("pod-d", "shell", ["x"], 30, "admin")
