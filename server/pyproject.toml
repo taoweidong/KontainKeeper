@@ -21,3 +21,12 @@ packages = ["src/kk_server"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/kk_server/web" = "kk_server/web"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

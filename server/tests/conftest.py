@@ -1,8 +1,15 @@
+"""Server 测试公共固件：注入 src 路径，并提供 make_fake_fs。
+
+集成测试（test_integration）会启动真实服务端并驱动真实 Agent 主循环，
+因此需要同时把 agent/src 与 server/src 注入路径。
+"""
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-for p in (str(ROOT / "server" / "src"), str(ROOT / "agent" / "src")):
+ROOT = Path(__file__).resolve().parent.parent.parent
+AGENT_SRC = ROOT / "agent" / "src"
+SERVER_SRC = Path(__file__).resolve().parent.parent / "src"
+for p in (str(SERVER_SRC), str(AGENT_SRC)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
@@ -20,7 +27,6 @@ def make_fake_fs(base: Path) -> Path:
         "cpu0 50 0 50 350 0 0 0 0 0 0\n"
         "intr 12345 0 0 0\n")
     (proc / "loadavg").write_text("0.10 0.20 0.30 1/50 123\n")
-    # 字段（去掉 "pid (comm)" 后，0 起）：3=state 11=utime 12=stime 20=vsize 21=rss
     (proc / "1" / "stat").write_text(
         "1 (systemd) S 0 1 1 0 -1 4194560 100 0 0 0 200 100 0 0 0 0 1 0 100 16777216 5000\n")
     (proc / "1" / "status").write_text("Name:\tsystemd\nUid:\t0\t0\t0\t0\nVmRSS:\t500 kB\n")

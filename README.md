@@ -17,12 +17,13 @@ pyproject.toml           UV 工作区虚拟根（package=false，members=[server
 uv.lock                  UV 锁定的依赖版本（uv sync 生成，可复现安装）
 agent/                   kk-agent 客户端（独立 UV 项目，纯 stdlib，可编译单文件二进制）
   src/kk_agent/          纯标准库源码；plugins/ 含示例采集插件
+  tests/                 Agent 单元测试（采集/执行/插件/ws/updater，共 36 项）
   build/                 PyInstaller 编译单文件二进制的脚本
 server/                  服务端（独立 UV 项目，FastAPI + 内置 Web 管理界面）
   src/kk_server/         服务端源码；web/ 静态界面随包一起打包
+  tests/                 Server 单元测试 + 端到端集成测试（共 16 项）
   Dockerfile             生产镜像（python:3.12-slim，按 pyproject 装依赖）
 proto/                   双端通信协议契约
-tests/                   单元测试 + 端到端集成测试（52 项）
 scripts/                 构建与部署脚本
 ```
 
@@ -140,10 +141,11 @@ def collect():
 
 ```bash
 uv sync --all-packages
-uv run pytest tests -v
+uv run pytest agent/tests -v     # Agent 单元测试（36 项）
+uv run pytest server/tests -v    # Server 单元测试 + 端到端集成（16 项）
 ```
 
-包含：WebSocket 帧编解码、/proc 采集（伪造 proc 树，跨平台可跑）、命令执行、插件热加载、存储层、Hub 生命周期，以及**真实服务端 + 真实 Agent 主循环**的端到端集成测试。
+两个项目各持独立单测：`agent/tests`（WebSocket 帧编解码、/proc 采集（伪造 proc 树，跨平台可跑）、命令执行、插件热加载、自更新）与 `server/tests`（存储层、Hub 生命周期、Agent 自更新接口、以及**真实服务端 + 真实 Agent 主循环**的端到端集成测试）。
 
 ## 安全说明
 
