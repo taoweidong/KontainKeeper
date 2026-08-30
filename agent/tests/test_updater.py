@@ -36,6 +36,21 @@ def test_verify_and_replace_mismatch(tmp_path):
     assert target.read_bytes() == b"old"  # 未替换
 
 
+def test_verify_and_replace_missing_sha_rejected(tmp_path):
+    """安全承诺：清单缺失 sha256 时必须拒绝替换，防止无校验写入任意二进制。"""
+    data = b"payload"
+    target = tmp_path / "kk-agent"
+    target.write_bytes(b"old")
+    try:
+        updater.verify_and_replace(data, "", str(target))
+        assert False, "expected RuntimeError on missing sha256"
+    except RuntimeError:
+        pass
+    assert target.read_bytes() == b"old"  # 未替换
+    # 不残留临时文件
+    assert list(tmp_path.glob(".kk-agent.update.*")) == []
+
+
 def test_fetch_latest_available(monkeypatch):
     manifest = '{"available": true, "version": "0.2.0", "sha256": "abc", "size": 10, "url": "/x"}'
     monkeypatch.setattr(updater, "_http_get", lambda *a, **k: manifest)

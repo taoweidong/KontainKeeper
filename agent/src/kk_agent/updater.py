@@ -146,10 +146,14 @@ def download_binary(url, token, log, insecure=False, max_bytes=MAX_BIN_BYTES):
 def verify_and_replace(data, expected_sha256, target):
     """写临时文件→校验 sha256→原子替换 target；成功返回 True。
 
-    失败（sha 不匹配/写入异常）时清理临时文件，避免残留 .kk-agent.update.* 占用磁盘。
+    清单缺失 sha256 或校验不匹配均拒绝替换（协议承诺：替换前强制校验，
+    防止清单被篡改后写入任意二进制）。失败时清理临时文件，避免残留
+    .kk-agent.update.* 占用磁盘。
     """
     digest = hashlib.sha256(data).hexdigest()
-    if expected_sha256 and digest.lower() != expected_sha256.lower():
+    if not expected_sha256:
+        raise RuntimeError("manifest missing sha256, refuse to replace")
+    if digest.lower() != str(expected_sha256).lower():
         raise RuntimeError("sha256 mismatch: got %s expect %s" % (digest, expected_sha256))
     d = os.path.dirname(os.path.abspath(target))
     tmp = os.path.join(d, ".kk-agent.update.%d" % os.getpid())

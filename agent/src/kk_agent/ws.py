@@ -179,7 +179,9 @@ class WSClient:
                 raise WSError("handshake response too large")
         head, _, rest = resp.partition(b"\r\n\r\n")
         hlines = head.decode("latin1").split("\r\n")
-        if "101" not in hlines[0]:
+        # 精确解析状态码（"HTTP/1.1 101 ..."），避免子串误匹配（如 "HTTP/1.1 1010"）
+        status_parts = hlines[0].split()
+        if len(status_parts) < 2 or status_parts[1] != "101":
             raise WSError("handshake rejected: %s" % hlines[0])
         accept = ""
         for line in hlines[1:]:
