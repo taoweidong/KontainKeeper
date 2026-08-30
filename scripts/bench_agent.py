@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "server"))
+sys.path.insert(0, str(ROOT / "server" / "src"))
 sys.path.insert(0, str(ROOT / "tests"))
 
 TARGET_MB = 15.0
@@ -71,7 +71,7 @@ def child_rss_mb(pid):
 
 def run_agent_child(port, fs_dir):
     """子进程模式：只加载 agent 相关模块，一直运行，由父进程终止。"""
-    sys.path.insert(0, str(ROOT / "agent"))
+    sys.path.insert(0, str(ROOT / "agent" / "src"))
     from kk_agent import main as agent_main, config as kk_config
     cfg = kk_config.load(env={
         "KK_SERVER": "ws://127.0.0.1:%d/ws/agent" % port,

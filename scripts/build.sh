@@ -28,7 +28,7 @@ ORIG_ENTRYPOINT="$(docker image inspect "$BASE_IMAGE" --format '{{json .Config.E
 ORIG_CMD="$(docker image inspect "$BASE_IMAGE" --format '{{json .Config.Cmd}}')"
 
 cp "$BIN" "$WORK/kk-agent"
-cp -r "$REPO_ROOT/agent/kk_agent/plugins" "$WORK/plugins"
+cp -r "$REPO_ROOT/agent/src/kk_agent/plugins" "$WORK/plugins"
 cp "$REPO_ROOT/agent/deploy/entrypoint-wrapper.sh" "$WORK/kk-entrypoint"
 
 cat > "$WORK/Dockerfile" <<EOF

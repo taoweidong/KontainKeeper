@@ -2,12 +2,12 @@
 # 完整构建见 scripts/build.sh；此处为手工叠加参考片段。
 #
 # 前提：构建上下文包含 dist/kk-agent（由 agent/build/build_binary.sh 产出）、
-#       kk_agent/plugins/ 与 agent/deploy/entrypoint-wrapper.sh。
+#       src/kk_agent/plugins/ 与 agent/deploy/entrypoint-wrapper.sh。
 
 FROM <原 vscode-server 镜像>
 
 COPY dist/kk-agent /opt/kk-agent/kk-agent
-COPY kk_agent/plugins /opt/kk-agent/plugins
+COPY src/kk_agent/plugins /opt/kk-agent/plugins
 COPY agent/deploy/entrypoint-wrapper.sh /usr/local/bin/kk-entrypoint
 
 RUN chmod +x /opt/kk-agent/kk-agent /usr/local/bin/kk-entrypoint \

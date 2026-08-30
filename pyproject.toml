@@ -2,14 +2,19 @@
 name = "kontainkeeper"
 version = "0.1.0"
 description = "K8S 容器（vscode-server IDE）直连管理：镜像内置 Agent + 管理服务端"
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 
-[project.optional-dependencies]
-dev = ["pytest>=8.0", "fastapi>=0.110,<1.0", "uvicorn[standard]>=0.29"]
+[tool.uv]
+package = false
 
-# 单仓库 + 两个独立 Python 项目（server / agent）
 [tool.uv.workspace]
 members = ["server", "agent"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

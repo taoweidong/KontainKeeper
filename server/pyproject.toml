@@ -2,7 +2,7 @@
 name = "kk-server"
 version = "0.1.0"
 description = "KontainKeeper 管理服务端（FastAPI hub + REST API + SQLite store）"
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.110,<1.0",
     "uvicorn[standard]>=0.29",
@@ -17,8 +17,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["kk_server"]
+packages = ["src/kk_server"]
 
-# 注意：Web 静态资源位于项目根的 server/web/，由 kk_server.main 通过
-# KK_WEB_DIR 或 `Path(__file__).parent.parent / "web"` 定位。生产部署走
-# server/Dockerfile（上下文为 server/），可直接 `python -m kk_server` 运行。
+[tool.hatch.build.targets.wheel.force-include]
+"src/kk_server/web" = "kk_server/web"

@@ -51,7 +51,7 @@ def create_app(env=None):
 
     api.register(app)
 
-    web_dir = Path(env.get("KK_WEB_DIR") or (Path(__file__).resolve().parent.parent / "web"))
+    web_dir = Path(env.get("KK_WEB_DIR") or (Path(__file__).resolve().parent / "web"))
     if web_dir.is_dir():
         app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="web")
     else:

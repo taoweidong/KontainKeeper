@@ -12,7 +12,7 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "agent"))
+sys.path.insert(0, str(ROOT / "agent" / "src"))
 
 from kk_agent.ws import WSClient  # noqa: E402
 
