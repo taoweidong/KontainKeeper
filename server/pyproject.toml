@@ -19,8 +19,6 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/kk_server"]
 
-[tool.hatch.build.targets.wheel.force-include]
-"src/kk_server/web" = "kk_server/web"
 
 [dependency-groups]
 dev = [
