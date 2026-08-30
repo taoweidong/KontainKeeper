@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT NOT NULL);
 """
 
 MAX_OUT_CHARS = 4 * 1024 * 1024
+_CMD_COLS = "id,pod,kind,argv,timeout,status,created_by,created_at,finished_at,rc,timed_out,elapsed_ms"
 
 
 def _pwdf(salt, password):
@@ -124,12 +125,14 @@ class Store:
     def record_hb(self, pod, msg):
         now = int(time.time())
         m = msg.get("metrics") or {}
-        self._exec(
-            "INSERT INTO heartbeats(pod,ts,cpu,mem_mb,metrics) VALUES(?,?,?,?,?)",
-            (pod, now, m.get("cpu"), m.get("mem_mb"), json.dumps(msg, ensure_ascii=False)))
-        self._exec(
-            "UPDATE containers SET last_seen=?, hb_interval=?, last_metrics=? WHERE pod=?",
-            (now, int(msg.get("interval") or 60), json.dumps(msg, ensure_ascii=False), pod))
+        raw = json.dumps(msg, ensure_ascii=False)
+        with self.lock:  # 明细落库与容器状态更新同事务，避免半写
+            self.db.execute("INSERT INTO heartbeats(pod,ts,cpu,mem_mb,metrics) VALUES(?,?,?,?,?)",
+                            (pod, now, m.get("cpu"), m.get("mem_mb"), raw))
+            self.db.execute(
+                "UPDATE containers SET last_seen=?, hb_interval=?, last_metrics=? WHERE pod=?",
+                (now, int(msg.get("interval") or 60), raw, pod))
+            self.db.commit()
 
     def list_containers(self):
         return self._query("SELECT * FROM containers ORDER BY last_seen DESC")
@@ -141,9 +144,9 @@ class Store:
         since = int(time.time()) - hours * 3600
         if hours <= 24:
             rows = self._query(
-                "SELECT ts AS ts, cpu, mem_mb FROM heartbeats WHERE pod=? AND ts>=? ORDER BY ts",
+                "SELECT ts, cpu, mem_mb FROM heartbeats WHERE pod=? AND ts>=? ORDER BY ts",
                 (pod, since))
-            return [dict(r, ts=r["ts"]) for r in rows], "raw"
+            return rows, "raw"
         since_h = since // 3600
         rows = self._query(
             "SELECT hour*3600 AS ts, cpu_avg AS cpu, mem_avg AS mem_mb FROM hourly"
@@ -165,11 +168,10 @@ class Store:
     def list_commands(self, pod=None, limit=100):
         if pod:
             return self._query(
-                "SELECT id,pod,kind,argv,timeout,status,created_by,created_at,finished_at,rc,timed_out,elapsed_ms"
-                " FROM commands WHERE pod=? ORDER BY created_at DESC LIMIT ?", (pod, limit))
+                "SELECT %s FROM commands WHERE pod=? ORDER BY created_at DESC LIMIT ?" % _CMD_COLS,
+                (pod, limit))
         return self._query(
-            "SELECT id,pod,kind,argv,timeout,status,created_by,created_at,finished_at,rc,timed_out,elapsed_ms"
-            " FROM commands ORDER BY created_at DESC LIMIT ?", (limit,))
+            "SELECT %s FROM commands ORDER BY created_at DESC LIMIT ?" % _CMD_COLS, (limit,))
 
     def pending_for(self, pod):
         return self._query(

@@ -13,12 +13,12 @@ import select
 import threading
 import time
 
+import kk_collector
 import kk_config
 import kk_conn
-import kk_collector
 import kk_executor
-import kk_plugins
 import kk_logutil
+import kk_plugins
 from kk_ws import WSClosed, WSError
 
 CHUNK = 48 * 1024  # cmd_result 原始输出分块大小
@@ -76,6 +76,26 @@ def handle_server_msg(msg, ws, runner, cfg, log, q):
     # hb_ack 等未知类型：忽略
 
 
+def flush_outgoing(ws, q, cfg, log):
+    """把工作线程结果全部发出去；发送失败时关闭连接并返回 False（触发重连）。"""
+    while True:
+        try:
+            kind, ref, payload = q.get_nowait()
+        except queue.Empty:
+            return True
+        try:
+            if kind == "hb":
+                frame = {"t": "hb", "ts": int(time.time()), "interval": cfg["interval"]}
+                frame.update(payload)
+                kk_conn.send_json(ws, frame)
+            elif kind == "cmd_result":
+                send_cmd_result(ws, ref, payload)
+        except (WSClosed, WSError, OSError) as e:
+            log.warning("send failed: %s", e)
+            kk_conn.safe_close(ws)
+            return False
+
+
 def run(stop=None, cfg=None):
     stop = stop or threading.Event()
     cfg = cfg or kk_config.load()
@@ -111,8 +131,7 @@ def run(stop=None, cfg=None):
         now = time.time()
         if now >= next_hb:
             submit_heartbeat(cfg, log, q, state_box)
-            jitter = random.uniform(0.9, 1.1)
-            next_hb = now + cfg["interval"] * jitter
+            next_hb = now + cfg["interval"] * random.uniform(0.9, 1.1)
 
         # 等socket可读（最多 0.5s，保证 stop 响应及时），同时让出 CPU
         try:
@@ -131,24 +150,8 @@ def run(stop=None, cfg=None):
             ws = None
             continue
 
-        # 投递工作线程结果
-        try:
-            while True:
-                kind, ref, payload = q.get_nowait()
-                try:
-                    if kind == "hb":
-                        frame = {"t": "hb", "ts": int(time.time()), "interval": cfg["interval"]}
-                        frame.update(payload)
-                        kk_conn.send_json(ws, frame)
-                    elif kind == "cmd_result":
-                        send_cmd_result(ws, ref, payload)
-                except (WSClosed, WSError, OSError) as e:
-                    log.warning("send failed: %s", e)
-                    kk_conn.safe_close(ws)
-                    ws = None
-                    break
-        except queue.Empty:
-            pass
+        if not flush_outgoing(ws, q, cfg, log):
+            ws = None
 
     kk_conn.safe_close(ws)
     log.info("kk-agent stopped")

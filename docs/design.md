@@ -63,7 +63,7 @@
 | 单线程 + selectors | 一个线程跑事件循环：WebSocket 读、定时器、命令子进程；不用 asyncio 多任务膨胀 |
 | 指标采集低频 | 默认 60s 一报，CPU 采样 1s×2 次即停，非采样期 0 CPU |
 | 子进程限时 | 命令用 `subprocess` + timeout，输出超 1MB 分块/截断 |
-| 内嵌压缩 | 上报 JSON 启用 permessage-deflate，帧通常 < 2KB |
+| 内嵌帧精简 | 心跳 JSON 帧通常 < 2KB（未启用压缩，避免额外复杂度） |
 
 预期常驻开销：RSS 8–15MB，空闲 CPU <0.1%。
 
@@ -71,17 +71,22 @@
 
 ```
 kk-agent/
-├── __main__.py        # 入口：解析环境变量，拉起 daemon
-├── conn.py            # WebSocket 客户端、重连、心跳定时（自研最小 ws 实现，stdlib）
-├── collector.py       # /proc 采集：cpu/mem/disk/proc/users
-├── executor.py        # 命令执行（白名单 + timeout + 流式回传）
-├── plugins/           # 自定义采集插件：任意 *.py，实现 collect() -> dict，热加载
-└── config.py          # env: KK_SERVER, KK_TOKEN, KK_INTERVAL, KK_PLUGIN_DIR
+├── __main__.py        # 入口（python3 __main__.py，由 entrypoint-wrapper 拉起）
+├── agent_main.py      # 守护主循环：select 事件循环、重连、心跳调度、队列回传
+├── kk_ws.py           # 自研最小 WebSocket 客户端（RFC6455，纯 stdlib）
+├── kk_conn.py         # 连接建立、hello 构建、JSON 发送
+├── kk_config.py       # env: KK_SERVER, KK_TOKEN, KK_INTERVAL, KK_PLUGIN_DIR ...
+├── kk_collector.py    # /proc 采集：cpu/mem/disk/proc/users
+├── kk_executor.py     # 命令执行（timeout + 输出封顶 + 一次性工作线程）
+├── kk_plugins.py      # 插件热加载（按 mtime）
+├── kk_logutil.py      # stderr + 1MB 轮转文件日志
+└── plugins/           # 自定义采集插件：任意 *.py，实现 collect() -> dict
 ```
 
-- **自定义采集**：管理端下发 `{"t":"cmd","kind":"plugin_reload"}` 或投放插件后，agent 扫描 `plugins/` 目录并 import，采集结果并入下一次心跳帧的 `custom` 字段。插件失败不影响主循环（子进程隔离执行可选）。
-- **用户信息**：解析 vscode-server 的 `~/.vscode-server`、`who`/`/proc/*/environ` 中的登录用户与活跃连接数。
-- **守护方式**：镜像 entrypoint 用轻量 supervisor 脚本（或直接 `&` 拉起 + `while :; do sleep 3600 & wait; done` 保活检查循环），agent 自身崩溃自动重启。不使用 systemd（容器内不必要）。
+- **自定义采集**：管理端下发 `{"t":"cmd","kind":"plugin_reload"}` 或投放插件后，agent 扫描 `plugins/` 目录并 import，采集结果并入下一次心跳帧的 `custom` 字段。单个插件失败只跳过自身，不影响主循环。
+- **用户信息**：`/etc/passwd` × `/proc/<pid>/status` Uid 进程计数 × `~/.vscode-server` 目录存在性（无家目录的系统账户过滤）。
+- **命令安全**：argv 数组直传 exec（不经 shell 拼接）；黑名单在服务端统一拦截并审计。
+- **守护方式**：镜像 entrypoint-wrapper 拉起带监督循环（崩溃 5s 重启）+ 每小时日志截断；不使用 systemd（容器内不必要）。
 
 ### 3.3 Dockerfile 介入（用户无感知）
 
@@ -109,18 +114,23 @@ exec "$@"   # 原 vscode-server 启动命令，用户侧完全不变
 
 ## 4. 服务端 kk-server
 
-技术栈：FastAPI + uvicorn + `websockets` + SQLite（SQLAlchemy，可切 PG）。单进程即可管理数千长连接（uvicorn asyncio）。
+技术栈：FastAPI + uvicorn（内置 WebSocket 支持）+ 标准库 sqlite3（WAL，可平滑切 PG）。单进程即可管理数千长连接。
 
 ```
 kk-server/
-├── main.py            # FastAPI app：REST + /ws/agent
-├── hub.py             # 连接表 {pod: websocket}，指令路由、离线暂存
-├─ api/
-│   ├─ containers.py   # 在线容器列表、心跳状态、历史指标查询
-│   ├─ commands.py     # 下发命令、轮询/WebSocket 推送结果
-│   └─ auth.py         # 管理员登录（JWT）、审计
-├─ store/              # 指标按小时聚合落库，明细保留 N 天
-└─ web/                # 管理界面（见下）
+├── __main__.py        # python -m kk_server 入口
+├── main.py            # create_app 工厂：REST + /ws/agent + 静态托管 + 清理线程
+├── hub.py             # 连接表 {pod: websocket}，指令路由、离线补发
+├── store.py           # SQLite：容器/心跳/命令/审计/会话，小时聚合与过期清理
+├── api/
+│   ├── deps.py        # 会话鉴权依赖
+│   ├── auth_routes.py # 管理员登录/登出（PBKDF2 + 会话 token）
+│   ├── containers.py  # 容器列表/详情/指标序列
+│   ├── commands.py    # 下发命令（黑名单 + 审计）、结果查询
+│   └── audit_routes.py# 审计日志查询
+├── web/               # 管理界面（无框架原生 JS 单页，见下）
+├── Dockerfile
+└── deploy.yaml        # K8S Deployment（token/密码走 Secret）
 ```
 
 管理界面（服务端内置）：
@@ -129,26 +139,27 @@ kk-server/
 - **命令控制台**：选容器 → 输入命令/选预设 → 实时看回传结果；支持批量下发
 - **审计日志**：所有下发的命令、操作者、时间、结果归档
 
-前端从简：服务端直接托管单页（Vue3 + vite 构建产物或纯 htmx 均可），不引入额外部署单元。
+前端从简：无框架原生 JS 单页（hash 路由 + 轮询），由服务端直接托管，零构建步骤、零额外部署单元。
 
 ## 5. 仓库结构（git）
 
 ```
 KontainKeeper/
 ├── README.md
-├── LICENSE
 ├── docs/design.md            # 本文档
 ├── agent/                    # 客户端（随镜像分发）
-│   ├── kk-agent/...
+│   ├── kk-agent/             # 纯 stdlib Agent 源码
 │   ├── entrypoint-wrapper.sh
-│   └── Dockerfile.example    # 演示如何叠加到 vscode-server 镜像
+│   └── Dockerfile.snippet    # 叠加到 vscode-server 镜像的片段
 ├── server/                   # 服务端
-│   ├── kk-server/...
-│   └── web/
+│   ├── kk-server/
+│   ├── web/
+│   ├── Dockerfile
+│   └── deploy.yaml
 ├── proto/messages.md         # 协议消息定义（双端共用契约）
-├── tests/                    # 双端单测 + 协议一致性测试
+├── tests/                    # 单测 + 端到端集成测试
 ├── scripts/build.sh          # CI：注入 token 构建镜像
-└── pyproject.toml            # workspace：agent 纯 stdlib / server FastAPI
+└── pyproject.toml
 ```
 
 分支策略：`main` 稳定，`dev` 集成，`feat/*` 功能分支；agent 与 server 版本号联动（协议 `proto_ver` 字段，不匹配时服务端拒绝并提示升级镜像）。

@@ -185,7 +185,7 @@ async function viewContainer(pod) {
     let d;
     try { d = await api("/api/containers/" + encodeURIComponent(pod)); }
     catch (e) { $("#detail").innerHTML = `<div class="card">${esc(e.message)}</div>`; clearPolls(); return; }
-    let series = viewContainer._series;
+    let series = [];
     try {
       const s = await api(`/api/containers/${encodeURIComponent(pod)}/metrics?hours=24`);
       series = s.series || [];

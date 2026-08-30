@@ -36,6 +36,14 @@ def _join(root, path):
 
 
 # ---- CPU ----
+def _isnum(x):
+    try:
+        float(x)
+        return True
+    except ValueError:
+        return False
+
+
 def read_cpu_total(fs_root):
     """/proc/stat 首行 → (total_ticks, idle_ticks)；不可读返回 None。"""
     text = _read_text(_join(fs_root, "/proc/stat"))
@@ -49,14 +57,6 @@ def read_cpu_total(fs_root):
             idle = (vals[3] if len(vals) > 3 else 0.0) + (vals[4] if len(vals) > 4 else 0.0)
             return sum(vals), idle
     return None
-
-
-def _isnum(x):
-    try:
-        float(x)
-        return True
-    except ValueError:
-        return False
 
 
 def cpu_percent(prev, cur):

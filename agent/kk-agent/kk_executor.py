@@ -1,9 +1,8 @@
-"""命令执行：exec 数组（不经 shell）、限时、输出封顶，工作线程内阻塞执行。
+"""命令执行：exec 数组（不经 shell）、限时、输出封顶，一次性工作线程内阻塞执行。
 
-空闲时零线程零开销；命令到达才起一个 daemon 线程，结果投递回主循环队列，
-由主循环统一分块发帧（保证 socket 只在主线程访问）。
+空闲时零线程零开销；任务到达才起 daemon 线程，结果 (kind, cmd_id, result)
+投递回主循环队列，由主循环统一分块发帧（保证 socket 只在主线程访问）。
 """
-import queue
 import subprocess
 import threading
 import time
@@ -51,27 +50,24 @@ def run_shell(argv, timeout=30, max_out=4 * 1024 * 1024):
 
 
 class Runner:
-    """把命令派发到一次性工作线程，结果 (kind, cmd_id, result) 投递到 outq。"""
+    """把任务派发到一次性工作线程，结果 (kind, cmd_id, result) 投递到 outq。"""
 
     def __init__(self, outq, max_out=4 * 1024 * 1024):
         self.q = outq  # type: queue.Queue
         self.max_out = max_out
 
     def submit(self, cmd):
+        """shell 命令帧（{"id","argv","timeout"}）→ 后台执行 run_shell。"""
         argv = list(cmd.get("argv") or [])
         try:
             timeout = min(max(int(cmd.get("timeout", 30)), 1), 600)
         except (TypeError, ValueError):
             timeout = 30
-
-        def work():
-            res = run_shell(argv, timeout, self.max_out)
-            self.q.put(("cmd_result", cmd.get("id"), res))
-
-        threading.Thread(target=work, daemon=True, name="kk-cmd").start()
+        self.submit_fn("cmd_result", cmd.get("id"),
+                       lambda: run_shell(argv, timeout, self.max_out))
 
     def submit_fn(self, kind, cmd_id, fn):
-        """通用后台任务（如插件即时采集），fn() 返回 result dict。"""
+        """通用后台任务（shell 命令、插件即时采集），fn() 返回 result dict。"""
 
         def work():
             try:
