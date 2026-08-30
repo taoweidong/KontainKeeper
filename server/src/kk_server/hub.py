@@ -56,17 +56,22 @@ class Hub:
             return
         pod = str((hello or {}).get("pod") or "")[:120]
         token = hello.get("token") if isinstance(hello, dict) else None
+        try:
+            proto_ver = int(hello.get("proto_ver") or 0) if isinstance(hello, dict) else 0
+            interval = int(hello.get("interval") or 60) if isinstance(hello, dict) else 60
+        except (TypeError, ValueError):
+            await ws.close(code=4400)
+            return
         valid = (isinstance(hello, dict) and hello.get("t") == "hello"
                  and token in self.tokens and not self.store.is_token_revoked(token))
         if not valid:
             self.store.add_audit("agent", "hello_rejected", {"pod": pod})
             await ws.close(code=4401)
             return
-        if int(hello.get("proto_ver") or 0) != self.proto_ver:
+        if proto_ver != self.proto_ver:
             await ws.close(code=4402)
             return
 
-        interval = int(hello.get("interval") or 60)
         self.store.upsert_container(pod, hello.get("image", ""), hello.get("agent_ver", ""), interval)
         # 版本落后则立即下发升级帧，连上即更新（无需人工介入）
         await self._maybe_push_upgrade(ws, hello.get("agent_ver", ""))
@@ -90,9 +95,20 @@ class Hub:
             if await self.try_dispatch(row):
                 self.store.mark_sent(row["id"])
 
+        # 心跳超时阈值：按 agent 上报的 interval 放大，避免误杀慢心跳连接
+        hb_timeout = max(interval * 3, 30)
         try:
             while True:
-                msg = await ws.receive_json()
+                try:
+                    msg = await asyncio.wait_for(ws.receive_json(), timeout=hb_timeout)
+                except asyncio.TimeoutError:
+                    # 超过数倍心跳周期无任何消息（含心跳/命令结果）→ 判定半开连接掉线
+                    log.warning("agent %s heartbeat timeout (%.0fs), closing", pod, hb_timeout)
+                    try:
+                        await ws.close(code=4404)
+                    except Exception:
+                        pass
+                    break
                 if not isinstance(msg, dict):
                     continue
                 t = msg.get("t")

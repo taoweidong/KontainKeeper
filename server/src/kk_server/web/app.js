@@ -163,8 +163,8 @@ async function viewContainers() {
         <td><span class="dot ${i.online ? "on" : "off"}"></span>${i.online ? "在线" : "离线"}</td>
         <td class="mono">${esc(i.pod)}</td>
         <td class="muted nowrap">${esc(i.image || "-")}<br><span class="mono" style="font-size:11px">agent ${esc(i.agent_ver || "?")}</span></td>
-        <td class="num">${m.cpu != null ? m.cpu + "%" : "-"}</td>
-        <td class="num">${m.mem_mb != null ? m.mem_mb + " / " + (m.mem_total_mb || "?") + " MB" : "-"}</td>
+        <td class="num">${m.cpu != null ? esc(m.cpu) + "%" : "-"}</td>
+        <td class="num">${m.mem_mb != null ? esc(m.mem_mb) + " / " + esc(m.mem_total_mb || "?") + " MB" : "-"}</td>
         <td>${i.disk_alert ? '<span class="badge-red">' + worst + "%</span> " : ""}${barHtml(worst)}<div class="muted" style="font-size:11px">${esc(worstPath)}</div></td>
         <td>${custom.length ? esc(custom.join(", ")) : '<span class="muted">-</span>'}</td>
         <td class="muted nowrap">${fmtTs(i.last_seen)}<br>${fmtAgo(i.age_sec)}</td>
@@ -209,23 +209,23 @@ async function viewContainer(pod) {
       </div>
       <div class="grid2">
         <div class="card"><h3>CPU%（近 24 小时，${series.length} 点）</h3><canvas id="cv-cpu"></canvas>
-          <div class="muted">当前 ${m.cpu != null ? m.cpu + "%" : "-"} · load ${esc(m.load || "-")}</div></div>
+          <div class="muted">当前 ${m.cpu != null ? esc(m.cpu) + "%" : "-"} · load ${esc(m.load || "-")}</div></div>
         <div class="card"><h3>内存 MB（近 24 小时）</h3><canvas id="cv-mem"></canvas>
-          <div class="muted">当前 ${m.mem_mb != null ? m.mem_mb + " / " + m.mem_total_mb + " MB (" + m.mem_pct + "%)" : "-"}</div></div>
+          <div class="muted">当前 ${m.mem_mb != null ? esc(m.mem_mb) + " / " + esc(m.mem_total_mb) + " MB (" + esc(m.mem_pct) + "%)" : "-"}</div></div>
       </div>
       <div class="grid3">
         <div class="card"><h3>磁盘</h3>${disks.map(([p, dd]) => `
           <div class="row" style="margin-bottom:8px"><span class="mono" style="min-width:110px">${esc(p)}</span>
-            ${barHtml(dd.pct)}<span class="muted">${dd.used_mb}/${dd.total_mb} MB · ${dd.pct}%</span></div>`).join("") || '<div class="empty">无数据</div>'}</div>
+            ${barHtml(dd.pct)}<span class="muted">${esc(dd.used_mb)}/${esc(dd.total_mb)} MB · ${esc(dd.pct)}%</span></div>`).join("") || '<div class="empty">无数据</div>'}</div>
         <div class="card"><h3>用户（vscode-server 标记）</h3><table>
           <thead><tr><th>用户</th><th class="num">UID</th><th class="num">进程</th><th>IDE</th></tr></thead>
-          <tbody>${users.map(u => `<tr><td>${esc(u.name)}</td><td class="num">${u.uid}</td>
+          <tbody>${users.map(u => `<tr><td>${esc(u.name)}</td><td class="num">${esc(u.uid)}</td>
             <td class="num">${u.procs}</td><td>${u.vscode ? "✅" : "-"}</td></tr>`).join("") || '<tr><td colspan="4" class="empty">无数据</td></tr>'}</tbody>
         </table></div>
         <div class="card"><h3>Top 进程</h3><table>
           <thead><tr><th>进程</th><th class="num">CPU%</th><th class="num">内存 MB</th></tr></thead>
           <tbody>${procs.map(p2 => `<tr><td class="mono">${esc(p2.name)} <span class="muted">(${p2.pid})</span></td>
-            <td class="num">${p2.cpu}</td><td class="num">${p2.mem_mb}</td></tr>`).join("") || '<tr><td colspan="3" class="empty">无数据</td></tr>'}</tbody>
+            <td class="num">${esc(p2.cpu)}</td><td class="num">${esc(p2.mem_mb)}</td></tr>`).join("") || '<tr><td colspan="3" class="empty">无数据</td></tr>'}</tbody>
         </table></div>
       </div>
       <div class="grid2">

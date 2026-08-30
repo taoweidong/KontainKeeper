@@ -94,6 +94,7 @@ class Store:
         self.db = sqlite3.connect(path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.lock = threading.Lock()
+        self._outbuf = {}  # cid -> 累积输出（避免逐帧重读整段 out 造成 O(n^2)）
         with self.lock:
             self.db.executescript(SCHEMA)
             self.db.execute("PRAGMA journal_mode=WAL")
@@ -187,23 +188,33 @@ class Store:
 
     def append_result(self, msg):
         cid = msg.get("id")
-        row = self.get_command(cid) if cid else None
-        if row is None:
+        if cid is None:
             return None
         try:
             data = base64.b64decode(msg.get("data_b64") or "", validate=False)
         except Exception:
             data = b""
         text = data.decode("utf-8", "replace")
-        out = (row["out"] + text)[:MAX_OUT_CHARS]
+        # 内存累积输出，避免逐帧重读整段 out 造成 O(n^2)
+        buf = self._outbuf.get(cid)
+        if buf is None:
+            row = self.get_command(cid)
+            buf = row["out"] if row else ""
+        buf = (buf + text)[:MAX_OUT_CHARS]
+        # 防御性：极端情况下丢弃最旧未完成任务的部分输出缓存，避免内存无限增长
+        # （DB 仍保留已落库的部分输出，重新累积不会丢数据）
+        if len(self._outbuf) > 1000:
+            self._outbuf.pop(next(iter(self._outbuf)), None)
+        self._outbuf[cid] = buf
         if msg.get("done"):
+            self._outbuf.pop(cid, None)
             self._exec(
                 "UPDATE commands SET status='done', out=?, rc=?, timed_out=?, elapsed_ms=?,"
                 " finished_at=? WHERE id=?",
-                (out, msg.get("rc"), 1 if msg.get("timed_out") else 0,
+                (buf, msg.get("rc"), 1 if msg.get("timed_out") else 0,
                  msg.get("elapsed_ms"), int(time.time()), cid))
         else:
-            self._exec("UPDATE commands SET status='running', out=? WHERE id=?", (out, cid))
+            self._exec("UPDATE commands SET status='running', out=? WHERE id=?", (buf, cid))
         return cid
 
     # ---- 审计 ----
@@ -216,13 +227,25 @@ class Store:
 
     # ---- 管理员与会话 ----
     def ensure_admin(self, username, password, force=False):
-        row = self._query_one("SELECT username FROM admins WHERE username=?", (username,))
-        if row and not force:
-            return False
-        salt = secrets.token_hex(16)
-        self._exec("INSERT OR REPLACE INTO admins(username,salt,pw_hash,created) VALUES(?,?,?,?)",
-                   (username, salt, _pwdf(salt, password), int(time.time())))
-        return True
+        """确保管理员账号存在，并返回是否发生了创建/更新。
+
+        - 不存在 → 创建，返回 True
+        - 已存在且 force → 强制更新口令，返回 True
+        - 已存在且 env 口令与当前存储不一致 → 应用新口令（支持 KK_ADMIN_PASS 轮换），返回 True
+        - 已存在且口令一致 → 不改动，返回 False
+        """
+        row = self._query_one("SELECT username, salt, pw_hash FROM admins WHERE username=?", (username,))
+        if row is None:
+            salt = secrets.token_hex(16)
+            self._exec("INSERT INTO admins(username,salt,pw_hash,created) VALUES(?,?,?,?)",
+                       (username, salt, _pwdf(salt, password), int(time.time())))
+            return True
+        if force or not secrets.compare_digest(row["pw_hash"], _pwdf(row["salt"], password)):
+            salt = secrets.token_hex(16)
+            self._exec("UPDATE admins SET salt=?, pw_hash=? WHERE username=?",
+                       (salt, _pwdf(salt, password), username))
+            return True
+        return False
 
     def verify_admin(self, username, password):
         row = self._query_one("SELECT * FROM admins WHERE username=?", (username,))

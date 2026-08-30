@@ -3,12 +3,15 @@
 # 叠加该二进制（镜像期介入，上线即连，运行时不再依赖容器内 Python）。
 #
 # 用法:
-#   KK_SERVER=wss://kk-server.ops:8443/ws/agent KK_TOKEN=xxx \
+#   KK_SERVER=wss://kk-server.ops:8443/ws/agent \
 #     BASE_IMAGE=myregistry/vscode-server:1.2 ./scripts/build.sh myregistry/vscode-server-managed:1.2
+#
+# 安全说明：KK_TOKEN 不得写入镜像层（docker inspect 即可提取）。请在运行时通过
+#   `docker run -e KK_TOKEN=xxx` 或 k8s Secret 注入；本脚本只把 KK_SERVER 地址等
+#   非敏感配置烧入镜像。
 set -euo pipefail
 
 : "${KK_SERVER:?need KK_SERVER}"
-: "${KK_TOKEN:?need KK_TOKEN}"
 BASE_IMAGE="${BASE_IMAGE:?need BASE_IMAGE, e.g. myregistry/vscode-server:1.2}"
 OUT_IMAGE="${1:?need output image tag}"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -38,7 +41,6 @@ COPY plugins /opt/kk-agent/plugins
 COPY kk-entrypoint /usr/local/bin/kk-entrypoint
 RUN chmod +x /usr/local/bin/kk-entrypoint /opt/kk-agent/kk-agent && mkdir -p /var/log
 ENV KK_SERVER="$KK_SERVER" \\
-    KK_TOKEN="$KK_TOKEN" \\
     KK_AGENT_BIN=/opt/kk-agent/kk-agent \\
     KK_PLUGIN_DIR=/opt/kk-agent/plugins \\
     KK_LOG=/var/log/kk-agent.log \\
@@ -50,4 +52,4 @@ EOF
 echo ">> building $OUT_IMAGE (base=$BASE_IMAGE, orig_entrypoint=$ORIG_ENTRYPOINT)"
 docker build -t "$OUT_IMAGE" "$WORK"
 echo ">> done: $OUT_IMAGE"
-echo ">> 注意：镜像内已嵌入 token，请控制镜像仓库访问权限；轮换 token 需重新构建。"
+echo ">> 运行镜像时务必通过 -e KK_TOKEN=xxx 或 k8s Secret 注入令牌（切勿写死在镜像中）。"

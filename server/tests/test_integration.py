@@ -181,3 +181,23 @@ def test_full_chain(stack):
     # 未鉴权访问被拒
     status, _ = http(port, "GET", "/api/containers")
     assert status == 401
+
+
+def test_blacklist_blocks_bypass_variants(stack):
+    """黑名单必须能拦住常见绕过写法（双空格、参数顺序、包装命令、高危程序）。"""
+    port = stack["port"]
+    status, body = http(port, "POST", "/api/login", {"username": "admin", "password": "it-pass-123"})
+    tok = body["token"]
+    for cmdline in [
+        "rm  -rf /",          # 双空格
+        "rm -fr /",           # 参数顺序调换
+        "busybox rm -rf /",   # 包装/别名
+        "chmod -R 777 /",     # 递归改权限
+        "dd if=/dev/zero of=/x",  # 直接破坏磁盘
+    ]:
+        status, _ = http(port, "POST", "/api/commands", token=tok,
+                         body={"pods": ["it-pod-1"], "cmdline": cmdline})
+        assert status == 400, "expected block for %r but got %s" % (cmdline, status)
+    # 被拦截的命令不应进入命令表（确认未真正下发到 agent）
+    status, cmds = http(port, "GET", "/api/commands?limit=100", token=tok)
+    assert cmds["items"] == []

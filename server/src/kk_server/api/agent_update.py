@@ -36,9 +36,16 @@ async def upload_agent(request: Request, file: UploadFile = File(...), version: 
     user = current_user(request)
     if not version or not version[0].isdigit():
         raise HTTPException(status_code=400, detail="version 非法")
-    data = await file.read()
-    if len(data) > MAX_BIN_BYTES:
-        raise HTTPException(status_code=413, detail="二进制过大")
+
+    # 边读边累计，超限即断：避免先 `await file.read()` 把整包（最大 64MB）一次性读入内存
+    data = bytearray()
+    while True:
+        chunk = await file.read(_CHUNK)
+        if not chunk:
+            break
+        data.extend(chunk)
+        if len(data) > MAX_BIN_BYTES:
+            raise HTTPException(status_code=413, detail="二进制过大")
     if len(data) < 1:
         raise HTTPException(status_code=400, detail="二进制为空")
 

@@ -49,12 +49,51 @@ def run_shell(argv, timeout=30, max_out=4 * 1024 * 1024):
     }
 
 
-class Runner:
-    """把任务派发到一次性工作线程，结果 (kind, cmd_id, result) 投递到 outq。"""
+class _Pool:
+    """固定数量 daemon 工作线程的线程池。
 
-    def __init__(self, outq, max_out=4 * 1024 * 1024):
+    并发数有界（默认 8），防止恶意/故障服务端下发大量命令时无界创建线程导致 DoS；
+    任务队列吸收瞬时峰值，空闲时线程阻塞在队列上、零 CPU 开销。线程为 daemon，
+    进程退出时不会挂起。
+    """
+
+    def __init__(self, max_workers=8):
+        import queue as _q
+        self._q = _q.Queue()
+        self._workers = []
+        for _ in range(max(1, max_workers)):
+            t = threading.Thread(target=self._loop, daemon=True, name="kk-task")
+            t.start()
+            self._workers.append(t)
+
+    def _loop(self):
+        while True:
+            fn = self._q.get()
+            if fn is None:
+                self._q.put(None)  # 广播退出信号，让其余 worker 也能结束
+                break
+            try:
+                fn()
+            except Exception:
+                pass
+
+    def submit(self, fn):
+        self._q.put(fn)
+
+
+class Runner:
+    """把任务派发到后台线程池，结果 (kind, cmd_id, result) 投递到 outq。"""
+
+    def __init__(self, outq, max_out=4 * 1024 * 1024, max_workers=8):
         self.q = outq  # type: queue.Queue
         self.max_out = max_out
+        self._pool = None
+        self._max_workers = max_workers
+
+    def _get_pool(self):
+        if self._pool is None:
+            self._pool = _Pool(self._max_workers)
+        return self._pool
 
     def submit(self, cmd):
         """shell 命令帧（{"id","argv","timeout"}）→ 后台执行 run_shell。"""
@@ -77,4 +116,4 @@ class Runner:
                        "timed_out": False, "elapsed_ms": 0}
             self.q.put((kind, cmd_id, res))
 
-        threading.Thread(target=work, daemon=True, name="kk-task").start()
+        self._get_pool().submit(work)

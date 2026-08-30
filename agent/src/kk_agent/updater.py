@@ -26,6 +26,9 @@ UPDATE_PATH = "/api/system/agent"
 MAX_BIN_BYTES = 64 * 1024 * 1024  # 单文件上限 64MB，防 OOM
 _CHUNK = 256 * 1024
 
+# 串行化自更新（轮询检查与 push 升级帧可能并发触发），避免两个下载/替换竞争同一二进制
+_update_lock = threading.Lock()
+
 
 class _Null:
     """log=None 时的无操作占位，避免调用方判空。"""
@@ -141,19 +144,29 @@ def download_binary(url, token, log, insecure=False, max_bytes=MAX_BIN_BYTES):
 
 
 def verify_and_replace(data, expected_sha256, target):
-    """写临时文件→校验 sha256→原子替换 target；成功返回 True。"""
+    """写临时文件→校验 sha256→原子替换 target；成功返回 True。
+
+    失败（sha 不匹配/写入异常）时清理临时文件，避免残留 .kk-agent.update.* 占用磁盘。
+    """
     digest = hashlib.sha256(data).hexdigest()
     if expected_sha256 and digest.lower() != expected_sha256.lower():
         raise RuntimeError("sha256 mismatch: got %s expect %s" % (digest, expected_sha256))
     d = os.path.dirname(os.path.abspath(target))
     tmp = os.path.join(d, ".kk-agent.update.%d" % os.getpid())
-    with open(tmp, "wb") as f:
-        f.write(data)
-        f.flush()
-        os.fsync(f.fileno())
-    if os.name == "posix":
-        os.chmod(tmp, 0o755)
-    os.replace(tmp, target)  # 同文件系统原子替换
+    try:
+        with open(tmp, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        if os.name == "posix":
+            os.chmod(tmp, 0o755)
+        os.replace(tmp, target)  # 同文件系统原子替换
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
     return True
 
 
@@ -175,14 +188,15 @@ def apply_manifest(cfg, log, manifest):
     if not url:
         url = "%s%s/download" % (base, UPDATE_PATH)
     log.info("agent update available: %s -> %s, downloading", kk_config.AGENT_VER, ver)
-    data = download_binary(url, cfg.get("token", ""), log, cfg.get("update_insecure"))
-    verify_and_replace(data, manifest.get("sha256", ""), target)
-    log.info("agent binary replaced (%d bytes); restarting", len(data))
-    if _is_binary_target(target):
-        os.execv(target, [target] + sys.argv[1:])  # 替换当前进程，由新版本接管
-    else:
-        log.warning("running from source interpreter; update downloaded but not auto-applied, "
-                    "restart the agent manually to pick up the new binary")
+    with _update_lock:  # 串行化下载+替换，避免与轮询更新并发竞争同一二进制
+        data = download_binary(url, cfg.get("token", ""), log, cfg.get("update_insecure"))
+        verify_and_replace(data, manifest.get("sha256", ""), target)
+        log.info("agent binary replaced (%d bytes); restarting", len(data))
+        if _is_binary_target(target):
+            os.execv(target, [target] + sys.argv[1:])  # 替换当前进程，由新版本接管
+        else:
+            log.warning("running from source interpreter; update downloaded but not auto-applied, "
+                        "restart the agent manually to pick up the new binary")
     return True
 
 

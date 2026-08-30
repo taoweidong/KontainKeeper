@@ -9,3 +9,7 @@ build/
 *.egg-info/
 .venv/
 kk-agent.log*
+# Agent 自更新：上传/缓存的二进制与临时文件（默认 KK_AGENT_BIN_DIR=agent_assets）
+agent_assets/
+*.prev
+.kk-agent.update.*

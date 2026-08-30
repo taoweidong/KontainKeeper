@@ -10,6 +10,7 @@ import json
 import queue
 import random
 import select
+import signal
 import threading
 import time
 
@@ -114,6 +115,18 @@ def run(stop=None, cfg=None):
     backoff = 1.0
     next_hb = 0.0
     next_update = 0.0  # 启动后尽快检查一次服务端版本
+
+    # 优雅退出：仅主线程可注册信号处理器（测试等在子线程中运行时不注册）
+    if threading.main_thread() is threading.current_thread():
+        def _on_signal(signum, _frame):
+            log.info("received signal %s, stopping", signum)
+            stop.set()
+
+        try:
+            signal.signal(signal.SIGTERM, _on_signal)
+            signal.signal(signal.SIGINT, _on_signal)
+        except (ValueError, AttributeError, OSError):
+            pass
 
     while not stop.is_set():
         if not cfg["server"] or not cfg["token"]:

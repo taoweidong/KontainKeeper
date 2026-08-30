@@ -26,9 +26,13 @@ def create_app(env=None):
 
     store = Store(db_path)
     if store.ensure_admin(admin_user, admin_pass):
-        log.info("admin account %r created", admin_user)
+        log.info("admin account %r ensured (created or password refreshed)", admin_user)
     if admin_pass == "admin":
-        log.warning("using default admin password, set KK_ADMIN_PASS in production!")
+        if os.environ.get("KK_ENV", "").lower() == "production":
+            raise RuntimeError(
+                "KK_ENV=production 但仍在用默认口令 admin，存在严重安全风险；"
+                "请先通过 KK_ADMIN_PASS 设置强口令再启动")
+        log.warning("using default admin password 'admin', set KK_ADMIN_PASS before production!")
 
     blacklist = [p.strip().lower() for p in env.get("KK_CMD_BLACKLIST", DEFAULT_BLACKLIST).split(",") if p.strip()]
     enforced_raw = env.get("KK_ENFORCED_INTERVAL", "").strip()

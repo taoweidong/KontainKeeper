@@ -52,9 +52,13 @@ def test_command_lifecycle(store):
 
 
 def test_admin_sessions(store):
-    assert store.ensure_admin("admin", "pw1") is True
-    assert store.ensure_admin("admin", "pw2") is False  # 已存在不覆盖
+    assert store.ensure_admin("admin", "pw1") is True       # 首次创建
+    assert store.ensure_admin("admin", "pw1") is False      # 口令一致，不改动
     assert store.verify_admin("admin", "pw1") is True
+    # 密码轮换：KK_ADMIN_PASS 变化应被应用（覆盖旧口令）
+    assert store.ensure_admin("admin", "pw2") is True
+    assert store.verify_admin("admin", "pw2") is True
+    assert store.verify_admin("admin", "pw1") is False     # 旧口令失效
     assert store.verify_admin("admin", "wrong") is False
     assert store.verify_admin("nobody", "pw") is False
 
