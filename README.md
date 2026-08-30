@@ -13,27 +13,31 @@ K8S 场景下 vscode-server 容器 IDE 的**直连管理与数据提取平台**�
 ## 仓库结构
 
 ```
-agent/      kk-agent 客户端（独立 Python 项目，纯 stdlib，编译为二进制随目标镜像分发）
-server/     服务端（FastAPI + 内置 Web 管理界面）
-proto/      双端通信协议契约
-tests/      单元测试 + 端到端集成测试（39 项）
-scripts/    构建与部署脚本
+pyproject.toml           UV 工作区虚拟根（package=false，members=[server, agent]）；.python-version 锁定 3.12
+uv.lock                  UV 锁定的依赖版本（uv sync 生成，可复现安装）
+agent/                   kk-agent 客户端（独立 UV 项目，纯 stdlib，可编译单文件二进制）
+  src/kk_agent/          纯标准库源码；plugins/ 含示例采集插件
+  build/                 PyInstaller 编译单文件二进制的脚本
+server/                  服务端（独立 UV 项目，FastAPI + 内置 Web 管理界面）
+  src/kk_server/         服务端源码；web/ 静态界面随包一起打包
+  Dockerfile             生产镜像（python:3.12-slim，按 pyproject 装依赖）
+proto/                   双端通信协议契约
+tests/                   单元测试 + 端到端集成测试（52 项）
+scripts/                 构建与部署脚本
 ```
 
 ## 快速开始（本机体验全链路）
 
 ```bash
-pip install fastapi "uvicorn[standard]"
+uv sync --all-packages          # 安装服务端依赖 + dev 组（agent 无第三方依赖）
 
 # 1. 启动服务端（默认管理员 admin/admin，生产环境务必设 KK_ADMIN_PASS）
-cd server
-KK_PORT=8443 KK_AGENT_TOKENS=dev-token python -m kk_server
+uv run kk-server
 # 浏览器打开 http://127.0.0.1:8443 → 登录管理界面
 
 # 2. 启动一个 Agent（模拟容器内，任意目录）
-cd agent
 KK_SERVER=ws://127.0.0.1:8443/ws/agent KK_TOKEN=dev-token \
-KK_POD_NAME=demo-pod KK_INTERVAL=5 python -m kk_agent
+KK_POD_NAME=demo-pod KK_INTERVAL=5 uv run kk-agent
 
 # 3. 管理界面：容器总览出现 demo-pod → 详情页/控制台下发命令 → 结果回传
 ```
@@ -77,7 +81,7 @@ KK_TOKEN=<与 KK_AGENT_TOKENS 一致> \
   ./scripts/build.sh myregistry/vscode-server-managed:1.2
 ```
 
-前提：目标镜像**无需内置 Python**——Agent 已编译为单文件二进制（运行时零依赖）随镜像分发；`agent/` 下仍保留纯标准库源码，用于开发、重建二进制与本地调试。
+前提：目标镜像**无需内置 Python**——Agent 已编译为单文件二进制（运行时零依赖）随镜像分发；`agent/src/kk_agent/` 下仍保留纯标准库源码，用于开发、重建二进制与本地调试。
 
 产物镜像用 entrypoint-wrapper 以「独立服务」方式常驻监管 Agent 二进制（崩溃自动拉起、自更新后 `execv` 复用 PID 不误重启），并可选地并行拉起原 vscode-server 入口（`KK_ORIG_ENTRYPOINT`）——两者生命周期解耦，用户看到的 IDE 启动行为不变。
 
@@ -135,8 +139,8 @@ def collect():
 ## 测试
 
 ```bash
-pip install pytest fastapi "uvicorn[standard]"
-python -m pytest tests -v
+uv sync --all-packages
+uv run pytest tests -v
 ```
 
 包含：WebSocket 帧编解码、/proc 采集（伪造 proc 树，跨平台可跑）、命令执行、插件热加载、存储层、Hub 生命周期，以及**真实服务端 + 真实 Agent 主循环**的端到端集成测试。
