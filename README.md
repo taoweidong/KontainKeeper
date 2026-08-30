@@ -16,10 +16,13 @@ K8S 场景下 vscode-server 容器 IDE 的**直连管理与数据提取平台**�
 pyproject.toml           UV 工作区虚拟根（package=false，members=[server, agent]）；.python-version 锁定 3.12
 uv.lock                  UV 锁定的依赖版本（uv sync 生成，可复现安装）
 agent/                   kk-agent 客户端（独立 UV 项目，纯 stdlib，可编译单文件二进制）
+  README.md              Agent 架构与使用方式（环境变量/运行形态/部署）
   src/kk_agent/          纯标准库源码；plugins/ 含示例采集插件
   tests/                 Agent 单元测试（采集/执行/插件/ws/updater，共 36 项）
   build/                 PyInstaller 编译单文件二进制的脚本
+  deploy/                容器叠加片段 + 独立监管入口脚本（entrypoint-wrapper）
 server/                  服务端（独立 UV 项目，FastAPI + 内置 Web 管理界面）
+  README.md              Server 架构与使用方式（API 总览/环境变量/Docker 部署）
   src/kk_server/         服务端源码；web/ 静态界面随包一起打包
   tests/                 Server 单元测试 + 端到端集成测试（共 16 项）
   Dockerfile             生产镜像（python:3.12-slim，按 pyproject 装依赖）
