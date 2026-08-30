@@ -1,0 +1,13 @@
+[project]
+name = "kontainkeeper"
+version = "0.1.0"
+description = "K8S 容器（vscode-server IDE）直连管理：镜像内置 Agent + 管理服务端"
+readme = "README.md"
+requires-python = ">=3.9"
+
+[project.optional-dependencies]
+server = ["fastapi>=0.110,<1.0", "uvicorn[standard]>=0.29"]
+dev = ["pytest>=8.0", "fastapi>=0.110,<1.0", "uvicorn[standard]>=0.29"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

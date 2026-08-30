@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.db
+*.db-wal
+*.db-shm
+dist/
+build/
+*.egg-info/
+.venv/
+kk-agent.log*
