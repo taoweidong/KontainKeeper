@@ -1,18 +1,26 @@
-"""Agent 自更新：纯标准库实现，无需第三方依赖。
+"""Agent 自更新：下载 → 校验 → 原子替换 → 自重启。
 
-流程（由主循环或服务端 upgrade 帧触发）：
-1. 拉取服务端最新版本清单  GET {base}/api/system/agent/latest?ver=<当前版本>
-2. 若服务端版本更新，下载二进制 GET {base}/api/system/agent/download
-3. 校验 sha256（服务端清单内附带），防止下载到损坏/被篡改的程序
-4. 原子替换当前二进制文件（os.replace），再 os.execv 自重启
+【P0 修复记录】
+旧实现的顺序是「先 verify_and_replace 落盘，再 _is_binary_target 判断形态」，
+而 agent_bin 缺省值是 sys.executable。于是在源码形态下运行（含 README 推荐的
+`uv run kk-agent`）时，下载的二进制会**直接覆盖 Python 解释器**，造成不可逆破坏。
+当时所有测试都显式传了 agent_bin，该路径零覆盖。
 
-安全边界：
-- 仅使用服务端下发的 sha256 做完整性校验（保持二进制零依赖）
-- 默认走 https 证书校验；仅 KK_UPDATE_INSECURE=1 时关闭（不推荐）
-- 二进制仅在「编译后的独立二进制」形态下自替换；源码运行（python -m kk_agent）
-  只下载校验、不 execv，避免误改解释器
+新实现的铁律：**在确认「替换目标是独立二进制」之前，绝不下载、绝不落盘。**
+判定顺序为：
+  1. 版本是否更新（不更新直接返回）
+  2. 替换目标是否已确定（未配置且非 frozen 形态 → 拒绝并提示）
+  3. 目标是不是独立二进制（名字含 python/.py/.pyc → 拒绝）
+  4. 以上全部通过，才下载 → 校验 → 原子替换 → execv
+
+安全边界（保持纯标准库）：
+- sha256 防传输损坏/截断
+- 可选 HMAC-SHA256 签名（KK_UPDATE_HMAC_KEY）防伪造更新，无需引入第三方依赖；
+  配置 KK_UPDATE_REQUIRE_SIG=1 时，缺少签名的清单一律拒绝
 """
 import hashlib
+import hmac
+import json
 import os
 import sys
 import threading
@@ -26,12 +34,13 @@ UPDATE_PATH = "/api/system/agent"
 MAX_BIN_BYTES = 64 * 1024 * 1024  # 单文件上限 64MB，防 OOM
 _CHUNK = 256 * 1024
 
-# 串行化自更新（轮询检查与 push 升级帧可能并发触发），避免两个下载/替换竞争同一二进制
+# 串行化自更新（轮询检查与服务端推送可能并发触发），避免两次下载竞争同一二进制
 _update_lock = threading.Lock()
 
 
 class _Null:
     """log=None 时的无操作占位，避免调用方判空。"""
+
     def __getattr__(self, _name):
         return lambda *a, **k: None
 
@@ -63,28 +72,18 @@ def version_lt(a, b):
     return pa < pb
 
 
-def _http_base(server, override=""):
-    """由 WebSocket 地址推导管理 API 的 http(s) 基址。"""
-    if override:
-        return override.rstrip("/")
-    s = server or ""
-    if s.startswith("wss://"):
-        s = "https://" + s[6:]
-    elif s.startswith("ws://"):
-        s = "http://" + s[5:]
-    p = urlparse(s)
-    base = (p.scheme or "http") + "://" + (p.netloc or p.path)
-    return base.rstrip("/")
+def _api_base(cfg):
+    """管理 API 基址只接受显式配置（KK_UPDATE_URL）。
+
+    旧实现会从 WebSocket 地址推导，改用 MQTT 后 broker 地址与 HTTP API 地址不再同源，
+    推导只会产生错误的 URL，因此这里要求显式配置；未配置则跳过本次检查。
+    """
+    return (cfg.get("update_url") or "").strip().rstrip("/")
 
 
 def _build_opener(insecure):
-    """返回带 .open() 的 OpenerDirector。
-
-    非 insecure：默认 opener（走系统 CA 校验证书）。
-    insecure：关闭主机名/证书校验（仅 KK_UPDATE_INSECURE=1 时使用，不推荐）。
-    """
     if not insecure:
-        return urllib.request.build_opener()  # 默认 opener，支持 .open()
+        return urllib.request.build_opener()
     import ssl
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
@@ -93,46 +92,78 @@ def _build_opener(insecure):
 
 
 def _http_get(url, token, timeout=15, as_bytes=False, insecure=False):
-    """带 Bearer 鉴权的 GET；返回 bytes 或 str。4xx/5xx 抛 urllib.error.HTTPError。"""
     req = urllib.request.Request(url, headers={"Authorization": "Bearer %s" % token})
-    opener = _build_opener(insecure)
-    with opener.open(req, timeout=timeout) as resp:
+    with _build_opener(insecure).open(req, timeout=timeout) as resp:
         data = resp.read()
     return data if as_bytes else data.decode("utf-8", "replace")
 
 
 def fetch_latest(cfg, log):
-    """拉取最新版本清单；无更新/不可达返回 None。"""
+    """拉取最新版本清单；未配置 API 基址 / 无更新 / 不可达时返回 None。"""
     log = _log(log)
-    base = _http_base(cfg.get("server", ""), cfg.get("update_url", ""))
+    base = _api_base(cfg)
+    if not base:
+        return None
     url = "%s%s/latest?ver=%s" % (base, UPDATE_PATH, kk_config.AGENT_VER)
     try:
-        raw = _http_get(url, cfg.get("token", ""), timeout=15, insecure=cfg.get("update_insecure"))
-        import json
-        info = json.loads(raw)
+        info = json.loads(_http_get(url, cfg.get("token", ""), timeout=15,
+                                    insecure=cfg.get("update_insecure")))
     except Exception as e:
         log.debug("fetch latest version failed: %s", e)
         return None
-    if not isinstance(info, dict) or not info.get("available"):
-        return None
-    return info
+    return info if isinstance(info, dict) and info.get("available") else None
+
+
+def _default_target():
+    """仅打包后的独立二进制（PyInstaller）可自替换；源码运行一律不自替换。
+
+    sys.frozen 是 PyInstaller/Nuitka 等打包器设置的标记，此时 sys.executable
+    就是 Agent 自身的二进制路径，替换它是安全的。
+    """
+    if getattr(sys, "frozen", False):
+        return sys.executable
+    return ""
 
 
 def _is_binary_target(target):
-    name = os.path.basename(target).lower()
-    if name.endswith(".py") or name.endswith(".pyc"):
+    """替换目标必须是独立二进制，绝不能是解释器或源码文件。"""
+    name = os.path.basename(str(target)).lower()
+    if name.endswith((".py", ".pyc", ".pyo", ".pyw")):
         return False
     if "python" in name:
         return False
     return True
 
 
+def _verify_signature(data, manifest, cfg, log):
+    """校验 sha256（防损坏）+ 可选 HMAC 签名（防伪造）。返回是否放行。"""
+    expected = str(manifest.get("sha256") or "")
+    if not expected:
+        log.warning("manifest missing sha256, refuse to replace")
+        return False
+    digest = hashlib.sha256(data).hexdigest()
+    if digest.lower() != expected.lower():
+        log.warning("sha256 mismatch: got %s expect %s", digest, expected)
+        return False
+
+    key = (cfg.get("update_hmac_key") or "").encode()
+    sig = str(manifest.get("sig") or "")
+    if key:
+        mac = hmac.new(key, data, hashlib.sha256).hexdigest()
+        if not sig or not hmac.compare_digest(mac, sig.lower()):
+            log.warning("HMAC signature mismatch, refuse to replace")
+            return False
+    elif cfg.get("update_require_sig"):
+        log.warning("KK_UPDATE_REQUIRE_SIG=1 but manifest carries no signature, refuse")
+        return False
+    return True
+
+
 def download_binary(url, token, log, insecure=False, max_bytes=MAX_BIN_BYTES):
-    """分块下载二进制，带大小上限保护；返回 bytes。"""
+    """分块下载二进制，带大小上限保护。"""
     req = urllib.request.Request(url, headers={"Authorization": "Bearer %s" % token})
-    opener = _build_opener(insecure)
     buf = bytearray()
-    with opener.open(req, timeout=60) as resp:
+    with _build_opener(insecure).open(req, timeout=60) as resp:
         while True:
             chunk = resp.read(_CHUNK)
             if not chunk:
@@ -143,18 +174,8 @@ def download_binary(url, token, log, insecure=False, max_bytes=MAX_BIN_BYTES):
     return bytes(buf)
 
 
-def verify_and_replace(data, expected_sha256, target):
-    """写临时文件→校验 sha256→原子替换 target；成功返回 True。
-
-    清单缺失 sha256 或校验不匹配均拒绝替换（协议承诺：替换前强制校验，
-    防止清单被篡改后写入任意二进制）。失败时清理临时文件，避免残留
-    .kk-agent.update.* 占用磁盘。
-    """
-    digest = hashlib.sha256(data).hexdigest()
-    if not expected_sha256:
-        raise RuntimeError("manifest missing sha256, refuse to replace")
-    if digest.lower() != str(expected_sha256).lower():
-        raise RuntimeError("sha256 mismatch: got %s expect %s" % (digest, expected_sha256))
+def verify_and_replace(data, target):
+    """写临时文件 → fsync → 原子替换 target。失败清理临时文件。"""
     d = os.path.dirname(os.path.abspath(target))
     tmp = os.path.join(d, ".kk-agent.update.%d" % os.getpid())
     try:
@@ -164,7 +185,7 @@ def verify_and_replace(data, expected_sha256, target):
             os.fsync(f.fileno())
         if os.name == "posix":
             os.chmod(tmp, 0o755)
-        os.replace(tmp, target)  # 同文件系统原子替换
+        os.replace(tmp, target)  # 同文件系统内原子替换
     except BaseException:
         try:
             os.remove(tmp)
@@ -177,35 +198,47 @@ def verify_and_replace(data, expected_sha256, target):
 def apply_manifest(cfg, log, manifest):
     """按服务端清单下载、校验、替换并自重启。
 
-    manifest: {version, sha256, size, url}；url 可为相对路径（基于管理 API 基址）。
-    非二进制形态（源码运行）只下载校验，不 execv。
+    铁律：形态校验全部通过后才允许下载与落盘。任一步不满足即返回 False，
+    且不产生任何副作用。
     """
     log = _log(log)
     ver = manifest.get("version")
     if not ver or not version_lt(kk_config.AGENT_VER, ver):
         return False
-    target = cfg.get("agent_bin") or sys.executable
-    base = _http_base(cfg.get("server", ""), cfg.get("update_url", ""))
-    url = manifest.get("url", "")
-    if url and not url.startswith("http"):
-        url = "%s%s/download" % (base, UPDATE_PATH) if url == "/download" else (base + url)
-    if not url:
-        url = "%s%s/download" % (base, UPDATE_PATH)
+
+    target = cfg.get("agent_bin") or _default_target()
+    if not target:
+        log.info("agent %s available, but no self-replace target configured "
+                 "(source-mode run); set KK_AGENT_BIN to enable self-update", ver)
+        return False
+    if not _is_binary_target(target):
+        log.warning("refuse to self-update: target %r is not a standalone binary", target)
+        return False
+    if not os.path.exists(target):
+        log.warning("refuse to self-update: target %r does not exist", target)
+        return False
+
+    base = _api_base(cfg)
+    if not base:
+        log.info("KK_UPDATE_URL not configured, skip update")
+        return False
+    url = manifest.get("url") or "%s/download" % UPDATE_PATH
+    if not url.startswith("http"):
+        url = base + (url if url.startswith("/") else "/" + url)
+
     log.info("agent update available: %s -> %s, downloading", kk_config.AGENT_VER, ver)
-    with _update_lock:  # 串行化下载+替换，避免与轮询更新并发竞争同一二进制
+    with _update_lock:
         data = download_binary(url, cfg.get("token", ""), log, cfg.get("update_insecure"))
-        verify_and_replace(data, manifest.get("sha256", ""), target)
+        if not _verify_signature(data, manifest, cfg, log):
+            return False
+        verify_and_replace(data, target)
         log.info("agent binary replaced (%d bytes); restarting", len(data))
-        if _is_binary_target(target):
-            os.execv(target, [target] + sys.argv[1:])  # 替换当前进程，由新版本接管
-        else:
-            log.warning("running from source interpreter; update downloaded but not auto-applied, "
-                        "restart the agent manually to pick up the new binary")
+        os.execv(target, [target] + sys.argv[1:])
     return True
 
 
 def check_update(cfg, log):
-    """轮询入口：拉取清单，若有更新则下载应用。设计为在一次性 daemon 线程内调用。"""
+    """轮询入口：拉清单 → 有更新则应用。设计为在一次性 daemon 线程内调用。"""
     log = _log(log)
     if cfg.get("update_disabled"):
         return False
@@ -220,11 +253,9 @@ def check_update(cfg, log):
 
 
 def spawn_check(cfg, log):
-    """主循环里调用：起一个 daemon 线程做更新检查，不阻塞事件循环。"""
     threading.Thread(target=check_update, args=(cfg, log), daemon=True, name="kk-update").start()
 
 
 def spawn_apply(cfg, log, manifest):
-    """服务端 push 升级帧时调用：立即下载应用。"""
     threading.Thread(target=apply_manifest, args=(cfg, log, manifest), daemon=True,
                      name="kk-update-push").start()

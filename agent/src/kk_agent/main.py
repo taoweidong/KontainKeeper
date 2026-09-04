@@ -1,180 +1,176 @@
-"""kk-agent 守护主循环：单线程 select 事件循环 + 一次性工作线程。
+"""kk-agent 主循环：MQTT 事件驱动 + 一次性工作线程。
 
-资源策略：
-- 空闲时只有主线程阻塞在 select 上，0 CPU、常驻 RSS 目标 < 15MB
-- 心跳/命令/插件采集在一次性 daemon 线程中执行，结果经队列回到主线程发帧
-- 断线指数退避重连（1s→60s 封顶），成功后立即补发心跳
+与旧版（自研 select 循环 + 手写 WebSocket）的区别：
+- 连接管理、重连退避、保活、离线命令队列全部交给 paho-mqtt 的后台线程，
+  主线程不再轮询 socket，空闲时只阻塞在 `stop.wait()` 上
+- 命令由 MQTT 回调进入，立即派发到有限线程池执行；结果直接经 Transport 回传
+- paho 的 publish 是线程安全的，工作线程采集完即发布，无需再经队列绕回主线程
+
+资源策略不变：空闲零线程、采集/命令在 daemon 工作线程跑、常驻开销以 MB 计。
 """
 import base64
 import json
-import queue
-import random
-import select
 import signal
 import threading
 import time
 
 from . import collector as kk_collector
 from . import config as kk_config
-from . import conn as kk_conn
 from . import executor as kk_executor
 from . import logutil as kk_logutil
 from . import plugin_loader as kk_plugins
 from . import updater as kk_updater
-from .ws import WSClosed, WSError
+from .transport import Transport, TransportError
 
-CHUNK = 48 * 1024  # cmd_result 原始输出分块大小
+CHUNK = 48 * 1024  # 命令输出分块大小（base64 前）
 
 
-def submit_heartbeat(cfg, log, q, state_box):
+def send_result(tr, cmd_id, res):
+    """把执行结果分块回传，末块带 done/rc/timed_out。"""
+    out = res.get("out") or b""
+    if isinstance(out, str):
+        out = out.encode("utf-8", "replace")
+    chunks = [out[i:i + CHUNK] for i in range(0, len(out), CHUNK)] or [b""]
+    total = len(chunks)
+    for i, c in enumerate(chunks):
+        last = i == total - 1
+        frame = {
+            "id": cmd_id,
+            "seq": i,
+            "total": total,
+            "out_b64": base64.b64encode(c).decode("ascii"),
+            "done": last,
+        }
+        if last:
+            frame.update(rc=res.get("rc", -2),
+                         timed_out=bool(res.get("timed_out")),
+                         elapsed_ms=int(res.get("elapsed_ms", 0)),
+                         truncated=bool(res.get("truncated")))
+        if not tr.publish_result(frame):
+            return False
+    return True
+
+
+def _run_collect(cmd, cfg, state_box):
+    """kind=collect：不经 shell，直接调用 psutil 采集指定项并返回结构化 JSON。"""
+    items = cmd.get("items") or []
+    if not items:
+        return {"rc": 2, "out": "collect 命令缺少 items".encode("utf-8"),
+                "timed_out": False, "elapsed_ms": 0}
+    data, new_state = kk_collector.collect_items(items, state_box["state"], cfg)
+    state_box["state"] = new_state
+    body = json.dumps({"items": items, "data": data}, ensure_ascii=False)
+    return {"rc": 0, "out": body.encode("utf-8"), "timed_out": False, "elapsed_ms": 0}
+
+
+def _run_plugin_reload(cfg, log):
+    data = kk_plugins.collect_all(cfg["plugin_dir"], log)
+    body = json.dumps({"plugins": data}, ensure_ascii=False)
+    return {"rc": 0, "out": body.encode("utf-8"), "timed_out": False, "elapsed_ms": 0}
+
+
+def make_dispatcher(tr, runner, cfg, log, state_box):
+    """构造 MQTT 命令回调。运行在 paho 网络线程，必须快速返回。"""
+
+    def dispatch(cmd):
+        cid = cmd.get("id")
+        kind = cmd.get("kind") or "shell"
+        if not cid:
+            return
+        if kind == "shell":
+            runner.submit(cmd)
+        elif kind == "collect":
+            runner.submit_fn(cid, lambda: _run_collect(cmd, cfg, state_box))
+        elif kind == "plugin_reload":
+            runner.submit_fn(cid, lambda: _run_plugin_reload(cfg, log))
+        else:
+            send_result(tr, cid, {"rc": 127, "out": b"unknown command kind: " + kind.encode(),
+                                  "timed_out": False, "elapsed_ms": 0})
+
+    return dispatch
+
+
+def submit_heartbeat(tr, cfg, log, state_box, busy):
+    """采集并发布一次心跳。busy 事件防止上一轮未完成时重入。"""
+    if busy.is_set():
+        return
+    busy.set()
+
     def work():
         try:
             metrics, st = kk_collector.collect(cfg, state_box["state"])
             state_box["state"] = st
             custom = kk_plugins.collect_all(cfg["plugin_dir"], log)
-            q.put(("hb", None, {"metrics": metrics, "custom": custom}))
+            tr.publish_hb(metrics, custom)
         except Exception:
             log.exception("heartbeat collect failed")
+        finally:
+            busy.clear()
 
     threading.Thread(target=work, daemon=True, name="kk-hb").start()
-
-
-def send_cmd_result(ws, cmd_id, res):
-    out = res.get("out") or b""
-    chunks = [out[i:i + CHUNK] for i in range(0, len(out), CHUNK)] or [b""]
-    for i, c in enumerate(chunks):
-        last = i == len(chunks) - 1
-        frame = {
-            "t": "cmd_result", "id": cmd_id, "seq": i,
-            "data_b64": base64.b64encode(c).decode("ascii"), "done": last,
-        }
-        if last:
-            frame.update(rc=res.get("rc", -2), timed_out=bool(res.get("timed_out")),
-                         elapsed_ms=int(res.get("elapsed_ms", 0)))
-        kk_conn.send_json(ws, frame)
-
-
-def handle_server_msg(msg, ws, runner, cfg, log, q):
-    t = msg.get("t")
-    if t == "cmd":
-        kind = msg.get("kind", "shell")
-        if kind == "shell":
-            runner.submit(msg)
-        elif kind == "plugin_reload":
-            def fn():
-                data = kk_plugins.collect_all(cfg["plugin_dir"], log)
-                return {"rc": 0, "out": json.dumps({"plugins": data}, ensure_ascii=False).encode(),
-                        "timed_out": False, "elapsed_ms": 0}
-            runner.submit_fn("cmd_result", msg.get("id"), fn)
-        else:
-            send_cmd_result(ws, msg.get("id"), {"rc": 127, "out": b"unknown kind",
-                                                "timed_out": False, "elapsed_ms": 0})
-    elif t == "cfg":
-        try:
-            cfg["interval"] = min(max(int(msg["interval"]), 1), 3600)
-            log.info("interval adjusted to %ss", cfg["interval"])
-        except (KeyError, TypeError, ValueError):
-            pass
-    elif t == "upgrade":
-        # 服务端推送的新版本：立即下载并自更新（在 daemon 线程内执行，不阻塞事件循环）
-        kk_updater.spawn_apply(cfg, log, msg)
-    # hb_ack 等未知类型：忽略
-
-
-def flush_outgoing(ws, q, cfg, log):
-    """把工作线程结果全部发出去；发送失败时关闭连接并返回 False（触发重连）。"""
-    while True:
-        try:
-            kind, ref, payload = q.get_nowait()
-        except queue.Empty:
-            return True
-        try:
-            if kind == "hb":
-                frame = {"t": "hb", "ts": int(time.time()), "interval": cfg["interval"]}
-                frame.update(payload)
-                kk_conn.send_json(ws, frame)
-            elif kind == "cmd_result":
-                send_cmd_result(ws, ref, payload)
-        except (WSClosed, WSError, OSError) as e:
-            log.warning("send failed: %s", e)
-            kk_conn.safe_close(ws)
-            return False
 
 
 def run(stop=None, cfg=None):
     stop = stop or threading.Event()
     cfg = cfg or kk_config.load()
     log = kk_logutil.get_logger(cfg["log_path"], cfg["log_level"])
-    log.info("kk-agent %s starting: server=%s interval=%ss fs_root=%s",
-             kk_config.AGENT_VER, cfg["server"], cfg["interval"], cfg["fs_root"])
 
-    q = queue.Queue()
-    runner = kk_executor.Runner(q, max_out=cfg["max_out_mb"] * 1024 * 1024)
-    state_box = {"state": {"cpu": None, "procs": {}, "ts": time.time()}}
-    ws = None
-    backoff = 1.0
-    next_hb = 0.0
-    next_update = 0.0  # 启动后尽快检查一次服务端版本
+    if not cfg["server"]:
+        log.error("KK_SERVER 未配置（应为 mqtt:// 或 mqtts:// 地址），Agent 无法启动")
+        return
 
-    # 优雅退出：仅主线程可注册信号处理器（测试等在子线程中运行时不注册）
+    tr = None
+    try:
+        tr = Transport(cfg, log)
+    except TransportError as e:
+        log.error("%s", e)
+        return
+
+    state_box = {"state": {}}
+    busy = threading.Event()
+
+    def emit(kind, cid, res):
+        try:
+            send_result(tr, cid, res)
+        except Exception:
+            log.exception("send result failed")
+
+    runner = kk_executor.Runner(emit, max_out=cfg["max_out_mb"] * 1024 * 1024,
+                                max_workers=cfg["max_workers"])
+    tr.on_cmd = make_dispatcher(tr, runner, cfg, log, state_box)
+
+    # 优雅退出：信号处理器只能在主线程注册（测试跑在子线程时跳过）
     if threading.main_thread() is threading.current_thread():
         def _on_signal(signum, _frame):
             log.info("received signal %s, stopping", signum)
             stop.set()
-
         try:
             signal.signal(signal.SIGTERM, _on_signal)
             signal.signal(signal.SIGINT, _on_signal)
         except (ValueError, AttributeError, OSError):
             pass
 
-    while not stop.is_set():
-        if not cfg["server"] or not cfg["token"]:
-            log.error("KK_SERVER/KK_TOKEN not configured, retry in 60s")
-            stop.wait(60)
-            continue
+    log.info("kk-agent %s starting: broker=%s host=%s interval=%ss",
+             kk_config.AGENT_VER, cfg["server"], cfg["host"], cfg["interval"])
 
-        if ws is None:
-            try:
-                ws = kk_conn.connect(cfg)
-                backoff = 1.0
-                next_hb = 0.0  # 连上立即上报首帧心跳
-                log.info("connected to %s", cfg["server"])
-            except Exception as e:
-                log.warning("connect failed: %s; retry in %.0fs", e, backoff)
-                stop.wait(backoff)
-                backoff = min(backoff * 2, 60)
-                continue
+    tr.start()
+    tr.wait_ready(timeout=10)
 
-        now = time.time()
-        if now >= next_hb:
-            submit_heartbeat(cfg, log, q, state_box)
-            next_hb = now + cfg["interval"] * random.uniform(0.9, 1.1)
+    next_hb = 0.0
+    next_update = 0.0  # 启动后尽快检查一次版本
+    try:
+        while not stop.is_set():
+            now = time.time()
+            if now >= next_hb:
+                submit_heartbeat(tr, cfg, log, state_box, busy)
+                # ±10% 抖动，避免大量主机同时上报造成 Broker 尖峰
+                next_hb = now + cfg["interval"] * (0.9 + 0.2 * ((now % 1.0)))
 
-        # 自更新轮询：独立 HTTP 检查服务端最新版本，落后则下载并自重启
-        if not cfg["update_disabled"] and now >= next_update:
-            kk_updater.spawn_check(cfg, log)
-            next_update = now + cfg["update_interval"]
+            if not cfg["update_disabled"] and now >= next_update:
+                kk_updater.spawn_check(cfg, log)
+                next_update = now + cfg["update_interval"]
 
-        # 等socket可读（最多 0.5s，保证 stop 响应及时），同时让出 CPU
-        try:
-            r, _, _ = select.select([ws.sock], [], [], 0.5)
-            if r:
-                for text in ws.drain():
-                    try:
-                        msg = json.loads(text)
-                    except ValueError:
-                        log.warning("bad frame from server")
-                        continue
-                    handle_server_msg(msg, ws, runner, cfg, log, q)
-        except (WSClosed, WSError, OSError) as e:
-            log.warning("connection lost: %s", e)
-            kk_conn.safe_close(ws)
-            ws = None
-            continue
-
-        if not flush_outgoing(ws, q, cfg, log):
-            ws = None
-
-    kk_conn.safe_close(ws)
+            stop.wait(0.5)
+    finally:
+        tr.stop(reason="stopping")
     log.info("kk-agent stopped")

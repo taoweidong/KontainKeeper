@@ -1,10 +1,16 @@
-"""kk-agent 配置：全部来自环境变量，镜像构建期注入。"""
+"""kk-agent 配置：全部来自环境变量（沿用项目约定：配置只走 KK_* 环境变量）。"""
 import os
 import socket
 import sys
 
-AGENT_VER = "0.1.0"
-PROTO_VER = 1
+AGENT_VER = "0.2.0"
+PROTO_VER = 2  # MQTT 主题布局与帧格式（v1 为旧的自研 WebSocket 协议）
+
+DEFAULT_TOPIC_PREFIX = "kk/v1"
+
+
+def _env_bool(env, key, default=False):
+    return env.get(key, "").strip().lower() in ("1", "true", "yes", "on") if env.get(key) else default
 
 
 def load(env=None, **overrides):
@@ -18,23 +24,49 @@ def load(env=None, **overrides):
 
     here = os.path.dirname(os.path.abspath(__file__))
     cfg = {
+        # ---- MQTT 连接 ----
         "server": env.get("KK_SERVER", "").strip(),
         "token": env.get("KK_TOKEN", "").strip(),
+        "topic_prefix": env.get("KK_TOPIC_PREFIX", DEFAULT_TOPIC_PREFIX).strip(),
+        "keepalive": max(10, _int("KK_KEEPALIVE", 60)),
+        "tls_ca": env.get("KK_TLS_CA", "").strip(),
+        "tls_insecure": _env_bool(env, "KK_TLS_INSECURE"),
+        "client_id": env.get("KK_CLIENT_ID", "kk").strip(),
+
+        # ---- 身份 ----
+        # 主机名即 Agent 在管理平台上的唯一标识，克隆机请显式设置避免重复
+        "host": (env.get("KK_HOST_NAME", "").strip()
+                 or env.get("KK_POD_NAME", "").strip()  # 兼容旧变量名
+                 or socket.gethostname()),
+        "image": env.get("KK_IMAGE", "").strip(),
+
+        # ---- 采集 ----
         "interval": max(1, _int("KK_INTERVAL", 60)),
-        "disk_paths": [p.strip() for p in env.get("KK_DISK_PATHS", "/,/workspace").split(",") if p.strip()],
+        "disk_paths": [p.strip() for p in env.get("KK_DISK_PATHS", "").split(",") if p.strip()],
+        "top_n": max(1, min(_int("KK_TOP_N", 5), 50)),
         "plugin_dir": env.get("KK_PLUGIN_DIR", "") or os.path.join(here, "plugins"),
-        "fs_root": env.get("KK_FS_ROOT", "/").rstrip("/") or "/",
-        "log_path": env.get("KK_LOG", ""),
-        "log_level": env.get("KK_LOG_LEVEL", "INFO").upper(),
-        "image": env.get("KK_IMAGE", ""),
-        "hostname": env.get("KK_POD_NAME", "") or socket.gethostname(),
+
+        # ---- 命令执行 ----
         "max_out_mb": max(1, _int("KK_MAX_OUT_MB", 4)),
-        # 自更新（独立二进制形态下生效）
+        "max_workers": max(1, min(_int("KK_MAX_WORKERS", 8), 64)),
+
+        # ---- 自更新（独立二进制形态下生效）----
         "update_url": env.get("KK_UPDATE_URL", "").strip(),
         "update_interval": max(30, _int("KK_UPDATE_INTERVAL", 300)),
-        "update_disabled": env.get("KK_UPDATE_DISABLED", "").strip().lower() in ("1", "true", "yes", "on"),
-        "update_insecure": env.get("KK_UPDATE_INSECURE", "").strip().lower() in ("1", "true", "yes", "on"),
-        "agent_bin": env.get("KK_AGENT_BIN", "").strip() or sys.executable,
+        "update_disabled": _env_bool(env, "KK_UPDATE_DISABLED"),
+        "update_insecure": _env_bool(env, "KK_UPDATE_INSECURE"),
+        # 可选 HMAC-SHA256 签名校验（纯标准库实现，防伪造更新）
+        "update_hmac_key": env.get("KK_UPDATE_HMAC_KEY", ""),
+        "update_require_sig": _env_bool(env, "KK_UPDATE_REQUIRE_SIG"),
+        "agent_bin": env.get("KK_AGENT_BIN", "").strip(),
+        # shell 模式（允许管道/重定向）开关，服务器运维场景常用；置 0 可彻底关闭
+        "allow_shell": env.get("KK_ALLOW_SHELL", "1").strip().lower() not in ("0", "false", "no", "off"),
+
+        # ---- 日志 ----
+        "log_path": env.get("KK_LOG", ""),
+        "log_level": env.get("KK_LOG_LEVEL", "INFO").upper(),
     }
+    # agent_bin 缺省时不在配置里填 sys.executable——那会让自更新误把 Python 解释器
+    # 当成待替换的二进制（见 updater.apply_manifest）。缺省即表示「不自替换」。
     cfg.update(overrides)
     return cfg

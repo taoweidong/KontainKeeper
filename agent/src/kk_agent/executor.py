@@ -1,77 +1,104 @@
-"""命令执行：exec 数组（不经 shell）、限时、输出封顶，一次性工作线程内阻塞执行。
+"""命令执行：限时、输出封顶、进程组清理，在有限线程池内阻塞执行。
 
-空闲时零线程零开销；任务到达才起 daemon 线程，结果 (kind, cmd_id, result)
-投递回主循环队列，由主循环统一分块发帧（保证 socket 只在主线程访问）。
+安全与稳定性要点：
+- 默认 argv 数组直传 exec（不经 shell 拼接），天然免疫 shell 注入；
+  需要管道/重定向时由服务端显式下发 `use_shell=true`，且 Agent 侧可用
+  KK_ALLOW_SHELL=0 彻底关闭该能力
+- 用 start_new_session 创建进程组，超时或异常时 killpg 清理整棵子进程树，
+  避免 `sh -c "long &"` 之类的命令在超时后留下孤儿进程
+- 输出超过上限时截断并置 truncated 标记，让服务端/使用者知道结果是完整的还是被截的
 """
+import os
+import queue
+import signal
 import subprocess
 import threading
 import time
 
-SPAWN_ERRORS = (FileNotFoundError, PermissionError, NotADirectoryError)
+SPAWN_ERRORS = (FileNotFoundError, PermissionError, NotADirectoryError, ValueError)
 
 
-def run_shell(argv, timeout=30, max_out=4 * 1024 * 1024):
-    """执行 argv，返回 {rc, out(bytes), timed_out, elapsed_ms}。"""
+def run_shell(argv, timeout=30, max_out=4 * 1024 * 1024, use_shell=False):
+    """执行 argv（或 shell 字符串），返回 {rc, out, timed_out, elapsed_ms, truncated}。"""
     t0 = time.monotonic()
     timed_out = False
-    out = b""
+    raw = b""
     rc = 126
+
     try:
         p = subprocess.Popen(
-            argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
+            shell=bool(use_shell),
+            start_new_session=True,  # 独立进程组，便于整组回收
         )
     except SPAWN_ERRORS as e:
         return {"rc": 127 if isinstance(e, FileNotFoundError) else 126,
                 "out": ("kk-agent: cannot spawn: %s" % e).encode("utf-8", "replace"),
-                "timed_out": False, "elapsed_ms": 0}
+                "timed_out": False, "elapsed_ms": 0, "truncated": False}
     except OSError as e:
         return {"rc": 126, "out": ("kk-agent: spawn error: %s" % e).encode("utf-8", "replace"),
-                "timed_out": False, "elapsed_ms": 0}
+                "timed_out": False, "elapsed_ms": 0, "truncated": False}
+
+    def _kill_tree():
+        """先 TERM 给进程组一个体面退出的机会，再 KILL 兜底。"""
+        try:
+            os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            return
+        try:
+            p.wait(timeout=3)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        try:
+            os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
     try:
-        out, _ = p.communicate(timeout=timeout)
+        raw, _ = p.communicate(timeout=timeout)
+        rc = p.returncode
     except subprocess.TimeoutExpired:
         timed_out = True
-        p.kill()
+        _kill_tree()
         try:
-            out, _ = p.communicate(timeout=5)
+            raw, _ = p.communicate(timeout=5)
         except Exception:
-            pass
-    except Exception as e:  # 通信异常按失败处理
-        p.kill()
+            raw = b""
+        rc = -1
+    except Exception as e:
+        _kill_tree()
         return {"rc": 125, "out": ("kk-agent: exec error: %s" % e).encode("utf-8", "replace"),
-                "timed_out": False, "elapsed_ms": int((time.monotonic() - t0) * 1000)}
+                "timed_out": False, "elapsed_ms": int((time.monotonic() - t0) * 1000),
+                "truncated": False}
+
+    truncated = len(raw or b"") > max_out
     return {
-        "rc": -1 if timed_out else (p.returncode if p.returncode is not None else -2),
-        "out": (out or b"")[:max_out],
+        "rc": rc if rc is not None else -2,
+        "out": (raw or b"")[:max_out],
         "timed_out": timed_out,
         "elapsed_ms": int((time.monotonic() - t0) * 1000),
+        "truncated": truncated,
     }
 
 
 class _Pool:
-    """固定数量 daemon 工作线程的线程池。
+    """固定数量 daemon 工作线程池。
 
-    并发数有界（默认 8），防止恶意/故障服务端下发大量命令时无界创建线程导致 DoS；
-    任务队列吸收瞬时峰值，空闲时线程阻塞在队列上、零 CPU 开销。线程为 daemon，
-    进程退出时不会挂起。
+    并发数有界，防止服务端批量下发大量命令时无界创建线程；空闲时线程阻塞在队列上。
     """
 
     def __init__(self, max_workers=8):
-        import queue as _q
-        self._q = _q.Queue()
-        self._workers = []
+        self._q = queue.Queue()
         for _ in range(max(1, max_workers)):
-            t = threading.Thread(target=self._loop, daemon=True, name="kk-task")
-            t.start()
-            self._workers.append(t)
+            threading.Thread(target=self._loop, daemon=True, name="kk-task").start()
 
     def _loop(self):
         while True:
             fn = self._q.get()
-            if fn is None:
-                self._q.put(None)  # 广播退出信号，让其余 worker 也能结束
-                break
             try:
                 fn()
             except Exception:
@@ -82,11 +109,12 @@ class _Pool:
 
 
 class Runner:
-    """把任务派发到后台线程池，结果 (kind, cmd_id, result) 投递到 outq。"""
+    """把命令派发到后台线程池，结果经 emit(cmd_id, result) 回调送出。"""
 
-    def __init__(self, outq, max_out=4 * 1024 * 1024, max_workers=8):
-        self.q = outq  # type: queue.Queue
+    def __init__(self, emit, max_out=4 * 1024 * 1024, max_workers=8, allow_shell=True):
+        self.emit = emit
         self.max_out = max_out
+        self.allow_shell = allow_shell
         self._pool = None
         self._max_workers = max_workers
 
@@ -96,24 +124,27 @@ class Runner:
         return self._pool
 
     def submit(self, cmd):
-        """shell 命令帧（{"id","argv","timeout"}）→ 后台执行 run_shell。"""
-        argv = list(cmd.get("argv") or [])
+        """shell 命令帧 {"id","argv","timeout","use_shell"} → 后台执行。"""
+        argv = cmd.get("argv") or []
         try:
             timeout = min(max(int(cmd.get("timeout", 30)), 1), 600)
         except (TypeError, ValueError):
             timeout = 30
-        self.submit_fn("cmd_result", cmd.get("id"),
-                       lambda: run_shell(argv, timeout, self.max_out))
+        use_shell = bool(cmd.get("use_shell")) and self.allow_shell
+        if use_shell:
+            argv = argv[0] if isinstance(argv, list) and argv else str(argv)
+        self.submit_fn(cmd.get("id"),
+                       lambda: run_shell(argv, timeout, self.max_out, use_shell))
 
-    def submit_fn(self, kind, cmd_id, fn):
-        """通用后台任务（shell 命令、插件即时采集），fn() 返回 result dict。"""
+    def submit_fn(self, cmd_id, fn):
+        """通用后台任务（shell 命令、collect 采集、插件重载）。"""
 
         def work():
             try:
                 res = fn()
             except Exception as e:
                 res = {"rc": 125, "out": ("kk-agent: task error: %s" % e).encode("utf-8", "replace"),
-                       "timed_out": False, "elapsed_ms": 0}
-            self.q.put((kind, cmd_id, res))
+                       "timed_out": False, "elapsed_ms": 0, "truncated": False}
+            self.emit(cmd_id, res)
 
         self._get_pool().submit(work)
