@@ -171,7 +171,16 @@ soybean-admin 前端（REST 轮询 + ECharts）
 | `test_updater.py` | 适配 `_http_get(..., timeout, as_bytes, insecure)` 新签名；补「`update_url` 缺省即跳过、不下载不落盘」 |
 | `test_transport.py` | **新增**：`parse_broker` 全形态（mqtt/mqtts/user:pass@/IPv6）、主题拼装、QoS 与 retain 参数——作为 3.1/3.2 的回归锁 |
 
-**验收（实测达成）**：`uv run pytest agent/tests -q` → **93 passed / 0 failed**（阶段 0 前为 11 failed / 12 passed）；新增 `test_transport.py`(26) 与 `test_main.py`(13) 钉住 QoS/retain/排队/失败终态/dispatcher 全链路。服务端套件 15 passed / 2 failed，两条失败仍是 WS 时代集成测试（`KK_SERVER=ws://...`），随阶段 A/F 消解，本次未引入回归。
+**验收（实测达成）**：
+
+- `uv run pytest agent/tests -q` → **93 passed / 0 failed**（阶段 0 前为 11 failed / 12 passed）。新增 `test_transport.py`(26) 与 `test_main.py`(13) 钉住 QoS/retain/排队/失败终态/dispatcher 全链路。
+- `scripts/mqtt_e2e.py`（新增）对**真实 Mosquitto** 跑通 10 项，把「交给 Broker 的可靠性」从单元层断言变成实测事实：retained status 上线、psutil 心跳、**R1 实测 Broker 只 retain status 不 retain hb**、**R6 shell 命令结果真实回传**（这条此前在主功能上是 100% 失效的）、300KB 输出 7 块按 seq 完整重组、`kind=collect` 按项采集回传结构化数据、**强杀进程触发 LWT offline**、**离线期间下发的命令由 Broker 排队、Agent 重连后自动补投并回传结果**。
+- 唯一未被真实网络验证的一环是 paho 自身 out-queue 的重连补发（R2 方向：Agent 断线时持有结果）——需要 Broker 在命令执行中途重启，时机难以稳定复现，暂以单元测试在 `publish()` 边界处锁住语义。
+- 服务端套件 15 passed / 2 failed，两条失败仍是 WS 时代集成测试（`KK_SERVER=ws://...`），随阶段 A/F 消解，本次未引入回归。
+
+**本地 Broker 环境（开发/测试用）**：Windows 开发机无 docker，改用 WSL 常驻 Mosquitto：
+`wsl -d Ubuntu-22.04 -- sudo apt-get install -y mosquitto mosquitto-clients`（systemd 服务随发行版自启，监听 0.0.0.0:1883 允许匿名）。
+两个坑：① 发行版空闲被拆网络 → 先 `wsl -d Ubuntu-22.04 -- sleep 600 &` 挂住；② Ubuntu 22.04 仓库版本是 **1.6.9**，不含共享订阅/`pattern %u` 之外的 2.x 特性——够用本套冒烟，但 G1 的 ACL pattern 与生产部署要求必须在 **Mosquitto 2.x**（docker/CI）上另行验证。
 
 ---
 
