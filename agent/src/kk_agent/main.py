@@ -10,6 +10,7 @@
 """
 import base64
 import json
+import random
 import signal
 import threading
 import time
@@ -20,13 +21,24 @@ from . import executor as kk_executor
 from . import logutil as kk_logutil
 from . import plugin_loader as kk_plugins
 from . import updater as kk_updater
-from .transport import Transport, TransportError
+from .transport import RC_SEND_FAILED, Transport, TransportError
 
 CHUNK = 48 * 1024  # 命令输出分块大小（base64 前）
 
 
+def _fail_frame(cmd_id, seq, total, res):
+    """分块没能进 Broker 队列时补发的失败终态。"""
+    return {"id": cmd_id, "seq": seq, "total": total, "out_b64": "", "done": True,
+            "rc": RC_SEND_FAILED, "timed_out": False,
+            "elapsed_ms": int(res.get("elapsed_ms", 0)), "truncated": True}
+
+
 def send_result(tr, cmd_id, res):
-    """把执行结果分块回传，末块带 done/rc/timed_out。"""
+    """把执行结果分块回传，末块带 done/rc/timed_out。
+
+    任一分块发送失败即改发失败终态：宁可丢部分输出，也不能让服务端那一行
+    永远停在 running（评审 P0-4「石沉大海」的 Agent 侧防线）。
+    """
     out = res.get("out") or b""
     if isinstance(out, str):
         out = out.encode("utf-8", "replace")
@@ -47,18 +59,39 @@ def send_result(tr, cmd_id, res):
                          elapsed_ms=int(res.get("elapsed_ms", 0)),
                          truncated=bool(res.get("truncated")))
         if not tr.publish_result(frame):
-            return False
+            return tr.publish_result(_fail_frame(cmd_id, i, total, res))
     return True
+
+
+class StateBox:
+    """采集差分基线的容器。
+
+    心跳线程与 kind=collect 命令线程都会读-改-写同一份基线，无锁会让
+    磁盘/网络速率算出尖刺甚至负值。
+    """
+
+    def __init__(self, state=None):
+        self._lock = threading.Lock()
+        self._state = state or {}
+
+    @property
+    def value(self):
+        with self._lock:
+            return dict(self._state)
+
+    def put(self, state):
+        with self._lock:
+            self._state = state
 
 
 def _run_collect(cmd, cfg, state_box):
     """kind=collect：不经 shell，直接调用 psutil 采集指定项并返回结构化 JSON。"""
     items = cmd.get("items") or []
     if not items:
-        return {"rc": 2, "out": "collect 命令缺少 items".encode("utf-8"),
+        return {"rc": 2, "out": b"collect command requires items",
                 "timed_out": False, "elapsed_ms": 0}
-    data, new_state = kk_collector.collect_items(items, state_box["state"], cfg)
-    state_box["state"] = new_state
+    data, new_state = kk_collector.collect_items(items, state_box.value, cfg)
+    state_box.put(new_state)
     body = json.dumps({"items": items, "data": data}, ensure_ascii=False)
     return {"rc": 0, "out": body.encode("utf-8"), "timed_out": False, "elapsed_ms": 0}
 
@@ -83,6 +116,9 @@ def make_dispatcher(tr, runner, cfg, log, state_box):
             runner.submit_fn(cid, lambda: _run_collect(cmd, cfg, state_box))
         elif kind == "plugin_reload":
             runner.submit_fn(cid, lambda: _run_plugin_reload(cfg, log))
+        elif kind == "update":
+            # 服务端推送式自更新：命令载荷即版本清单，形态校验在 updater 内做
+            kk_updater.spawn_apply(cfg, log, cmd)
         else:
             send_result(tr, cid, {"rc": 127, "out": b"unknown command kind: " + kind.encode(),
                                   "timed_out": False, "elapsed_ms": 0})
@@ -98,8 +134,8 @@ def submit_heartbeat(tr, cfg, log, state_box, busy):
 
     def work():
         try:
-            metrics, st = kk_collector.collect(cfg, state_box["state"])
-            state_box["state"] = st
+            metrics, st = kk_collector.collect(cfg, state_box.value)
+            state_box.put(st)
             custom = kk_plugins.collect_all(cfg["plugin_dir"], log)
             tr.publish_hb(metrics, custom)
         except Exception:
@@ -126,17 +162,24 @@ def run(stop=None, cfg=None):
         log.error("%s", e)
         return
 
-    state_box = {"state": {}}
+    state_box = StateBox()
     busy = threading.Event()
 
-    def emit(kind, cid, res):
+    def emit(cid, res):
+        """executor.Runner 的结果回调；签名必须是 (cmd_id, res)。
+
+        注意：这里曾写成 (kind, cid, res)（旧 WS 队列的元组遗留），与 Runner
+        的调用不匹配 → TypeError 被线程池静默吞掉，命令结果一条都发不出去。
+        """
         try:
-            send_result(tr, cid, res)
+            if not send_result(tr, cid, res):
+                log.warning("result %s could not be delivered to broker", cid)
         except Exception:
             log.exception("send result failed")
 
     runner = kk_executor.Runner(emit, max_out=cfg["max_out_mb"] * 1024 * 1024,
-                                max_workers=cfg["max_workers"])
+                                max_workers=cfg["max_workers"],
+                                allow_shell=cfg["allow_shell"], log=log)
     tr.on_cmd = make_dispatcher(tr, runner, cfg, log, state_box)
 
     # 优雅退出：信号处理器只能在主线程注册（测试跑在子线程时跳过）
@@ -154,17 +197,18 @@ def run(stop=None, cfg=None):
              kk_config.AGENT_VER, cfg["server"], cfg["host"], cfg["interval"])
 
     tr.start()
-    tr.wait_ready(timeout=10)
-
     next_hb = 0.0
     next_update = 0.0  # 启动后尽快检查一次版本
     try:
+        tr.wait_ready(timeout=10, stop=stop)
         while not stop.is_set():
-            now = time.time()
+            # 调度必须用单调钟：NTP 回拨会让心跳停摆、前跳会集中补发，
+            # 而 500 台同时到点正是 Broker 与数据库的尖峰来源。
+            now = time.monotonic()
             if now >= next_hb:
                 submit_heartbeat(tr, cfg, log, state_box, busy)
-                # ±10% 抖动，避免大量主机同时上报造成 Broker 尖峰
-                next_hb = now + cfg["interval"] * (0.9 + 0.2 * ((now % 1.0)))
+                # ±10% 真随机抖动打散上报峰值
+                next_hb = now + cfg["interval"] * random.uniform(0.9, 1.1)
 
             if not cfg["update_disabled"] and now >= next_update:
                 kk_updater.spawn_check(cfg, log)

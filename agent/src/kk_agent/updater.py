@@ -137,6 +137,7 @@ def _is_binary_target(target):
 
 def _verify_signature(data, manifest, cfg, log):
     """校验 sha256（防损坏）+ 可选 HMAC 签名（防伪造）。返回是否放行。"""
+    log = _log(log)
     expected = str(manifest.get("sha256") or "")
     if not expected:
         log.warning("manifest missing sha256, refuse to replace")

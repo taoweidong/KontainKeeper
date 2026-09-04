@@ -21,7 +21,7 @@ def _write(path, text):
     os.utime(path, (t, t))
 
 
-def test_load_collect_and_skip(fake_fs, tmp_path):
+def test_load_collect_and_skip(tmp_path):
     d = tmp_path / "plugins"
     d.mkdir()
     _write(d / "good.py", GOOD)

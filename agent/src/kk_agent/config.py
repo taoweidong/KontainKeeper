@@ -49,6 +49,9 @@ def load(env=None, **overrides):
         # ---- 命令执行 ----
         "max_out_mb": max(1, _int("KK_MAX_OUT_MB", 4)),
         "max_workers": max(1, min(_int("KK_MAX_WORKERS", 8), 64)),
+        # 断线期间 paho out-queue 的消息上限。一条 4MB 输出约 86 块，
+        # 默认 512 可缓约 6 条大命令；超量回 rc=-3 失败终态而非静默丢弃。
+        "max_queued": max(16, _int("KK_MAX_QUEUED", 512)),
 
         # ---- 自更新（独立二进制形态下生效）----
         "update_url": env.get("KK_UPDATE_URL", "").strip(),

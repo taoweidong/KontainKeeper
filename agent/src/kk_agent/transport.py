@@ -35,6 +35,9 @@ QOS_CMD = 1
 MAX_QUEUED = 512
 # paho 内置指数退避重连的区间（秒）
 RECONNECT_MIN, RECONNECT_MAX = 1, 60
+# 结果分块无法送达（out-queue 溢出等）时回传的失败退出码：
+# 让服务端把命令收敛成 failed，而不是永远停在 running。
+RC_SEND_FAILED = -3
 
 
 class TransportError(Exception):
@@ -52,9 +55,14 @@ def parse_broker(url, default_port=1883):
     rest = s[len("mqtt://"):]
     user = password = ""
     if "@" in rest:
+        # 从右往左切：密码本身可以含 '@'，主机名不行
         cred, rest = rest.rsplit("@", 1)
         user, _, password = cred.partition(":")
-    host, _, port = rest.partition(":")
+    if rest.startswith("["):
+        host, _, port = rest[1:].partition("]")   # IPv6 字面量 [::1]:1883
+        port = port.lstrip(":")
+    else:
+        host, _, port = rest.partition(":")
     host = host.strip("[]")
     if not host:
         raise TransportError("KK_SERVER 缺少主机名：%r" % url)
@@ -105,7 +113,7 @@ class Transport:
         # 遗嘱：异常断开时由 Broker 代为发布 offline（retain，服务端立刻可见）
         self.cli.will_set(self.topic("status"), self._status_payload(False),
                           qos=QOS_CMD, retain=True)
-        self.cli.max_queued_messages_set(MAX_QUEUED)
+        self.cli.max_queued_messages_set(int(self.cfg.get("max_queued") or MAX_QUEUED))
         self.cli.reconnect_delay_set(min_delay=RECONNECT_MIN, max_delay=RECONNECT_MAX)
         self.cli.on_connect = self._on_connect
         self.cli.on_disconnect = self._on_disconnect
@@ -139,8 +147,20 @@ class Transport:
         self.cli.loop_start()  # 后台网络线程：收发 + 自动重连
         self.log.info("mqtt connecting to %s:%s as %s", b["host"], b["port"], self.base)
 
-    def wait_ready(self, timeout=15):
-        return self.connected.wait(timeout)
+    def wait_ready(self, timeout=15, stop=None):
+        """等首次连接就绪。
+
+        必须对 stop 敏感：Broker 不可达时若一路等满 timeout，容器停止信号
+        就被卡在启动等待里，最终被 SIGKILL 而不是优雅退出。
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            if self.connected.wait(0.5):
+                return True
+            if stop is not None and stop.is_set():
+                return False
+            if time.monotonic() >= deadline:
+                return self.connected.is_set()
 
     def stop(self, reason="stopping"):
         self._stopping.set()
@@ -161,10 +181,17 @@ class Transport:
 
     # ---- 发布 ----
     def _pub(self, suffix, payload, qos=QOS_HB, retain=False):
-        if not self.cli.is_connected():
-            return False
+        """QoS1 交给 paho 的 out-queue 做离线排队，QoS0 才在断线时直接跳过。
+
+        不要在入口判 is_connected：paho 在未连接时仍会把 QoS1 消息入队（返回
+        MQTT_ERR_NO_CONN），重连后自动补发——这正是选 MQTT 而不自研长连接的目的。
+        判了就等于把离线排队能力自己短路掉，命令结果会在重连窗口内静默丢失。
+        """
+        if qos == QOS_HB and not self.cli.is_connected():
+            return False  # 心跳积压无意义，等下一帧
         info = self.cli.publish(self.topic(suffix), payload, qos=qos, retain=retain)
-        return info.rc == mqtt.MQTT_ERR_SUCCESS
+        # NO_CONN = 已入队待重连补发，同样算尽责；QUEUE_SIZE 等真失败才返回 False
+        return info.rc in (mqtt.MQTT_ERR_SUCCESS, mqtt.MQTT_ERR_NO_CONN)
 
     def publish_status(self, online, reason=""):
         return self._pub("status", self._status_payload(online, reason), QOS_CMD, True)
@@ -178,7 +205,9 @@ class Transport:
             "metrics": metrics,
             "custom": custom or {},
         }, ensure_ascii=False, separators=(",", ":"))
-        return self._pub("hb", payload, QOS_HB, True)
+        # 不 retain：retained 心跳会在服务端每次建立订阅时整批回放，
+        # 而指标真相在数据库里，Broker 只该做搬运而非存档。
+        return self._pub("hb", payload, QOS_HB, False)
 
     def publish_result(self, result):
         """命令结果分块回传；每块 QoS1，末块带 done 标记。"""
