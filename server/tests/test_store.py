@@ -31,24 +31,95 @@ def test_container_and_heartbeat_roundtrip(store):
 
 
 def test_command_lifecycle(store):
+    """协议 v2 结果帧：out_b64 分块累加，done 盖章终态；全量输出走 command_output。"""
     store.upsert_container("pod-b", "img", "0.1.0", 60)
     cid = store.create_command("pod-b", "shell", ["echo", "hi"], 30, "admin")
     assert store.get_command(cid)["status"] == "pending"
-    assert [r["id"] for r in store.pending_for("pod-b")] == [cid]
 
     store.mark_sent(cid)
     assert store.get_command(cid)["status"] == "sent"
-    assert store.pending_for("pod-b") == []
 
-    store.append_result({"id": cid, "seq": 0, "data_b64": "aGVsbG8g", "done": False})
+    store.append_result({"id": cid, "seq": 0, "total": 2, "out_b64": "aGVsbG8g", "done": False})
     mid = store.get_command(cid)
-    assert mid["status"] == "running" and mid["out"] == "hello "
+    assert mid["status"] == "running" and mid["out_chunks"] == 1
+    assert store.command_output(cid) == "hello "
 
-    store.append_result({"id": cid, "seq": 1, "data_b64": "d29ybGQ=", "done": True,
-                         "rc": 0, "timed_out": False, "elapsed_ms": 12})
+    store.append_result({"id": cid, "seq": 1, "total": 2, "out_b64": "d29ybGQ=", "done": True,
+                         "rc": 0, "timed_out": False, "elapsed_ms": 12, "truncated": False})
     done = store.get_command(cid)
-    assert done["status"] == "done" and done["out"] == "hello world"
-    assert done["rc"] == 0 and done["elapsed_ms"] == 12
+    assert done["status"] == "done" and done["rc"] == 0 and done["elapsed_ms"] == 12
+    assert store.command_output(cid) == "hello world"
+    assert [r["out_tail"] for r in store.list_commands(pod="pod-b")] == ["hello world"]
+
+
+def test_command_binary_output_survives(store):
+    """二进制输出不再被 utf-8/replace 污染（评审 L2）。"""
+    import base64
+    store.upsert_container("pod-bin", "img", "0.1.0", 60)
+    cid = store.create_command("pod-bin", "shell", ["cat"], 30, "admin")
+    raw = bytes(range(256))
+    store.append_result({"id": cid, "seq": 0, "total": 1, "done": True, "rc": 0,
+                         "out_b64": base64.b64encode(raw).decode()})
+    assert base64.b64decode(store.command_output(cid, as_text=False)) == raw
+
+
+def test_rc_minus_three_marks_truncated(store):
+    """Agent 回 rc=-3（分块没能全部送达）时，命令要盖 truncated 而不是静默当成功。"""
+    store.upsert_container("pod-fail", "img", "0.1.0", 60)
+    cid = store.create_command("pod-fail", "shell", ["yes"], 30, "admin")
+    store.append_result({"id": cid, "seq": 3, "total": 80, "out_b64": "", "done": True,
+                         "rc": -3, "timed_out": False, "elapsed_ms": 900})
+    row = store.get_command(cid)
+    assert row["status"] == "done" and row["truncated"] == 1
+
+
+def test_sweep_converges_stuck_commands(store):
+    store.upsert_container("pod-s", "img", "0.1.0", 60)
+    cid = store.create_command("pod-s", "shell", ["echo"], 30, "admin")
+    store.mark_sent(cid)
+    store._exec("UPDATE commands SET sent_at=? WHERE id=?", (int(time.time()) - 600, cid))
+    assert store.sweep_command_timeouts() >= 1
+    row = store.get_command(cid)
+    assert row["status"] == "timeout" and row["finished_at"]
+
+
+def test_pending_without_sent_at_still_swept(store):
+    """publish 失败停在 pending（sent_at 为 NULL）的行也必须被扫到。"""
+    store.upsert_container("pod-p", "img", "0.1.0", 60)
+    cid = store.create_command("pod-p", "shell", ["echo"], 30, "admin")
+    store._exec("UPDATE commands SET created_at=? WHERE id=?", (int(time.time()) - 600, cid))
+    assert store.sweep_command_timeouts() >= 1
+    assert store.get_command(cid)["status"] == "timeout"
+
+
+def test_online_column_and_grace(store):
+    """在线真相来自 retained status / LWT，不再查内存连接表。"""
+    store.set_online("pod-o", True, image="img", agent_ver="0.2.0")
+    assert store.is_online("pod-o") is True and store.online_count() == 1
+    row = store.get_container("pod-o")
+    assert row["image"] == "img" and row["last_seen"], "last_seen 必须是时间戳，列表要算 age"
+
+    store.set_online("pod-o", False)
+    assert store.is_online("pod-o") is False and store.online_count() == 0
+
+    # retained online 失真（Broker 崩了没发 LWT）时靠宽限兜底
+    store.set_online("pod-o", True)
+    store._exec("UPDATE containers SET status_ts=? WHERE pod=?", (1000, "pod-o"))
+    assert store.is_online("pod-o") is False
+    assert store.mark_stale_offline() >= 0
+
+
+def test_containers_exist_is_one_query(store):
+    for p in ("a", "b", "c"):
+        store.upsert_container(p, "img", "0.2.0", 60)
+    assert store.containers_exist(["a", "c", "ghost"]) == {"a", "c"}
+
+
+def test_batch_create_is_single_transaction(store):
+    store.upsert_container("x", "img", "0.2.0", 60)
+    ids = store.create_commands_batch(["x"] * 50, "collect", {"items": ["cpu"]}, 30, "admin")
+    assert len(set(ids)) == 50
+    assert store.get_command(ids[0])["kind"] == "collect"
 
 
 def test_admin_sessions(store):

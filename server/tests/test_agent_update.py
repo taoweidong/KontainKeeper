@@ -1,5 +1,8 @@
-"""服务端 Agent 自更新接口 + hello 推送 upgrade 帧的集成测试。"""
+"""服务端 Agent 自更新接口 + 桥接推送 upgrade 帧的测试。"""
+import json
 import os
+import time
+import types
 
 from fastapi.testclient import TestClient
 
@@ -78,28 +81,36 @@ def test_auth_required(tmp_path):
                        data={"version": "0.2.0"}).status_code == 401
 
 
-def test_hello_pushes_upgrade(tmp_path):
+def test_status_pushes_upgrade(tmp_path):
+    """上传新版本 → 落后的 Agent 一上线（status 帧）就该收到 update 命令。
+
+    原实现走 WS hello，改用 MQTT 后这条链路的两端分别是 HTTP 上传与桥接的
+    retained status 处理，这里把它们串起来测。
+    """
     app = _make_app(tmp_path)
     client = TestClient(app)
     token = _admin_token(client)
 
-    # 先发布一个比当前 AGENT_VER 更新的版本
-    payload = b"\x7fELF-newer"
+    payload = b"ELF-newer"
     r = client.post("/api/system/agent",
                     headers={"Authorization": "Bearer %s" % token},
                     files={"file": ("kk-agent", payload)},
                     data={"version": "99.0.0"})
     assert r.status_code == 200
 
-    # 用一个落后版本的 Agent 连上来，应立刻收到 upgrade 帧
-    from kk_agent import config as kk_config
-    with client.websocket_connect("/ws/agent") as ws:
-        ws.send_json({
-            "t": "hello", "id": "x1", "proto_ver": 1,
-            "pod": "pod-upgrade", "image": "img", "agent_ver": "0.0.1",
-            "token": AGENT_TOKEN, "interval": 60,
-        })
-        msg = ws.receive_json()
-        assert msg["t"] == "upgrade", msg
-        assert msg["version"] == "99.0.0"
-        assert msg["url"].endswith("/api/system/agent/download")
+    from kk_server.services.mqtt_bridge import MqttBridge
+    published = []
+    bridge = MqttBridge(app.state.store, app.state.settings,
+                        app.state.agent_tokens, proto_ver=2)
+    bridge.cli = types.SimpleNamespace(
+        publish=lambda topic, body, qos=0, retain=False: (
+            published.append((topic, json.loads(body))), types.SimpleNamespace(rc=0))[1])
+    bridge._on_status("pod-upgrade", {
+        "online": True, "host": "pod-upgrade", "token": AGENT_TOKEN, "proto_ver": 2,
+        "agent_ver": "0.0.1", "image": "img", "interval": 60, "ts": int(time.time())})
+
+    assert published, "落后的 Agent 上线未触发升级推送"
+    topic, body = published[-1]
+    assert topic.endswith("/pod-upgrade/cmd")
+    assert body["kind"] == "update" and body["version"] == "99.0.0"
+    assert body["url"].endswith("/api/system/agent/download")
