@@ -129,11 +129,18 @@ class Store:
 
     def record_hb(self, pod, msg):
         now = int(time.time())
+        # 指标点用帧内 ts（缺失才回落服务器时间）：补发/重放时不全部挤到「刚刚」，
+        # 曲线不会被自己制造的幽灵点污染。last_seen 仍用服务器时间——在线判定看的是
+        # 「服务端何时收到」，与指标时刻是两回事。
+        try:
+            ts = int(msg.get("ts") or now)
+        except (TypeError, ValueError):
+            ts = now
         m = msg.get("metrics") or {}
         raw = json.dumps(msg, ensure_ascii=False)
         with self.lock:  # 明细落库与容器状态更新同事务，避免半写
             self.db.execute("INSERT INTO heartbeats(pod,ts,cpu,mem_mb,metrics) VALUES(?,?,?,?,?)",
-                            (pod, now, m.get("cpu"), m.get("mem_mb"), raw))
+                            (pod, ts, m.get("cpu"), m.get("mem_mb"), raw))
             self.db.execute(
                 "UPDATE containers SET last_seen=?, hb_interval=?, last_metrics=? WHERE pod=?",
                 (now, int(msg.get("interval") or 60), raw, pod))
