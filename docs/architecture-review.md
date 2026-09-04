@@ -1,148 +1,147 @@
-# KontainKeeper 架构分析报告
+# KontainKeeper 架构评审与优化方案
 
-> 分析日期：2026-08-30
-> 范围：`agent/`（kk-agent）、`server/`（kk-server）、`proto/`、`tests/`、`scripts/`
-> 依据文档：`README.md`、`docs/design.md`、`proto/messages.md`、`AGENTS.md`
-
-> **结构说明（2026-08-30 重构后）**：本报告基于重构前的平铺模块结构撰写（如 `agent/kk-agent/kk_config.py`、`agent_main.run()`、`kk_ws` 等）。重构后 `agent` 已成为独立 Python 项目，源码包为 `agent/kk_agent/`（`config.py`/`main.py`/`ws.py`/`conn.py`/`collector.py`/`executor.py`/`plugin_loader.py`/`logutil.py`），并通过 PyInstaller 编译为单文件二进制直接嵌入容器。功能与协议完全等价，文中问题定位与优化建议仍然成立。
+> 分析日期：2026-09-04　代码基线：`main` @ 1c0d0c5（含暂存区未提交的 MVC 重构）
+> 范围：`agent/src/kk_agent/`（1234 行）、`server/src/`（1452 行）、`proto/messages.md`、`docs/design.md`、部署脚本
+> 本文为 **2026-08-30 首版评审的更新版**：首版发现的问题多数已修复，本次重点补录新发现的缺陷。
 
 ---
 
-## 1. 项目意图识别
+## 1. 首版问题处置情况（8-30 → 9-04）
 
-**一句话定位**：在 K8S 集群的 vscode-server 容器 IDE 中，提供一条**绕过 K8S 集群能力、不触碰宿主机、对用户无感知**的直连管理与数据采集通道。
-
-**核心设计决策（已从代码确认与文档一致）**：
-- **反向通道**：容器内的 Agent 主动出站 WebSocket 长连服务端（唯一通道），规避"容器无入站、不能动宿主机、不能用 K8S Service/Ingress"的约束。
-- **资源纪律**：Agent 强制纯 Python 标准库（无 psutil/asyncio），单线程 `select` 事件循环，工作（采集/命令/插件）在一次性 daemon 线程跑，结果经 `queue.Queue` 回主线程发帧——保证 **socket 只被主线程触碰**。
-- **身份与鉴权**：镜像构建期注入 `KK_TOKEN`；服务端校验 `token + proto_ver`，连接按 `pod(hostname)` 关联历史。
-- **安全护栏**：命令走 argv 数组直传 `exec`（不经过 shell 拼接），服务端统一黑名单 + 全量审计；WSS。
-- **部署无损**：`entrypoint-wrapper.sh` 后台拉起 Agent（崩溃 5s 监督重启）+ `exec` 原 vscode-server 启动命令。
-
-**意图达成度**：核心意图已被代码忠实实现，且工程质量高于同类脚本——尤其是 Agent 的资源约束与"socket 线程安全"处理得相当到位。
+| 首版编号 | 问题 | 状态 | 依据 |
+|---|---|---|---|
+| H1 | 阻塞式 SQLite 跑在 async 事件循环上 | ❌ **未修（仍是最核心瓶颈）** | `store.py:103-115`、`hub.py:116` |
+| H2 | `entrypoint-wrapper.sh` 词分割导致原 entrypoint 失效 | ✅ 已修 | 改为 Docker 原生 ENTRYPOINT 数组透传（`7abcbef`） |
+| H3 | TLS 未终结、token 明文风险 | ✅ 已修 | README 增补 TLS 硬约束章节 |
+| M1 | WS 握手用子串弱校验 `"101" in ...` | ✅ 已修 | `ws.py:183-185` 改为精确匹配状态码 |
+| M2 | 黑名单纯子串匹配可绕过 | ✅ 已修 | `security.py` 升级为「程序名 + 高危参数」结构化规则 |
+| M3 | 无连接级 keepalive / 半开检测 | ⚠️ 部分 | 服务端有 4404 心跳超时，Agent 仍不主动 ping |
+| M4 | 单进程内存态 Hub，无法 HA | ❌ 未修 | `hub.py:19` |
+| M5 | 登录无速率限制 | ❌ 未修 | `auth.py:16-23` |
+| M6 | 批量下发非原子，留孤儿 pending | ✅ 已修 | `commands.py:45-48` 先全量校验再下发 |
+| M7 | `metrics_series` 24h 边界接缝 | ❌ 未修 | `store.py:148-159` |
+| M8 | 列表接口无缓存/分页，逐行 `json.loads` | ❌ 未修 | `containers.py:48` |
+| L2 | 二进制命令输出被 `utf-8/replace` 污染 | ❌ 未修 | `store.py:197` |
+| L3 | `_aggregate_hours` 锁下碎查询 | ❌ 未修 | `store.py:313-342` |
 
 ---
 
-## 2. 架构分层总览
+## 2. 做对了什么（不要改这些）
+
+| 决策 | 为什么值得保留 |
+|---|---|
+| 容器主动出站 WebSocket | 「不动宿主机、不用 kube-api」硬约束下唯一可行解，选型无可替代 |
+| Agent 纯标准库 + 单文件二进制 | 免去在用户镜像里塞 Python 运行时，是「用户无感知」的前提 |
+| `proto/messages.md` 契约先行 | 双端版本联动、close code 语义明确，协议演进有锚点 |
+| Agent 单线程 select + 一次性工作线程 | socket 只由主线程触碰，从根上消灭并发 bug，也压住 RSS |
+| 命令 argv 直传 exec + 服务端黑名单 | 不经 shell 拼接，绕过整类注入问题 |
+| `collector.py` 全量经 `fs_root` 注入 | 采集逻辑可在 Windows 上用伪造 /proc 测试，罕见的可测性设计 |
+
+---
+
+## 3. 新发现的架构问题
+
+### 🔴 P0 — 阻断性缺陷
+
+| # | 问题 | 证据 | 后果 |
+|---|---|---|---|
+| **1** | **自更新先替换、后判断形态**：`verify_and_replace()` 在 `_is_binary_target()` 之前执行 | `updater.py:195-200` + `config.py:37`（`agent_bin` 缺省 = `sys.executable`） | 源码形态运行（含 README 推荐的 `uv run kk-agent`）且未设 `KK_AGENT_BIN` 时，下载的二进制会**直接覆盖容器里的 Python 解释器**。测试全部显式传了 `agent_bin`（`test_updater.py:87,101`），**该路径零覆盖** |
+| **2** | **Store 同步阻塞事件循环**（H1 未修） | `store.py:103-115`；`hub.py:116`；`commands.py:24`（`async def` 内 N 次同步查询） | 心跳写入串行化并卡住整个 loop。1000 容器时，`hb_timeout = max(3×interval, 30)` 被我们自己制造的延迟触发 → **大规模误判 4404 掉线**。`list_containers` 用 `def`（线程池）而 `create_commands` 用 `async def`，阻塞语义还不一致 |
+| **3** | **命令回传不校验归属**：`append_result(msg)` 只按 `id` 匹配，不校验结果是否来自该命令所属 pod 的连接 | `hub.py:117-118` → `store.py:189` | 任一持合法 token 的 Agent 可回传**其他 pod 的命令结果**，污染命令表与审计链 |
+| **4** | **命令在 `sent` 状态断线即丢，且永不收敛** | `store.py:181-183`（补发只查 pending）；`hub.py:94-96`；`store.py:352-354`（1h 才标 lost） | Agent 收到命令后崩溃/重启 → 永久停在 `sent`，前端一直转圈，无超时提示、无重试、无失败反馈 |
+
+### 🟠 P1 — 重要风险
+
+| # | 问题 | 证据 | 后果 |
+|---|---|---|---|
+| **5** | **命令输出在 UI 上永远看不见**：`_CMD_COLS` 不含 `out`，前端 `renderCmd` 却读 `c.out` | `store.py:85` vs `web/app.js:271` | 列表接口不返回 `out`，详情页也走 `list_commands`，**整个管理界面看不到任何命令回显** |
+| **6** | **存储只增不减**：`hourly` 表从不清；`commands` 只删 `finished_at IS NOT NULL`，而 `lost` 命令该字段为 NULL | `store.py:348-355` | `lost` 命令带着最大 4MB 的 `out` 永久留存；`hourly` 每行含完整 JSON。1000 容器 90 天 → 数 GB 无回收路径 |
+| **7** | **前端全量轮询放大**：容器列表每 5s 拉全量，服务端逐行 `json.loads(last_metrics)` | `web/app.js:177,262,334`；`containers.py:48,25` | 1000 容器 × 5s = 每秒 200 次全 JSON 反序列化 + 全表扫描，无 ETag / 分页 / 字段裁剪。**服务端先于 Agent 到瓶颈** |
+| **8** | **Hub 连接表是进程内存 dict**，无任何多实例抽象 | `hub.py:19,84` | `--workers > 1` 或扩容时命令路由到无连接的进程 → 永久 `pending`。文档称「单进程即可」，但代码与 Dockerfile 均未强制 |
+| **9** | **自更新无发布者签名**：仅用服务端下发的 sha256 校验 | `updater.py:146-174` | 只能防传输损坏，防不了服务端被攻陷 → **一键在所有容器内 RCE**。无灰度、无金丝雀、无回滚 API（`.prev` 存在但无接口） |
+| **10** | **Pod 身份可伪造**：`pod` 由 Agent 自报，同名新连接会抢占并踢掉旧连接 | `config.py:30`；`hub.py:57,78-84`（4403） | 拿到 token 者可伪装任意 pod 并顶掉真实连接，劫持指标与命令通道 |
+| **11** | **大输出命令饿死心跳**：4MB 输出分 85 帧在主线程同步发送，期间不读服务端帧 | `main.py:84-101`；`ws.py:200-214` | 心跳推迟 → 服务端 4404 关连接 → 结果发不完。输出越大越易触发 |
+| **12** | **未提交重构 + 三套路径描述** | `git status`（MVC 重构仍在暂存区）；AGENTS.md 写 `server/src/kk_server/`、README 写 `server/kk-server/`、实际是 `server/src/` | `src` 直铺 + hatch sources 重映射是脆弱方案（最近两个提交都在修打包）；文档多处错路径 |
+
+### 🟡 P2 — 技术债
+
+13. 清理线程无 shutdown：`app.state.shutdown` 存了 Event 但无人 `.set()`（`main.py:51-61`）
+14. `server/Dockerfile` 用 `pip` 手装依赖并手工 `COPY src ./kk_server`，与 pyproject/uv.lock 脱节
+15. `_outbuf` 内存态，进程重启丢失；超 1000 条丢弃最旧累积输出，DB 的 `out` 就此截断且无标记（`store.py:199-210`）
+16. 协议无压缩：心跳帧含 procs_top/users/disks，实测远超文档承诺的 2KB
+17. 无幂等设计：重连补发可能重复执行有副作用的 shell 命令
+18. Hub 异常被 `log.debug` 吞掉，生产排障看不到连接失败原因（`hub.py:124`）
+19. 无 `/metrics`、无结构化日志、无连接数/命令成功率可观测面板
+20. `scripts/loadtest.py`、`bench_agent.py` 未纳入 CI，M4「1000 连接压测」无回归保障
+
+---
+
+## 4. 优化方案
+
+### 阶段一 · 止血（1–2 天，不动架构）
+
+| 动作 | 改动 | 验证 |
+|---|---|---|
+| **A1** 修复自更新顺序 | `apply_manifest` 改为**先判形态再下载**：非 frozen 二进制形态直接 `return False` 并告警，绝不落盘。用 `sys.frozen` 判断，不用文件名启发式 | 新增测试：`agent_bin` 缺省时调用，断言 `sys.executable` **未被修改** |
+| **A2** 补命令输出 | `list_commands` 增加 `out_tail`（末 2KB）；新增 `GET /api/commands/{cid}/out` 返回完整输出 | 集成测试断言控制台能拿到 `kk-ok` |
+| **A3** 命令结果归属校验 | `hub.agent_endpoint` 处理 `cmd_result` 时校验 `get_command(id).pod == 当前连接 pod`，不匹配则丢弃并审计 | 新增测试：A 连接回传 B 的命令 id |
+| **A4** 存储回收 | `cleanup` 增补：`hourly` 保留 90 天；清理 `status='lost'` 命令；大表 DELETE 分批（`LIMIT 5000` 循环） | 单测：构造 2 天前 `lost` 命令，断言被清理 |
+| **A5** 固化单进程约束 | 启动时检测 worker 数，非单实例则告警；README/Dockerfile 写明不支持多 worker | 人工验证 |
+| **A6** 修正文档路径并落地重构 | 统一为 `server/src/`（包名 `kk_server`）；提交暂存的 MVC 重构 | `grep -r "kk_server/"` 无错路径残留 |
+
+### 阶段二 · 加固（1–2 周）
+
+| 动作 | 要点 |
+|---|---|
+| **B1 命令状态机** | 引入 `cmd_ack` 帧：`pending → sent → acked → running → done`。重连补发 `sent` 但未 `acked` 的命令；超 `timeout+30s` 未 ack 自动置 `timeout`。彻底消灭「石沉大海」 |
+| **B2 解除事件循环阻塞** | ① Store 操作包 `run_in_threadpool`（改动最小，先止血）；② 或迁移 `aiosqlite` + 写队列（治本）。同时加 `PRAGMA busy_timeout`，REST 路由统一 `def`（线程池）语义 |
+| **B3 前端增量化** | 容器列表加 `?view=summary`（跳过 `json.loads(last_metrics)`）；摘要字段冗余进 `containers` 表列；加 ETag + `If-None-Match`；轮询按页面活跃度退避 |
+| **B4 自更新可信化** | 上传端 ed25519 签名，Agent 内置公钥验签；灰度（按 pod 名哈希分 10 批）；新增 `POST /api/system/agent/rollback` 恢复 `.prev` |
+| **B5 身份绑定** | token 与 pod 命名前缀绑定（构建期注入时锁定），拒绝不匹配的 hello 并审计告警 |
+| **B6 发送背压** | 大输出分帧改为可中断：每帧后回主循环 `select` 一次优先保心跳；或服务端对正在回传结果的连接放宽 4404 |
+| **B7 安全加固** | 登录失败按 IP + 用户名滑动窗口限流（5 次/5 分钟）；审计补充来源 IP |
+
+### 阶段三 · 演进（1–2 月，按规模触发）
+
+| 动作 | 触发条件与要点 |
+|---|---|
+| **C1 Hub 连接注册表抽象** | 需要多实例时。定义 `ConnRegistry` 接口，内存实现不变，Redis 实现用 pub/sub 转发命令帧 |
+| **C2 指标分层存储** | 热数据内存环形缓冲（1h）／温数据 SQLite 明细（24h）／冷数据 `hourly`（90d），或评估 VictoriaMetrics |
+| **C3 协议 v2** | permessage-deflate 压缩；帧级 HMAC；命令幂等键防重复执行；`proto_ver` 双版本共存过渡 |
+| **C4 前端工程化** | 引入构建 + 由 OpenAPI 生成 TS 类型。当前单文件 361 行已接近可维护上限 |
+| **C5 可观测性** | 暴露 `/metrics`（连接数、心跳延迟分位、命令成功率、DB 写入耗时）、结构化 JSON 日志 |
+
+---
+
+## 5. 优先级决策依据
+
+- **先修 1（自更新）**：唯一可能造成**不可逆数据破坏**的缺陷，修复成本 < 20 行。
+- **先修 2（同步 IO）**：唯一会让系统在**设计目标规模**（1000 容器）下自我雪崩的缺陷。
+- **先修 3、4**：安全与功能正确性，直接影响可信度。
+- **B 阶段看规模**：目标为百级容器时，阶段二可只做 B1/B2/B3；B4/B5 视合规要求决定。
+- **C 阶段按需**：在明确要扩容到多实例或万级容器前，不要提前引入 Redis 与协议 v2。
+
+---
+
+## 6. 建议的最小验证闭环
 
 ```
-┌─ 管理端 ────────────────────────────────────────────────┐
-│ FastAPI(app.state: store / hub / cmd_blacklist)          │
-│  ├─ REST /api/*（containers/commands/audit/auth/tokens）  │
-│  ├─ WS   /ws/agent  ← Hub.agent_endpoint（async）         │
-│  └─ Static /  → web/ 单页管理界面（hash 路由 + 轮询）     │
-│ Store(SQLite WAL + 全局 threading.Lock)                   │
-└───────────────▲ 出站 WebSocket（容器→服务端）──────────────┘
-┌─ 容器内 Agent（纯 stdlib，常驻 RSS <15MB）──────────────┐
-│ agent_main.run()：select 事件循环 + 队列回传             │
-│  kk_ws(自研 RFC6455) / kk_conn / kk_config               │
-│  kk_collector(/proc) / kk_executor(subprocess)           │
-│  kk_plugins(热加载) / kk_logutil(1MB 轮转)               │
-└─────────────────────────────────────────────────────────┘
+新增测试（阶段一）
+├─ test_updater: agent_bin 缺省时 sys.executable 不被覆盖      ← 防回归（当前零覆盖）
+├─ test_hub: A 连接回传 B 的命令 id 被拒                        ← 安全
+├─ test_store: lost 命令与过期 hourly 被清理                     ← 存储
+└─ test_integration: 控制台能看到命令输出                        ← 功能
+
+纳入 CI
+└─ scripts/loadtest.py 作为 nightly，断言 1000 连接下心跳零 4404
 ```
 
 ---
 
-## 3. 架构优点（先肯定）
+## 7. 结论
 
-1. **反向隧道思路正确且优雅**：在不依赖 K8S 的前提下实现了"管理面可达容器"，约束与方案自洽。
-2. **Agent 资源纪律到位**：纯 stdlib、`select` 单线程、工作线程结果经队列回主线程发帧——`socket` 永不跨线程，避免了最经典的并发 Bug。
-3. **协议契约清晰**：`proto/messages.md` 定义了帧类型、字段来源、关闭码语义（4401/4402/4403）、分块回传与离线补发，并有 `proto_ver` 版本协商。
-4. **测试质量高**：`test_integration.py` 用真实 uvicorn + 真实 Agent 主循环 + 伪造 `/proc`（`conftest.make_fake_fs`）做端到端验证，且等待条件同时检查 `metrics.mem_mb 非空`（符合 AGENTS.md 约定）；压测 `loadtest.py`、资源基线 `bench_agent.py` 齐备。
-5. **安全基础扎实**：`verify_admin` 用 `secrets.compare_digest`（常数时间）；命令 argv 直传 `exec` 天然避免 shell 注入；黑名单 + 审计 + 二次确认链条完整。
-6. **部署无损**：`entrypoint-wrapper.sh` + 监督循环设计合理，用户态 vscode-server 启动行为不变。
+骨架是对的，血肉撑不住生产规模。反向长连接、纯标准库 Agent、协议契约先行、双端独立单测——这四件事做对了，是这个项目最值钱的部分。
 
----
+当前有 **4 个阻断性缺陷**（其中自更新顺序问题能直接摧毁容器内的 Python 解释器），且在「1000 容器」这个设计目标上，**服务端的同步 IO 模型与轮询式前端会先于 Agent 资源瓶颈崩塌**——这一点值得特别注意，因为项目的全部资源优化都投在了 Agent 侧。
 
-## 4. 架构问题与风险（按严重度排序）
-
-### 🔴 高（影响规模化 / 功能正确性 / 安全部署）
-
-**H1. 阻塞式 SQLite 跑在 async 事件循环上（核心扩展性瓶颈）**
-- `store` 的全部方法都是**同步**的，且共用一把全局 `threading.Lock`；`hub.agent_endpoint`（async）与所有 API 处理器**直接在事件循环里调用** `record_hb / append_result / 各种查询`，每次都 `acquire lock → 写 → commit`。
-- 后果：单进程单事件循环下，任何一次 DB 提交都会**阻塞整个 loop**；所有连接串行化。
-- 更尖锐的是 `store.cleanup()` → `_aggregate_hours()`（每 300s 跑）对**每个过去小时 × 每个 pod** 做多次小查询（`self._query` 反复拿锁/放锁），在规模下（M4 目标 1000 连接）会造成明显的延迟尖刺，且聚合期间与事件循环争锁。
-- 影响：直接威胁文档中 M4「1000 连接压测通过」的目标。
-
-**H2. `entrypoint-wrapper.sh` 原 entrypoint 透传存在 Bug**
-- 脚本里 `exec $KK_ORIG_ENTRYPOINT` 是**未加引号的变量展开 + 词分割**：`KK_ORIG_ENTRYPOINT` 是 `docker image inspect` 拿到的 JSON 串，如 `["/usr/local/bin/code-server","--flag"]`。`exec` 后得到的是字面量 `[/usr/local/bin/code-server",` 等碎片，**首个 token 不是可执行文件**，原 entrypoint 直接失效。
-- 仅当基础镜像 ENTRYPOINT 为 `null`（很多镜像把启动逻辑放在 CMD）时走 `exec "$@"` 才正常。凡是**显式定义了 ENTRYPOINT 的基础镜像，叠加后容器启动会失败**。
-- 配套缺陷：`scripts/build.sh` 生成 `CMD ${ORIG_CMD}`，当 `ORIG_CMD` 为 JSON `null` 时得到非法 `CMD null`，`docker build` 报错。
-
-**H3. TLS 未终结且未强制（安全部署陷阱）**
-- `server/Dockerfile` 直接 `python -m kk_server`（KK_PORT=8443），**无任何 TLS/证书配置**；`main.py` 的 uvicorn 也未启用 ssl。
-- 而文档要求 Agent 用 `wss://`——这意味着生产必须前置一个 TLS 终止的反代（nginx/LB），否则 `wss://` 连不上；若有人图省事改用 `ws://`，**hello 中的 token 将以明文传输**。
-- README/部署章节未把"必须 TLS 终止、禁止 `ws://` 直连暴露"作为硬约束写明。
-
-### 🟠 中
-
-**M1. Agent 自研 WebSocket 实现（~260 行 RFC6455）**
-- 正确性/安全/维护风险集中点：手搓握手、掩码、分片、ping/pong、close。不支持扩展/压缩；握手校验用 `if "101" not in hlines[0]`（子串弱校验，HTTP 1010 之类也会蒙混）。
-- 这是为"纯 stdlib + 低内存"做的刻意取舍（可接受），但需要配套更强的协议模糊测试与明确边界说明。
-
-**M2. 命令黑名单是子串匹配，可被绕过/误伤**
-- `commands.py` 把 argv 转小写拼接后做 `任意子串 in joined`。`rm -rf  /`（双空格）、`r\m -rf /`、`echo rm -rf /` 等既能绕过也能误伤合法命令。
-- 本质上这是"护栏"而非"强安全"（真安全来自仅管理员可下发 + 审计）。建议在文档中明确其护栏性质，并升级为结构化规则（argv[0] 精确/前缀匹配 + 危险参数）。
-
-**M3. 缺少连接级 keepalive / 半开连接检测**
-- Agent 从不主动发 WS ping，也不设置 TCP keepalive；服务端也不发 WS ping 探活。`conns[pod]` 的存活完全依赖下一次业务心跳。
-- 风险：防火墙/代理静默丢包后，服务端 `conns` 可能保留"半开"条目，`try_dispatch` 会向死 socket 发送，要等发送失败才清理。
-
-**M4. 单进程内存态 Hub，无法水平扩展 / HA**
-- `Hub.conns`、`hub.tokens` 都在单进程内存里。设计上假设单实例（文档已写"单进程即可管理数千长连接"），但这也意味着无法多副本部署，断服即全盲。
-- SQLite 单文件同样绑定单实例。若未来要求 HA，需要引入外部状态（Redis/PG + 共享连接注册表）。
-
-**M5. 登录无速率限制 / 会话不滑动**
-- `/api/login` 失败仅写审计，无失败锁、无限流，存在暴力破解风险。会话固定 12h 不刷新。
-
-**M6. 批量命令下发非原子，可能留下孤儿 pending**
-- `create_commands` 循环里：对每个 pod 先 `get_container` 校验，再 `create_command` + `try_dispatch`。若第 2 个 pod 不存在（404），前序 pod 已创建/已下发的命令不会被回滚，返回 404 时留下部分已派发的命令。
-
-**M7. `metrics_series` 跨 24h 边界数据接缝**
-- `hours<=24` 走 `heartbeats` 原始表，`>24` 走 `hourly` 聚合表。两者拼接点在"当前未结束的小时"，可能漏掉或重复最近一小时（且 `hourly` 仅在每 300s 清理时聚合，存在延迟）。
-
-**M8. 列表接口无缓存/分页**
-- `_container_view` 每次请求都 `json.loads(last_metrics)`（1000 pod = 1000 次解析）；`/api/containers` 全量返回，无分页。
-
-### 🟡 低
-
-- **L1 文档与代码漂移**：design.md §3.3 写 `python3 -OO /opt/kk-agent/__main__.py`，实际 wrapper 跑的是 `agent_main.py`；`entrypoint-wrapper.sh` 里的 `KK_ORIG_ENTRYPOINT` 分支未在 design.md 体现。
-- **L2 二进制命令输出损坏**：`append_result` 把 base64 输出按 `utf-8 / replace` 解码再存文本，二进制结果会被替换字符污染。
-- **L3 聚合查询过碎**：`_aggregate_hours` 在全局锁下做 `O(小时数 × pod 数)` 的小查询，规模下放大锁竞争。
-- **L4 `KK_ORIG_ENTRYPOINT` 经 ENV 传 JSON 字符串**：容器内含空格/特殊字符的 entrypoint 解析脆弱。
-
----
-
-## 5. 优化建议（按优先级）
-
-### P0（必须修，否则卡规模化/上线）
-1. **DB 写入移出事件循环**
-   - 方案 A（推荐）：引入 `aiosqlite`，把 `Store` 改成 async，所有调用 `await`。
-   - 方案 B（改动最小）：心跳/命令结果写入走**独立 writer 线程 + 内存队列**（fire-and-forget），事件循环只 enqueue；API 读走 `run_in_threadpool`。
-   - 同时把 `_aggregate_hours` 改为**游标批处理 + 限流分片**，避免在清理线程里长时间持锁。
-2. **修复 entrypoint 透传**
-   - `build.sh` 对 `null` ENTRYPOINT/CMD 做兜底（ENTRYPOINT 为空则不改写、CMD 为空则省略 `CMD`）。
-   - `entrypoint-wrapper.sh` 用 `python -c` 或 `jq` 把 JSON entrypoint 解析为 argv 数组再 `exec "$entrypoint_arr[@]"`；或干脆把原 entrypoint 透传成一个可执行 wrapper，避免词分割。
-3. **强制 TLS 终止**
-   - 服务端部署文档明确"必须前置 TLS 反代，禁止 `ws://` 直连"；可选地，Agent 端拒绝 `ws://`（仅允许 `wss://`），并在 `main.py` 增加"若 `KK_REQUIRE_TLS` 且未走反代则告警"。
-
-### P1（强烈建议）
-4. **加连接级探活**：Agent 周期发 WS ping（或开 TCP keepalive）；服务端定时 WS ping 并清理无响应 `conns`。
-5. **黑名单升级**：改为结构化规则（argv[0] + 危险参数白/黑名单），并在 UI/文档标注"仅为护栏，强安全靠鉴权+审计"。
-6. **登录加固**：失败计数 + 临时锁/限流；会话支持滑动过期。
-7. **批量命令原子化**：先校验所有 pod 存在、再统一创建（用事务或预校验列表），失败整体回滚。
-
-### P2（打磨）
-8. **可扩展性准备**：连接注册表外置（为 HA 留口）；指标查询加缓存层；`/containers` 加分页；修 `metrics_series` 边界接缝。
-9. **Agent WS 健壮性**：对 `kk_ws` 补协议模糊测试（畸形帧/超大帧/分片边界）；二进制输出改为 base64 透传不解码。
-10. **文档与代码对齐**：修正 design.md 的 `entrypoint-wrapper` 描述，补全 TLS 部署约束与黑名单语义说明。
-
----
-
-## 6. 结论
-
-KontainKeeper 的**架构思路与意图高度自洽**，在"不依赖 K8S、用户无感知、低资源"这三条硬约束下给出了优雅的反向通道方案，代码工程质量（尤其 Agent 的资源纪律、测试覆盖）明显优于同类脚本。
-
-当前**最关键的三个工程风险**集中在：**(H1) 阻塞式 SQLite 跑在 async 事件循环上的扩展瓶颈、(H2) entrypoint 透传词分割 bug、(H3) TLS 未终结/未强制的部署安全陷阱**。这三项不解决，会分别卡住规模化压测目标、让部分基础镜像叠加失败、以及在公网暴露时泄露 token。
-
-优化路径清晰：**先把 DB 访问移出事件循环并修复 entrypoint/TLS 三处 P0，再补探活、黑名单、登录限流等 P1 加固**，即可在保持现有简洁架构的前提下支撑到千级容器规模。
+按阶段一清单止血（约 1–2 天）后，系统可安全支撑百级容器；完成阶段二后可稳定支撑千级。
