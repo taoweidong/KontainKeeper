@@ -268,7 +268,7 @@ function renderCmd(c) {
   return `<details style="margin-bottom:8px">
     <summary>${statusChip(c.status)} <span class="mono">${isReload ? "［插件重载］" : esc(argv)}</span>
       <span class="muted" style="font-size:12px"> ${fmtTs(c.created_at)} · ${c.elapsed_ms != null ? c.elapsed_ms + "ms" : ""}${c.rc != null ? " · rc=" + c.rc : ""}${c.timed_out ? " · 超时" : ""}</span></summary>
-    ${c.out ? `<pre class="out">${esc(c.out)}</pre>` : ""}
+    ${c.out_tail ? `<pre class="out">${esc(c.out_tail)}</pre>` : ""}
   </details>`;
 }
 

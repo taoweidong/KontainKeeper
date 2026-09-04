@@ -129,9 +129,13 @@ class Transport:
 
     # ---- 载荷 ----
     def _status_payload(self, online, reason=""):
+        # 带 token：服务端据此确认这台主机有权注册。生产环境真正的主机级隔离
+        # 由 Broker 的 password_file + pattern ACL 保证（见方案 G1），这里等价于
+        # 旧 WS hello 的校验，避免未配 ACL 时通道完全敞开。
         return json.dumps({
             "online": online,
             "host": self.host,
+            "token": self.cfg.get("token", ""),
             "agent_ver": kk_config.AGENT_VER,
             "proto_ver": kk_config.PROTO_VER,
             "image": self.cfg.get("image", ""),

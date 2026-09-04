@@ -24,6 +24,7 @@ CFG = {
     "image": "img:1",
     "client_id": "kk",
     "max_queued": 999,
+    "token": "tok-1",
 }
 
 
@@ -119,6 +120,7 @@ def test_session_identity_and_will(monkeypatch):
     assert fake.will["retain"] is True and fake.will["qos"] == tp.QOS_CMD
     will = json.loads(fake.will["payload"])
     assert will["online"] is False and will["host"] == "web-01"
+    assert will["token"] == "tok-1", "LWT 与 status 必须同形，服务端都要能认主机"
     assert fake.max_queued == 999, "KK_MAX_QUEUED 必须传给 paho，否则大输出断线仍会被静默淘汰"
     assert fake.reconnect_delay == (tp.RECONNECT_MIN, tp.RECONNECT_MAX)
 
@@ -180,7 +182,8 @@ def test_status_is_retained_qos1(monkeypatch):
     tr.publish_status(True, "online")
     frame = fake.published[-1]
     assert frame["qos"] == tp.QOS_CMD and frame["retain"] is True
-    assert json.loads(frame["payload"])["online"] is True
+    body = json.loads(frame["payload"])
+    assert body["online"] is True and body["token"] == "tok-1"
 
 
 def test_qos1_publish_is_queued_even_while_disconnected(monkeypatch):

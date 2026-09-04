@@ -12,10 +12,14 @@ def current_user(request: Request) -> str:
 
 
 def agent_token_auth(request: Request) -> str:
-    """校验 Agent 自更新接口用的 Bearer / X-KK-Token，与 WebSocket hello 同一令牌池。"""
+    """校验 Agent 自更新接口用的 Bearer / X-KK-Token，与 status 帧同一令牌池。
+
+    注意：MQTT 3.1.1 下服务端看不到发布者的认证身份，主机级隔离由 Broker 的
+    password_file + pattern ACL 保证；这里只保护 HTTP 侧的更新接口。
+    """
     h = request.headers.get("Authorization", "")
     token = h[7:].strip() if h.startswith("Bearer ") else request.headers.get("X-KK-Token", "").strip()
-    tokens = getattr(request.app.state.hub, "tokens", set())
+    tokens = getattr(request.app.state, "agent_tokens", set())
     if token not in tokens:
         raise HTTPException(status_code=401, detail="invalid agent token")
     return token

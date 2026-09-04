@@ -18,17 +18,17 @@ def _mask(token):
 @router.get("/tokens")
 def list_tokens(request: Request):
     current_user(request)
-    store, hub = request.app.state.store, request.app.state.hub
+    store, hub = request.app.state.store, request.app.state
     revoked = set(store.revoked_tokens())
-    items = [{"token": _mask(t), "revoked": t in revoked} for t in sorted(hub.tokens)]
+    items = [{"token": _mask(t), "revoked": t in revoked} for t in sorted(hub.agent_tokens)]
     return {"items": items}
 
 
 @router.post("/tokens/revoke")
 def revoke_token(body: TokenBody, request: Request):
     user = current_user(request)
-    store, hub = request.app.state.store, request.app.state.hub
-    if body.token not in hub.tokens:
+    store, hub = request.app.state.store, request.app.state
+    if body.token not in hub.agent_tokens:
         raise HTTPException(status_code=404, detail="token 不在当前接入列表")
     if store.is_token_revoked(body.token):
         raise HTTPException(status_code=400, detail="token 已处于吊销状态")
@@ -40,8 +40,8 @@ def revoke_token(body: TokenBody, request: Request):
 @router.post("/tokens/restore")
 def restore_token(body: TokenBody, request: Request):
     user = current_user(request)
-    store, hub = request.app.state.store, request.app.state.hub
-    if body.token not in hub.tokens:
+    store, hub = request.app.state.store, request.app.state
+    if body.token not in hub.agent_tokens:
         raise HTTPException(status_code=404, detail="token 不在当前接入列表")
     store.restore_token(body.token)
     store.add_audit(user, "token_restore", {"token": _mask(body.token)})

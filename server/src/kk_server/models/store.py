@@ -19,7 +19,9 @@ CREATE TABLE IF NOT EXISTS containers(
   hb_interval INTEGER NOT NULL DEFAULT 60,
   first_seen INTEGER NOT NULL,
   last_seen INTEGER NOT NULL,
-  last_metrics TEXT NOT NULL DEFAULT ''
+  last_metrics TEXT NOT NULL DEFAULT '',
+  online INTEGER NOT NULL DEFAULT 0,
+  status_ts INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS heartbeats(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -51,8 +53,10 @@ CREATE TABLE IF NOT EXISTS commands(
   finished_at INTEGER,
   rc INTEGER,
   timed_out INTEGER NOT NULL DEFAULT 0,
+  truncated INTEGER NOT NULL DEFAULT 0,
   elapsed_ms INTEGER,
-  out TEXT NOT NULL DEFAULT ''
+  out_b64 TEXT NOT NULL DEFAULT '',
+  out_chunks INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_cmd_pod ON commands(pod, created_at);
 CREATE TABLE IF NOT EXISTS audit(
@@ -81,12 +85,37 @@ CREATE TABLE IF NOT EXISTS revoked_tokens(
 CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT NOT NULL);
 """
 
-MAX_OUT_CHARS = 4 * 1024 * 1024
-_CMD_COLS = "id,pod,kind,argv,timeout,status,created_by,created_at,finished_at,rc,timed_out,elapsed_ms"
+_CMD_COLS = ("id,pod,kind,argv,timeout,status,created_by,created_at,sent_at,finished_at,"
+             "rc,timed_out,truncated,elapsed_ms,out_chunks")
+# 协议 v2 起命令输出以 base64 存 out_b64（二进制不再被 utf-8/replace 污染）。
+# 旧库遗留的 out 列不再读取，只保留不破坏。
+_NEW_COLS = {
+    "containers": [("online", "INTEGER NOT NULL DEFAULT 0"),
+                   ("status_ts", "INTEGER NOT NULL DEFAULT 0")],
+    "commands": [("out_b64", "TEXT NOT NULL DEFAULT ''"),
+                 ("out_chunks", "INTEGER NOT NULL DEFAULT 0"),
+                 ("truncated", "INTEGER NOT NULL DEFAULT 0")],
+}
 
 
 def _pwdf(salt, password):
     return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120_000).hex()
+
+
+def _b64_tail(b64, nbytes=2048):
+    """从拼接好的 base64 里截末段解码。
+
+    base64 每 4 字符解 3 字节且组间互不依赖，所以按 4 的倍数从右侧截取仍是合法串。
+    """
+    if not b64:
+        return ""
+    chars = ((nbytes + 2) // 3) * 4
+    tail = b64[-chars:] if len(b64) > chars else b64
+    tail = tail[-((len(tail) // 4) * 4):] or tail
+    try:
+        return base64.b64decode(tail, validate=False).decode("utf-8", "replace")[-nbytes:]
+    except Exception:
+        return ""
 
 
 class Store:
@@ -94,11 +123,19 @@ class Store:
         self.db = sqlite3.connect(path, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.lock = threading.Lock()
-        self._outbuf = {}  # cid -> 累积输出（避免逐帧重读整段 out 造成 O(n^2)）
         with self.lock:
             self.db.executescript(SCHEMA)
             self.db.execute("PRAGMA journal_mode=WAL")
+            self._migrate()
             self.db.commit()
+
+    def _migrate(self):
+        """SCHEMA 里的 CREATE TABLE IF NOT EXISTS 不会给已存在的表补列，需手工 ALTER。"""
+        for table, cols in _NEW_COLS.items():
+            have = {r["name"] for r in self.db.execute("PRAGMA table_info(%s)" % table)}
+            for name, decl in cols:
+                if name not in have:
+                    self.db.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, name, decl))
 
     def _exec(self, sql, args=()):
         with self.lock:
@@ -127,6 +164,52 @@ class Store:
     def touch(self, pod):
         self._exec("UPDATE containers SET last_seen=? WHERE pod=?", (int(time.time()), pod))
 
+    # ---- 在线状态（真相来自 Broker 的 retained status + LWT）----
+    def set_online(self, pod, online, ts=None, image="", agent_ver=""):
+        """上线来自 Agent 的 retained status，下线来自 LWT 或优雅 stop。
+
+        hb_interval 不在这里写——record_hb 每帧都会带权威的 interval，避免两处互相覆盖。
+        """
+        now = int(ts or time.time())
+        if not online:
+            self._exec("UPDATE containers SET online=0, status_ts=? WHERE pod=?", (now, pod))
+            return
+        with self.lock:
+            self.db.execute(
+                "INSERT INTO containers(pod,image,agent_ver,hb_interval,first_seen,last_seen,"
+                "last_metrics,online,status_ts) VALUES(?,?,?,?,?,?,?,1,?)"
+                " ON CONFLICT(pod) DO UPDATE SET online=1, status_ts=excluded.status_ts,"
+                " last_seen=excluded.last_seen,"
+                " image=CASE WHEN excluded.image<>'' THEN excluded.image ELSE containers.image END,"
+                " agent_ver=CASE WHEN excluded.agent_ver<>'' THEN excluded.agent_ver"
+                " ELSE containers.agent_ver END",
+                (pod, image or "", agent_ver or "", 60, now, now, "", now))
+            self.db.commit()
+
+    def mark_stale_offline(self, grace=180):
+        """把「声称在线但久无 status 刷新」的主机判成离线。
+
+        retained online 只有在 Broker 崩溃且来不及发 LWT 时才会失真，
+        这条兜底由桥接的周期任务驱动，不再需要每连接一个超时定时器。
+        """
+        cur = self._exec(
+            "UPDATE containers SET online=0"
+            " WHERE online=1 AND ? - status_ts > MAX(3 * hb_interval, ?)",
+            (int(time.time()), int(grace)))
+        return max(0, cur.rowcount or 0)
+
+    def online_count(self):
+        return self._query_one("SELECT COUNT(*) AS n FROM containers WHERE online=1")["n"]
+
+    def is_online(self, pod, grace=180):
+        row = self._query_one("SELECT online,status_ts,hb_interval FROM containers WHERE pod=?",
+                              (pod,))
+        if not row or not row["online"]:
+            return False
+        # 宽限兜底：Broker 崩溃且没来得及发 LWT 时，retained 的 online 会一直挂着
+        span = max(3 * (row["hb_interval"] or 60), grace)
+        return int(time.time()) - (row["status_ts"] or 0) < span
+
     def record_hb(self, pod, msg):
         now = int(time.time())
         # 指标点用帧内 ts（缺失才回落服务器时间）：补发/重放时不全部挤到「刚刚」，
@@ -152,6 +235,18 @@ class Store:
     def get_container(self, pod):
         return self._query_one("SELECT * FROM containers WHERE pod=?", (pod,))
 
+    def containers_exist(self, pods):
+        """批量下发前的存在性校验：一次 IN 查询取代 N 次单查（500 台一次点击）。"""
+        pods = list(pods or [])
+        if not pods:
+            return set()
+        found = set()
+        for i in range(0, len(pods), 400):     # 分片避开 SQLite 变量数上限
+            shard = pods[i:i + 400]
+            sql = "SELECT pod FROM containers WHERE pod IN (%s)" % ",".join("?" * len(shard))
+            found |= {r["pod"] for r in self._query(sql, tuple(shard))}
+        return found
+
     def metrics_series(self, pod, hours=24):
         since = int(time.time()) - hours * 3600
         if hours <= 24:
@@ -167,62 +262,100 @@ class Store:
 
     # ---- 命令 ----
     def create_command(self, pod, kind, argv, timeout, created_by):
-        cid = "c-" + secrets.token_hex(6)
-        self._exec(
-            "INSERT INTO commands(id,pod,kind,argv,timeout,status,created_by,created_at)"
-            " VALUES(?,?,?,?,?,'pending',?,?)",
-            (cid, pod, kind, json.dumps(argv), timeout, created_by, int(time.time())))
-        return cid
+        return self.create_commands_batch([pod], kind, argv, timeout, created_by)[0]
+
+    def create_commands_batch(self, pods, kind, argv, timeout, created_by):
+        """批量下发一次点击最多建 500 行：单事务 executemany，不再逐条 commit。"""
+        now = int(time.time())
+        ids = ["c-" + secrets.token_hex(6) for _ in pods]
+        argv_json = json.dumps(argv, ensure_ascii=False)
+        rows = [(cid, pod, kind, argv_json, timeout, created_by, now)
+                for cid, pod in zip(ids, pods)]
+        with self.lock:
+            self.db.executemany(
+                "INSERT INTO commands(id,pod,kind,argv,timeout,status,created_by,created_at)"
+                " VALUES(?,?,?,?,?,'pending',?,?)", rows)
+            self.db.commit()
+        return ids
 
     def get_command(self, cid):
         return self._query_one("SELECT * FROM commands WHERE id=?", (cid,))
 
     def list_commands(self, pod=None, limit=100):
+        sql = "SELECT %s, out_b64 FROM commands" % _CMD_COLS
+        args = ()
         if pod:
-            return self._query(
-                "SELECT %s FROM commands WHERE pod=? ORDER BY created_at DESC LIMIT ?" % _CMD_COLS,
-                (pod, limit))
-        return self._query(
-            "SELECT %s FROM commands ORDER BY created_at DESC LIMIT ?" % _CMD_COLS, (limit,))
+            sql += " WHERE pod=?"
+            args = (pod,)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        rows = self._query(sql, args + (limit,))
+        for r in rows:
+            r["out_tail"] = _b64_tail(r.pop("out_b64", ""))
+        return rows
+
+    def command_output(self, cid, as_text=True):
+        """完整输出：整段解码只在单条查看时发生，不进列表。"""
+        row = self._query_one("SELECT out_b64 FROM commands WHERE id=?", (cid,))
+        if row is None:
+            return None
+        raw = base64.b64decode(row["out_b64"] or "", validate=False)
+        if as_text:
+            return raw.decode("utf-8", "replace")
+        # 二进制输出原样再包一层 base64 回给调用方，不再被 utf-8/replace 污染
+        return base64.b64encode(raw).decode("ascii")
 
     def pending_for(self, pod):
+        """已废弃：离线命令排队由 Broker 的持久会话负责，服务端不再手工补发。"""
         return self._query(
             "SELECT * FROM commands WHERE pod=? AND status='pending' ORDER BY created_at", (pod,))
 
     def mark_sent(self, cid):
+        """语义 = 已发布给 Broker（QoS1 已入会话队列），不代表 Agent 已收到。"""
         self._exec("UPDATE commands SET status='sent', sent_at=? WHERE id=? AND status='pending'",
                    (int(time.time()), cid))
 
-    def append_result(self, msg):
+    def append_result(self, msg, host=None):
+        """协议 v2 结果帧：{id, seq, total, out_b64, done, rc, timed_out, elapsed_ms, truncated}。
+
+        输出用 SQL 字符串拼接累加 base64：48KB 分块长度是 3 的整数倍，拼接结果仍是
+        整段输出的合法 base64，省掉逐块解码重编码的 O(n²)，也不再有进程内存态缓存。
+        """
         cid = msg.get("id")
         if cid is None:
             return None
-        try:
-            data = base64.b64decode(msg.get("data_b64") or "", validate=False)
-        except Exception:
-            data = b""
-        text = data.decode("utf-8", "replace")
-        # 内存累积输出，避免逐帧重读整段 out 造成 O(n^2)
-        buf = self._outbuf.get(cid)
-        if buf is None:
-            row = self.get_command(cid)
-            buf = row["out"] if row else ""
-        buf = (buf + text)[:MAX_OUT_CHARS]
-        # 防御性：极端情况下丢弃最旧未完成任务的部分输出缓存，避免内存无限增长
-        # （DB 仍保留已落库的部分输出，重新累积不会丢数据）
-        if len(self._outbuf) > 1000:
-            self._outbuf.pop(next(iter(self._outbuf)), None)
-        self._outbuf[cid] = buf
-        if msg.get("done"):
-            self._outbuf.pop(cid, None)
-            self._exec(
-                "UPDATE commands SET status='done', out=?, rc=?, timed_out=?, elapsed_ms=?,"
-                " finished_at=? WHERE id=?",
-                (buf, msg.get("rc"), 1 if msg.get("timed_out") else 0,
-                 msg.get("elapsed_ms"), int(time.time()), cid))
-        else:
-            self._exec("UPDATE commands SET status='running', out=? WHERE id=?", (buf, cid))
+        chunk = str(msg.get("out_b64") or "")
+        now = int(time.time())
+        with self.lock:
+            if msg.get("done"):
+                truncated = bool(msg.get("truncated")) or (
+                    msg.get("rc") == -3)  # Agent 侧分块没能全部送达
+                self.db.execute(
+                    "UPDATE commands SET status='done', out_b64=out_b64||?,"
+                    " out_chunks=out_chunks+1, rc=?, timed_out=?, elapsed_ms=?,"
+                    " truncated=?, finished_at=? WHERE id=?",
+                    (chunk, msg.get("rc"), 1 if msg.get("timed_out") else 0,
+                     msg.get("elapsed_ms"), 1 if truncated else 0, now, cid))
+            else:
+                self.db.execute(
+                    "UPDATE commands SET status='running', out_b64=out_b64||?,"
+                    " out_chunks=out_chunks+1 WHERE id=?",
+                    (chunk, cid))
+            self.db.commit()
         return cid
+
+    def sweep_command_timeouts(self, now=None, slack=30):
+        """把迟迟没有终态的命令收敛掉，前端不再无限转圈。
+
+        用 COALESCE(sent_at, created_at)：publish 失败停在 pending 的行 sent_at 为 NULL，
+        只判 sent_at 会让它们永不被扫——正是评审 P1-6 里 lost 永不清理的同一个坑。
+        """
+        now = int(now or time.time())
+        cur = self._exec(
+            "UPDATE commands SET status='timeout', finished_at=?"
+            " WHERE status IN ('pending','sent','running')"
+            " AND COALESCE(sent_at, created_at) < ? - (timeout + ?)",
+            (now, now, slack))
+        return cur.rowcount if cur and cur.rowcount and cur.rowcount > 0 else 0
 
     # ---- 审计 ----
     def add_audit(self, actor, action, detail=None):
@@ -356,8 +489,11 @@ class Store:
             self.db.execute("DELETE FROM commands WHERE finished_at IS NOT NULL AND finished_at < ?",
                             (now - cmd_days * 86400,))
             self.db.execute("DELETE FROM sessions WHERE expires < ?", (now,))
+            # 兜底：sweeper 漏掉的僵死命令盖成 lost，并补 finished_at——
+            # 不补时间戳的 lost 行永远落在上面那条 DELETE 的窗口之外，正是 P1-6。
             self.db.execute(
-                "UPDATE commands SET status='lost' WHERE status IN ('sent','running')"
-                " AND created_at < ?", (now - 3600,))
+                "UPDATE commands SET status='lost', finished_at=?"
+                " WHERE status IN ('sent','running') AND created_at < ?",
+                (now, now - 3600))
             self.db.commit()
         return {"hours_aggregated": hours}
