@@ -90,7 +90,7 @@ soybean-admin 前端（REST 轮询 + ECharts）
 
 `hub.py`（150 行）仍是内存连接表 + 手写补发；`store.py`（356 行）同步 SQLite；`agent_ws.py` 仍是 WS 入口；`web/app.js`（361 行）无框架单页。缺陷 P0-2/3/4、P1-5/6/7/8/11 全部原样存在（详见 `docs/architecture-review.md`）。
 
-### 1.4 v3 新增发现（阶段 0 与 A5 的来源）
+### 1.4 缺陷清单（R1–R5 来自 v3 复审，R6–R10 来自阶段 0 执行期实测）
 
 | # | 发现 | 证据 |
 |---|---|---|
@@ -99,6 +99,15 @@ soybean-admin 前端（REST 轮询 + ECharts）
 | R3 | 调度用挂钟 + 伪随机抖动 + 差分状态无锁 | `main.py:163`、`167`、`60/101` |
 | R4 | **`kind=collect` 与 `use_shell` 在服务端完全不可达**（用户核心需求缺口） | `commands.py:15-20`、`hub.py:137-143` vs `main.py:56`、`executor.py:133` |
 | R5 | 批量下发是 N 次单查询 + N 次单插入（非阻断，但 500 台一次点击会慢） | `commands.py:46,57` |
+| **R6** | **命令结果一条都发不出去**：`emit(kind, cid, res)` 三参数 vs `Runner` 的两参数调用 → TypeError 被线程池 `except: pass` 静默吞掉（旧 WS 队列元组的遗留签名） | `main.py:165`、`executor.py:148` |
+| **R7** | 推送式自更新不可达：dispatcher 没有 `kind=update` 分支，落到 unknown kind 回 127；`updater.spawn_apply` 全仓零调用点 | `main.py:117`、`updater.py:259` |
+| **R8** | `wait_ready` 不响应停止信号：Broker 不可达时阻塞满 timeout，容器停止会被 SIGKILL 而非优雅退出 | `transport.py:142` |
+| **R9** | Windows 无 `killpg/getpgid`：命令超时后 `_kill_tree()` 抛 AttributeError → 子进程杀不掉且泄漏 | `executor.py:45` |
+| **R10** | IPv6 字面量地址 `mqtt://[::1]:1883` 解析失败（按 `:` 切分把 host 切空） | `transport.py:44` |
+
+> R6 是本轮最严重的一条：它让「服务端下发命令 → 看结果」这条主功能在真实运行中**完全失效**，而 12 个通过的单元测试一个都没抓到——因为 `Runner` 与 `main.run()` 的接法从未被测到。现已由 `test_main.py` 复刻 run() 的接法钉住（并给线程池补上异常日志，见 P2-18）。
+
+**采集耗时实测（Windows 开发机）**：单轮 `collect()` ≈ 2.0s，其中 `proc` 项 2.05s（`process_iter` 逐进程开句柄）、`cpu` 首帧 0.58s，其余各项 <15ms。Linux 上 `/proc` 读取远快于此，且采集在带 busy 闸门的工作线程内、不阻塞 MQTT，60s 间隔下无风险。若将来压到 5s 级间隔或上万级主机，再把 `proc_metrics` 改为复用 `process_iter(attrs=...)` 已缓存的 `p.info`（省掉每进程第二次 `as_dict` 系统调用）。
 
 ---
 
@@ -124,7 +133,7 @@ soybean-admin 前端（REST 轮询 + ECharts）
 
 ---
 
-## 3. 阶段 0：协议语义纠偏 + Agent 测试修复（前置门禁，约 0.5 天）
+## 3. 阶段 0：协议语义纠偏 + Agent 测试修复（前置门禁）——✅ 已完成
 
 **为什么提到最前**：v2 把测试还债排在阶段 F，意味着 A/B/C 所有改动都要在「13 个红灯」的基线上推进——等于没有安全网。同时本轮复审代码发现三处**协议语义级缺陷**，它们不会被后续阶段顺带修掉，且其中两条直接违背本方案「把可靠性交给 Broker」的核心承诺。
 
@@ -152,6 +161,8 @@ soybean-admin 前端（REST 轮询 + ECharts）
 
 ### 3.4 Agent 测试修复（把阶段 F 的欠账提前还掉一半）
 
+> 执行期又发现并一并修掉 R6–R10（见 §1.4）：R6 尤其关键——它让「下发命令看结果」这条主功能在真实运行中完全失效，而原先 12 个绿灯测试一个都没抓到，因为 `Runner` 与 `run()` 的接法从未被测到。`test_main.py` 现复刻该接法作回归锁。
+
 | 文件 | 处理 |
 |---|---|
 | `test_ws_framing.py` | 删除（ws.py / conn.py 已不存在） |
@@ -160,7 +171,7 @@ soybean-admin 前端（REST 轮询 + ECharts）
 | `test_updater.py` | 适配 `_http_get(..., timeout, as_bytes, insecure)` 新签名；补「`update_url` 缺省即跳过、不下载不落盘」 |
 | `test_transport.py` | **新增**：`parse_broker` 全形态（mqtt/mqtts/user:pass@/IPv6）、主题拼装、QoS 与 retain 参数——作为 3.1/3.2 的回归锁 |
 
-**验收**：`uv run pytest agent/tests -q` → **0 failed**。此后 A/B/C 的每次改动都有回归保护。
+**验收（实测达成）**：`uv run pytest agent/tests -q` → **93 passed / 0 failed**（阶段 0 前为 11 failed / 12 passed）；新增 `test_transport.py`(26) 与 `test_main.py`(13) 钉住 QoS/retain/排队/失败终态/dispatcher 全链路。服务端套件 15 passed / 2 failed，两条失败仍是 WS 时代集成测试（`KK_SERVER=ws://...`），随阶段 A/F 消解，本次未引入回归。
 
 ---
 
@@ -510,6 +521,11 @@ pattern readwrite kk/v1/%u/#
 | **R3** | **挂钟调度 + 伪随机抖动 + 差分状态无锁** | 3.3 monotonic + random + Lock | 阶段 0 |
 | **R4** | **collect / use_shell 服务端不可达（需求缺口）** | A5 字段打通 + /api/collect/items + D3 采集面板 | 阶段 A/D |
 | **R5** | **批量下发 N 次查询 + N 次插入** | A6 单查询校验 + 批量 INSERT | 阶段 A |
+| **R6** | **emit 签名不匹配 → 命令结果一条都发不出去** | `emit(cid, res)` 对齐 + 线程池异常不再静默 | ✅ 已修 |
+| **R7** | 推送式自更新不可达（dispatcher 缺 update 分支） | 补 `kind=update` → `spawn_apply` | ✅ 已修 |
+| **R8** | `wait_ready` 卡住停止信号 | stop 感分的就绪等待（实测停止延迟 0.25s） | ✅ 已修 |
+| **R9** | Windows 无 killpg → 超时命令杀不掉且泄漏 | 分平台杀进程树（Windows 走 taskkill /T） | ✅ 已修 |
+| **R10** | IPv6 broker 地址解析失败 | 括号形态单独切分 | ✅ 已修 |
 
 ---
 
