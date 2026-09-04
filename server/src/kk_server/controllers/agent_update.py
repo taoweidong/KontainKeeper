@@ -5,7 +5,7 @@
 - GET  /api/system/agent/download Agent 用自身 token 下载二进制（流式）
 
 安全：
-- 上传需管理员会话；下载/查询仅需 Agent token（与 WebSocket hello 同源）
+- 上传需管理员会话；下载/查询仅需 Agent token（与 status 帧同源）
 - 服务端记录 sha256，Agent 端下载后校验一致才替换，防损坏/篡改
 - 二进制按平台单槽位（kk-agent），多架构需另行扩展
 """
