@@ -1,12 +1,14 @@
 [project]
 name = "kk-server"
 version = "0.1.0"
-description = "KontainKeeper 管理服务端（FastAPI hub + REST API + SQLite store）"
+description = "KontainKeeper 管理服务端（MQTT 桥接 + REST API + SQLite 存储）"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.110,<1.0",
     "uvicorn[standard]>=0.29",
     "python-multipart>=0.0.9",
+    "paho-mqtt>=2.1.0",
+    "aiosqlite>=0.20.0",
 ]
 
 [project.scripts]
@@ -16,6 +18,9 @@ kk-server = "kk_server.__main__:main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# 标准 src-layout，与 agent/src/kk_agent 对称。
+# 注意：不要用 [tool.hatch.build.targets.wheel.sources] 做前缀重映射——
+# hatch 在 editable 安装下不支持「改变前缀」的重写（editables#20），会直接安装失败。
 [tool.hatch.build.targets.wheel]
 packages = ["src/kk_server"]
 
