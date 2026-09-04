@@ -1,5 +1,15 @@
 # KontainKeeper 通信协议 v1
 
+> ⚠️ **本协议已过时（2026-09-05）**：传输层已改为 MQTT（`proto_ver = 2`），下文描述的
+> 自研 WebSocket 帧与 close code 均不再生效。v2 正式版将在方案阶段 E 重写本文件，
+> 在那之前以 `docs/completion-plan-mqtt.md` 与代码为准。v2 要点：
+> - 主题 `kk/v1/{host}/{status,hb,result,cmd}`（前缀 `KK_TOPIC_PREFIX` 双端共用）
+> - `status`：QoS1 + retained + LWT，携带 `token`（服务端据此拒绝未授权主机注册）
+> - `hb`：QoS0 **不 retain**（retained 心跳会在服务端建订阅时整批回放成幽灵点）
+> - `result` / `cmd`：QoS1；`cmd` 新增 `items`（kind=collect）与 `use_shell`
+> - 结果帧 `data_b64` → `out_b64`，并带 `total` / `truncated`；`rc = -3` 表示
+>   Agent 侧分块未能全部送达（out-queue 溢出），服务端据此置 failed
+
 容器内 Agent 与管理服务端之间的 WebSocket JSON 帧协议。
 - 传输：`ws://` 或 `wss://`，路径 `/ws/agent`，仅容器→服务端出站方向发起
 - 所有帧为 UTF-8 JSON 文本帧，含 `t` 类型字段
