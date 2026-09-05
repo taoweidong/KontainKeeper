@@ -1,6 +1,22 @@
+<div align="center">
+
 # KontainKeeper
 
-Linux 主机（典型形态：K8S 下的 vscode-server 容器 IDE）的**直连管理与指标提取平台**。
+Linux 主机（典型形态：K8S 下的 vscode-server 容器 IDE）的**直连管理与指标提取平台**
+
+[![License: MIT](https://img.shields.io/github/license/taoweidong/KontainKeeper)](https://github.com/taoweidong/KontainKeeper/blob/main/LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/taoweidong/KontainKeeper?style=social)](https://github.com/taoweidong/KontainKeeper/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/taoweidong/KontainKeeper?style=social)](https://github.com/taoweidong/KontainKeeper/network/members)
+[![GitHub issues](https://img.shields.io/github/issues/taoweidong/KontainKeeper)](https://github.com/taoweidong/KontainKeeper/issues)
+[![Python](https://img.shields.io/badge/python-3.12%2B-blue?logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![MQTT](https://img.shields.io/badge/MQTT-Eclipse%20Mosquitto%202.x-660066?logo=eclipse&logoColor=white)](https://mosquitto.org/)
+[![Vue](https://img.shields.io/badge/Vue-3-42b883?logo=vuedotjs&logoColor=white)](https://vuejs.org/)
+[![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.0-777877?logo=sqlalchemy)](https://www.sqlalchemy.org/)
+[![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
+[![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
+
+</div>
 
 - 不依赖 K8S 集群能力（无 kube-api / exec / svc），不触碰宿主机
 - Agent 随镜像内置（镜像制作期介入），主机启动后台自启，**用户无感知**
@@ -12,14 +28,77 @@ Linux 主机（典型形态：K8S 下的 vscode-server 容器 IDE）的**直连�
 
 ## 架构一览
 
-```
-Agent (psutil 采集 + paho-mqtt)  ──►  Mosquitto 2.x  ──►  kk-server (FastAPI + MqttBridge)
-     主机内，仅出站              LWT/离线队列/ACL        无状态，可水平扩容
-                                                              │
-                                                        Vue3 前端（单端口托管）
-```
+![KontainKeeper 系统架构](https://www.plantuml.com/plantuml/svg/dVTfU9tGEH6_v2LrvpgkDsU2lOGhE__SNBOYQE2ThzoPwr7YGouTkE5p3E5mSCgYkyEOmXQCLSXQhoY2E2inLSU21DP9W3yS_ZR_oXuS04An0YOk2_1ud7_d7-6SzVWLO7M6-YCX6CwFU1c1RuyyxkzVUmdB1xjlFZOCYfGSccphl9SC8aXGinBT1W16yjOj5stFy3BYIWXohgUfKv5zCmHRPFdZUafwNQFI9uMzGSWmJKXHsArU6lljyRElOYxWxWC8ZxtSoulYumfLal9RGIqRO6cyzTnUeV-WUeUjJdOfJR4dHVbifVkSscRI8kzcgsrVGdV-X-gRJZ5J9IeOZj5Ox6Jnwqh5jp53xlBSmdHMSH-M1HA0OqRgDK5xbN8VLBLndYVSk1rg_dH0mk_drUN365vXx8sTU9PT4D4-FL_9A-fhmkNjIGqr3ouD18c1QoLUoU7rodf8s91oiLX1EKg2XDVtQt4OKDSuMec2tI-a7mYjx8K37LxRoBGbWrcwo9h_JTb2YBC82i_ewyWEDPhBPjVs7tP6olyOqEXKeI6ZtsM1HbrVavf7JSzIVEtGZHaO8xtyR0KC5IZO9Vex_137VS0AuvVH7eZhjp27aFbAW3gpVrY7Jyf-lkndKaJW7xASTDk0Ydhzjsa5AdGLt3Ns_Po0_Ps3eD83vUaru_5ULD-Ra1PlnFoMEqlxv9akZZSpdYYzFt0jGFZUmycmL18A98m2t3Lozt8NGGYDv89xAkkkLa1QpDnm7uy6D3axI2LtpN181j66L-prN4I8EiHxWew8QrNT4wk9j6euAlEEVFjex_leCfssk50GzJ1jg6qpDZ4L-jR5WTL-X38hjKJxigknsedFi-IaFxMV_PqFppNnqHn7OzioQAc4TndzVazs4L9Y_Va-6z-5tXXEBCSv05mAoS-e85DR8YpgXHbelstUCS8P26_rc78sFA9EIp_gCsbA_aveeb4s9TE2Go_HCBqlDxmg0yfXOdnvHPxIpEV6eh0KPj2LnA3CfS1jJ8XRAoSnjOzQAPEV8y5UteG92IBwu7kY_A6QHuBtDsTixceRxSCUZvBlUdvROQkkFZTphx-DvKHr2L7wAPEH4_vSSXSI43vuy12xtCEWdwlhBg7B0oolDsbNN5oC6LS2UA6iftD9Ydudf46ZutVVNHbn57t3W_Lg-Op0HzxCgSIedbO5hwax_AxPAYjFve7Cnvf49zcc3VrLvb9IKCuAzEgu4Z-8vf8D)
 
 连接可靠性、重连退避、离线命令排队、在线判定全部由 Broker 承担，服务端不持有长连接状态。
+
+<details><summary>PlantUML 源码</summary>
+
+```plantuml
+@startuml
+!theme plain
+skinparam linetype ortho
+skinparam shadowing false
+skinparam backgroundColor #FFFFFF
+skinparam rectangle {
+  BackgroundColor #EEF3FB
+  BorderColor #3B6FB5
+  FontColor #1F2D3D
+  FontSize 13
+}
+skinparam queue {
+  BackgroundColor #E8F0FE
+  BorderColor #4285F4
+  FontColor #1A3A6B
+}
+skinparam database {
+  BackgroundColor #E6F4EA
+  BorderColor #2E7D32
+}
+skinparam actor {
+  BackgroundColor #FCE8E6
+  BorderColor #C5221F
+}
+title KontainKeeper 系统架构（MQTT 收尾 + Vue3 前端）
+
+actor "运维人员" as Ops
+
+rectangle "Linux 主机\n(vscode-server 容器 / 物理机)" as Host {
+  [kk-agent\npsutil 采集 + paho-mqtt] as Agent
+  [自定义采集插件\n*.py 热加载] as Plugin
+}
+
+queue "Mosquitto 2.x\nLWT · 离线队列 · pattern ACL" as Broker
+
+rectangle "kk-server (FastAPI, 无状态)" as Server {
+  [MqttBridge\n桥接 / 命令下发] as Bridge
+  [Store\nSQLAlchemy 2 async] as Store
+  [REST API\n/api/*] as API
+}
+
+database "SQLite / PostgreSQL / MySQL" as DB
+
+rectangle "管理前端\n(服务端单端口托管)" as Web {
+  [Vue3 + Element Plus + ECharts] as UI
+}
+
+Ops --> UI : 浏览器 :8443
+UI --> API : REST 轮询
+API --> Bridge
+Bridge --> Broker : MQTT 发布 (QoS1)
+Agent --> Broker : MQTT 出站 (仅出站)
+Broker --> Bridge : status / hb / result
+Plugin --> Agent : collect()
+Store --> DB : 异步写入
+
+note right of Broker
+  连接可靠性 / 重连退避 / 离线排队
+  / 在线判定 全部由 Broker 承担
+end note
+@enduml
+```
+
+</details>
 
 ## 仓库结构
 
@@ -235,3 +314,15 @@ cd web && pnpm typecheck && pnpm build                # 前端类型检查与构
 ## 许可证
 
 本项目以 [MIT License](LICENSE) 开源。
+
+## 星标趋势
+
+[![Stargazers over time](https://starchart.cc/taoweidong/KontainKeeper.svg?variant=adaptive)](https://starchart.cc/taoweidong/KontainKeeper)
+
+## 贡献者
+
+<a href="https://github.com/taoweidong/KontainKeeper/graphs/contributors"><img src="https://contrib.rocks/image?repo=taoweidong/KontainKeeper"/></a>
+
+---
+
+<p align="center">如果本项目对你有帮助，欢迎点 ⭐ Star 与提交 PR。</p>
