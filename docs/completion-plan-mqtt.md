@@ -31,7 +31,8 @@
 | paho-mqtt 2.x | Agent 与服务端的 MQTT 客户端（重连退避/保活/out-queue） | ws.py + conn.py 自研 RFC6455（261 行，已删） | EPL/EDL |
 | psutil 7.x | 指标采集（CPU/内存/磁盘/网络/进程/用户） | 手工 /proc 解析（233 行） | BSD |
 | FastAPI + uvicorn | REST API、OpenAPI、静态托管 | （沿用） | MIT |
-| aiosqlite | 异步 SQLite 写入 + 批量事务 | 同步 sqlite3 阻塞事件循环 | MIT |
+| **SQLAlchemy 2 Core + async engine** | **一套代码适配 SQLite / PostgreSQL / MySQL**：方言、类型、upsert、连接池、重连 | 手写 sqlite3 封装：SCHEMA 字符串拼接、PRAGMA 建库、threading.Lock 串行化、`_outbuf` 缓存、ALTER 列迁移，**以及整个阶段 B 的异步化** | MIT |
+| aiosqlite / asyncpg / aiomysql | 三种库各自的 async driver | （取代自写线程池包装同步 driver 的方案） | MIT / PostgreSQL 许可 / MIT |
 | soybean-admin | 前端底座（Vue3 + Naive UI + UnoCSS + 鉴权/路由/请求层） | web/app.js 无框架单页（361 行，已到上限） | MIT |
 | ECharts（soybean 内置封装） | 指标图表 | （原先无图表能力，属新增能力零自研成本） | Apache-2.0 |
 
@@ -104,6 +105,7 @@ soybean-admin 前端（REST 轮询 + ECharts）
 | **R8** | `wait_ready` 不响应停止信号：Broker 不可达时阻塞满 timeout，容器停止会被 SIGKILL 而非优雅退出 | `transport.py:142` |
 | **R9** | Windows 无 `killpg/getpgid`：命令超时后 `_kill_tree()` 抛 AttributeError → 子进程杀不掉且泄漏 | `executor.py:45` |
 | **R10** | IPv6 字面量地址 `mqtt://[::1]:1883` 解析失败（按 `:` 切分把 host 切空） | `transport.py:44` |
+| **R11** | **小时聚合按日历从最早心跳循环到今天**：一条坏时钟的 `ts=0` 心跳即可让循环跑几十万次把服务卡死——`record_hb` 信任帧内 ts 之后，这条路径由理论变为可达 | `store._aggregate_hours` |
 
 > R6 是本轮最严重的一条：它让「服务端下发命令 → 看结果」这条主功能在真实运行中**完全失效**，而 12 个通过的单元测试一个都没抓到——因为 `Runner` 与 `main.run()` 的接法从未被测到。现已由 `test_main.py` 复刻 run() 的接法钉住（并给线程池补上异常日志，见 P2-18）。
 
@@ -113,16 +115,16 @@ soybean-admin 前端（REST 轮询 + ECharts）
 
 ## 2. 方案总览（八个阶段）
 
-| 阶段 | 内容 | 修掉的缺陷 |
-|---|---|---|
-| **0** | **协议语义纠偏 + Agent 测试修复（前置门禁）** | R1、R2、R3、R4 之 Agent 半边 + Agent 测试红灯 |
-| A | 服务端 MQTT 桥接（MqttBridge 替代 Hub）+ **批量采集打通** + 批量性能 | P0-3、P0-4、P1-8、P1-11、R4、R5 |
-| B | Store 异步化 + 存储治理 | P0-2、P1-5、P1-6、P2-14/15 |
-| C | 可靠性加固（v3 收敛为 4 项、约 40 行） | P0-4 残余、P1-10、P2-18/19 |
-| D | **前端 Vue3（soybean-admin 底座）** | P1-7、P2-19 |
-| E | 协议文档与周边同步 | P1-12 |
-| F | 测试与 CI 还债 | 全部 |
-| G | 构建与部署（docker compose 全栈） | P2-13 |
+| 阶段 | 内容 | 修掉的缺陷 | 状态 |
+|---|---|---|---|
+| **0** | **协议语义纠偏 + Agent 测试修复（前置门禁）** | R1–R3、R6–R10 + Agent 测试红灯 | ✅ 完成（93 项 + 真实 Broker 10 项） |
+| A | 服务端 MQTT 桥接（MqttBridge 替代 Hub）+ **批量采集打通** + 批量性能 | P0-3、P0-4、P1-8、P1-11、R4、R5、R12 | ✅ 完成（40 项 + 集成 3 项 + 真实进程链路） |
+| B | Store 异步化 + 存储治理（**多库支持改造顺带完成异步化**） | P0-2、P1-5、P2-15、R11 | 🟡 部分：异步化/B2/B4/B5 完成，B3 回收与 B6 摘要视图未做 |
+| C | 可靠性加固（v3 收敛为 4 项、约 40 行） | P0-4 残余、P1-10、P2-18/19 | ⬜ 未开始（清扫器已随 A 落地） |
+| D | **前端 Vue3（soybean-admin 底座）** | P1-7、P2-19 | ⬜ 未开始 |
+| E | 协议文档与周边同步 | P1-12 | ⬜ 未开始 |
+| F | 测试与 CI 还债 | Agent 侧已随阶段 0 完成 | 🟡 部分 |
+| G | 构建与部署（docker compose 全栈） | P2-13 | ⬜ 未开始 |
 
 执行顺序：**0 → A → B → C → D → E → F/G**。要点：
 
@@ -272,21 +274,53 @@ class MqttBridge:
 
 ---
 
-## 5. 阶段 B：Store 异步化与存储治理
+## 5. 阶段 B：Store 异步化与存储治理 —— 部分完成
+
+> **状态更新（2026-09-05）**：本阶段的 **B1（异步化）已由「多数据库支持」改造一并完成**——
+> store.py 改为 SQLAlchemy 2 Core + async engine（aiosqlite/asyncpg/aiomysql），REST 路由全部
+> `async def` + `await`，因此 P0-2「同步 SQLite 阻塞事件循环」已消除，不需要再单独做一遍。
+> **未做**：B3 的 hourly 90 天回收、命令 out 超龄清理（B3 的 lost 盖章已做）、B6 的
+> `?view=summary` 摘要视图。这三项是纯粹的存储治理，随 D 阶段前端接口需求一起做即可。
 
 **目标**：解除同步 SQLite 对事件循环的阻塞（P0-2，性能雪崩根因）；修命令输出不可见（P1-5）与存储只增不减（P1-6）。
 
+### B0. 多数据库支持（2026-09-05 新增，已完成）
+
+`KK_DB_URL` 三选一，缺省回落 `KK_DB_PATH` 的 SQLite，既有部署零改动可升级：
+
+```
+KK_DB_URL=sqlite:///data/kk.db
+KK_DB_URL=postgresql://kk:pw@pg.internal:5432/kontainkeeper     # 自动补 +asyncpg
+KK_DB_URL=mysql://kk:pw@mysql.internal:3306/kontainkeeper       # 自动补 +aiomysql，需 charset=utf8mb4
+```
+
+驱动按需装：`uv sync --extra postgres` / `--extra mysql`（默认只装 SQLite 路径）。
+
+设计上必须记住的四条跨库事实（都由 `test_dialects.py` 静态把关）：
+
+| 差异 | 处理 |
+|---|---|
+| upsert 三种写法 | `Store._upsert()` 一处方言分支（全库唯一分支）；MySQL 的 do-nothing 是 `INSERT IGNORE`，SQLAlchemy 2.0 **没有** `.ignore()`，必须 `prefix_with("IGNORE")` |
+| MySQL TEXT 只有 64KB | 命令输出 base64 最大约 5.6MB → `out_b64` 等大字段用 `LONGTEXT` variant，否则静默截断 |
+| MySQL 主键必须定长 | 所有主键用 `String(n)`，kv 表早期是 TEXT 主键（建表即失败） |
+| `GREATEST` vs `max` | 在线宽限阈值改用 `CASE WHEN`，三库通用 |
+
+**验证边界（重要）**：SQLite 走完整实测（40 项单测 + 3 项真实 Broker 集成 + 真实进程链路）；
+**PostgreSQL / MySQL 只做了 DDL 与语句的跨方言编译校验，没有连过真实库**——上线前必须补一轮
+真库跑测（CI 用 docker service，或本机 WSL `apt install postgresql mariadb-server`）。已知需
+现场核对的点：MySQL 排序规则大小写敏感性（主机名 `Web-01` 与 `web-01` 是否同键）、PG 的标识符
+小写折叠、以及三种库对 `Text` 主键/索引长度的具体限制。
+
 **文件**：`server/src/kk_server/models/store.py`（大改）、`controllers/*`（统一 async）。
 
-### B1. aiosqlite + 单写者模型
+### B1. 异步化（已随 B0 完成，无需手写写队列）
 
-- `AsyncStore`：一个写连接 + 批量写队列（`asyncio.Queue`）。心跳/结果等高频写攒批：每 200ms 或满 500 条 flush 成一个事务。500 台 × 60s ≈ 8.3 写/s，批后 < 1 事务/s。
-- 读走独立连接（WAL 允许并发读）。
-- `PRAGMA journal_mode=WAL; busy_timeout=5000; synchronous=NORMAL`。
-- REST 路由统一 `async def`，消除 `list_containers` 用 `def` 而 `create_commands` 用 `async def` 的阻塞语义不一致（评审 H1/M8）。
-- 保留同步 `Store` 作为过渡壳（测试与 `ensure_admin` 启动路径仍可用），或直接替换——按实现时手感定，方案不锁死。
+- 原方案打算自己写 `asyncio.Queue` 攒批（每 200ms 或满 500 条 flush 一个事务）。实施时判定**不必做**：500 台 × 60s ≈ 8.3 写/s，SQLAlchemy async engine 的连接池 + WAL 下每条短事务都是亚毫秒级，手写批处理队列属于为不存在的瓶颈加复杂度。若将来间隔压到秒级或上万台，再引入攒批不迟——届时也只是在 Store 外加一层，不动调用方。
+- 读走连接池独立连接（WAL 允许并发读）；`PRAGMA journal_mode=WAL / busy_timeout=5000 / synchronous=NORMAL` 仅对 SQLite 施加。
+- REST 路由已全部 `async def` + `await`，消除原 `list_containers` 用 `def`、`create_commands` 用 `async def` 的阻塞语义不一致（评审 H1/M8）。
+- 列表接口的在线状态改为**一次查回在线集合**（`online_set()`）：若逐行 `is_online`，500 台就是 500 次往返，比原来的内存查表更差。
 
-### B2. 命令结果新帧适配（修 P1-5）
+### B2. 命令结果新帧适配（修 P1-5）——已随阶段 A 完成
 
 `append_result(frame)` 接收 Agent 新帧 `{"id","seq","total","out_b64","done","rc","timed_out","elapsed_ms","truncated"}`：
 
@@ -296,19 +330,23 @@ class MqttBridge:
 - 失败终态收敛（配合 3.2）：收到 `rc=-3`「结果回传中断」帧时置 `status='failed'`，保留已收到的部分输出并置 `truncated=1`——**任何路径都不允许把命令留在 running**。
 - `_outbuf` 内存缓存取消（B4）。
 
-### B3. 存储回收（修 P1-6）
+### B3. 存储回收（修 P1-6）—— 部分完成
 
-`cleanup()` 增补：hourly 保留 90 天；清理 `status='lost'` 命令（当前 finished_at IS NULL 永不被清）；大表 DELETE 分批（LIMIT 5000 循环）避免长事务；命令 out 超龄清文本保留状态行。
+已完成：`lost`/`timeout` 命令现在都会盖 `finished_at`，因此能被 30 天窗口回收（早先是 NULL 永不清理）。
+**未完成**：hourly 90 天后 DELETE；大表分批 DELETE（`LIMIT 5000` 循环）避免长事务；命令 `out_b64` 超龄清文本保留状态行。
 
-### B4. 落盘化
+### B4. 落盘化 —— 已随阶段 A 完成
 
 取消 `_outbuf`（内存态重启即丢 + 1000 条上限丢弃），累积输出直接增量写 `commands.out`（DB 即真相）。
 
-### B5. 容器在线状态列
+### B5. 在线状态列 —— 已随阶段 A 完成
 
 `containers` 表加 `online INTEGER DEFAULT 0` + `status_ts`，桥接写；`set_online`/`is_online(grace)` 直接读列，替代「每行调 hub.is_online + last_seen 宽限」的组合判断。
 
-### B6. 列表性能（修 P1-7 的服务端半边）
+### B6. 列表性能（修 P1-7 的服务端半边）—— 未完成
+
+在线判定已改成一次查询（`online_set()`）；但 `?view=summary` 摘要视图**仍未做**，
+列表接口目前还逐行 `json.loads(last_metrics)`，是 D 阶段前端要用的接口，随 D 一起补。
 
 `GET /api/containers?view=summary`：跳过逐行 `json.loads(last_metrics)`，返回 `pod/image/agent_ver/online/age_sec/disk_alert` + 冗余进 containers 表的 cpu/mem 摘要列（record_hb 时顺手 UPDATE）。完整 metrics 视图仅详情页用。ETag 支持作为可选优化，若 summary 视图已达标可不做。
 
@@ -507,20 +545,20 @@ pattern readwrite kk/v1/%u/#
 | 编号 | 缺陷 | 落点 | 状态 |
 |---|---|---|---|
 | P0-1 | 自更新先替换后判形态 | updater.apply_manifest 重写 | ✅ 已修（66e54fc） |
-| P0-2 | Store 同步阻塞事件循环 | B1 aiosqlite + 写队列 | 阶段 B |
+| P0-2 | Store 同步阻塞事件循环 | SQLAlchemy async engine（B0/B1） | ✅ 已修 |
 | P0-3 | 命令回传不校验归属 | A2/A3 `_on_result` 主题归属 + C2 ACL | 阶段 A/C |
 | P0-4 | sent 命令断线丢、不收敛 | 3.2 结果不再短路 + C1 超时清扫器 | 阶段 0/C |
 | P1-5 | 命令输出 UI 不可见 | B2 out_tail + /out + D3 命令中心 | 阶段 B/D |
 | P1-6 | 存储只增不减 | B3 cleanup 增补 | 阶段 B |
 | P1-7 | 前端全量轮询放大 | B6 summary 视图 + D4 轮询策略 | 阶段 B/D |
-| P1-8 | 内存 Hub 不可 HA | A2/A3 无状态桥接（共享订阅降为扩容钩子） | 阶段 A |
+| P1-8 | 内存 Hub 不可 HA | A2/A3 无状态桥接（共享订阅降为扩容钩子） | ✅ 已修（阶段 A） |
 | P1-9 | 自更新无签名 | C3：**保持 HMAC，ed25519 不做** | 决策关闭 |
 | P1-10 | Pod 身份可伪造 | A3 Broker 鉴权 + C2 pattern ACL | 阶段 A/C |
 | P1-11 | 大输出饿死心跳 | 独立 QoS1 主题 + 线程池发布 | ✅ 架构已解（66e54fc） |
 | P1-12 | 未提交重构 + 路径错 | 66e54fc / fa6ba9f + E 阶段文档 | ✅ 已修 |
 | P2-13 | 清理线程无 shutdown | A4 lifespan 统一管理 | 阶段 A |
 | P2-14 | Dockerfile 与锁文件脱节 | G2 uv 化 | 阶段 G |
-| P2-15 | _outbuf 内存态丢失 | B4 落盘化 | 阶段 B |
+| P2-15 | _outbuf 内存态丢失 | base64 在 SQL 侧拼接累加，无进程缓存 | ✅ 已修 |
 | P2-16 | 协议无压缩 | 不做（帧已 <4KB） | 决策关闭 |
 | P2-17 | 无幂等设计 | C4 按需（写操作已被黑名单在源头拦截） | 决策降级 |
 | P2-18 | 异常被 log.debug 吞 | C5 日志升级 | 阶段 C |
@@ -530,11 +568,14 @@ pattern readwrite kk/v1/%u/#
 | **R3** | **挂钟调度 + 伪随机抖动 + 差分状态无锁** | 3.3 monotonic + random + Lock | 阶段 0 |
 | **R4** | **collect / use_shell 服务端不可达（需求缺口）** | A5 字段打通 + /api/collect/items + D3 采集面板 | 阶段 A/D |
 | **R5** | **批量下发 N 次查询 + N 次插入** | A6 单查询校验 + 批量 INSERT | 阶段 A |
+| **R11** | **`_aggregate_hours` 按日历从最早心跳循环到今天**：一条坏时钟的 `ts=0` 心跳即可让循环跑几十万次把服务卡死（`record_hb` 信任帧内 ts 后该路径变为可达） | 窗口夹在保留期内 + 帧时间戳越界回落服务器时间 | ✅ 已修 |
 | **R6** | **emit 签名不匹配 → 命令结果一条都发不出去** | `emit(cid, res)` 对齐 + 线程池异常不再静默 | ✅ 已修 |
 | **R7** | 推送式自更新不可达（dispatcher 缺 update 分支） | 补 `kind=update` → `spawn_apply` | ✅ 已修 |
 | **R8** | `wait_ready` 卡住停止信号 | stop 感分的就绪等待（实测停止延迟 0.25s） | ✅ 已修 |
 | **R9** | Windows 无 killpg → 超时命令杀不掉且泄漏 | 分平台杀进程树（Windows 走 taskkill /T） | ✅ 已修 |
 | **R10** | IPv6 broker 地址解析失败 | 括号形态单独切分 | ✅ 已修 |
+| **R11** | 坏时钟心跳可让小时聚合循环几十万次、卡死服务 | 聚合窗口夹在保留期内 + 帧 ts 越界回落 | ✅ 已修 |
+| **R12** | 自更新接口的 token 吊销校验在 WS→MQTT 迁移中丢失 | `agent_token_auth` 补 `is_token_revoked` | ✅ 已修 |
 
 ---
 
