@@ -9,7 +9,7 @@
 
 ## 1. 主题布局
 
-前缀默认 `kk/v1`，双端分别由 `KK_TOPIC_PREFIX`（Agent）与 `KK_MQTT_PREFIX`（Server）配置，必须一致。
+前缀默认 `kk/v1`，双端共用同一个环境变量 `KK_TOPIC_PREFIX`（Agent 与 Server 均读取此键）配置，必须一致。
 
 ```
 kk/v1/{host}/status    Agent → Server   在线状态（retain + LWT）

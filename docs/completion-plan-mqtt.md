@@ -124,7 +124,7 @@ soybean-admin 前端（REST 轮询 + ECharts）
 | D | **前端 Vue3（pure-admin-thin 底座）** | P1-7、P2-19 | ✅ 完成（pure-admin-thin 骨架 + 4 个业务页 + API 层 + 静态路由） |
 | E | 协议文档与周边同步 | P1-12 | ✅ 完成（proto v2 + design/AGENTS/README×3 同步 + 评审缺陷打钩） |
 | F | 测试与 CI 还债 | Agent 侧已随阶段 0 完成 | 🟡 部分（test_api.py 新增 ASGI 接口契约；集成测试受 Broker 不可达限制 skip） |
-| G | 构建与部署（docker compose 全栈） | P2-13 | ⬜ 未开始 |
+| G | 构建与部署（docker compose 全栈） | P2-14 | ✅ 完成（dev/prod 双 compose + uv 化 Dockerfile + agent hiddenimports） |
 
 执行顺序：**0 → A → B → C → D → E → F/G**。要点：
 
@@ -196,7 +196,7 @@ soybean-admin 前端（REST 轮询 + ECharts）
 
 ```
 KK_MQTT_URL=mqtt://broker:1883        # mqtts:// 启用 TLS
-KK_MQTT_PREFIX=kk/v1                  # 与 Agent 的 KK_TOPIC_PREFIX 一致
+KK_TOPIC_PREFIX=kk/v1                 # 双端共用此键（Agent 与 Server 均读 KK_TOPIC_PREFIX）
 KK_MQTT_CLIENT_ID=kk-server-1         # 实例唯一（见 A3「client_id 唯一性」）；默认单机即 kk-server
 KK_MQTT_KEEPALIVE=60
 KK_MQTT_USERNAME / KK_MQTT_PASSWORD   # Broker 鉴权（生产必须）
@@ -549,6 +549,17 @@ pattern readwrite kk/v1/%u/#
 - SQLite：WAL + 批量写后，写放大 < 1 事务/s；DB 年增约 500 台 × 90 天 hourly + 30 天命令 ≈ 几百 MB 量级，单机无压力。
 
 ---
+
+### G5. 实际落地与偏差（2026-09-06）
+
+阶段 G 已按上面 G1–G4 全部落地，提交为一组 `chore/feat` 变更。与方案原稿的两处必要偏差、以及代码侧已就绪的部分记录如下：
+
+- **G1 双配置落地**：`docker-compose.yml`（开发/演示，挂 `mosquitto.dev.conf` 开匿名，开箱即起）+ `docker-compose.prod.yml`（生产，挂 `mosquitto.conf` 关匿名 + `passwordfile` + `aclfile`）。`deploy/mosquitto/` 新增 `mosquitto.conf` / `mosquitto.dev.conf` / `aclfile` / `passwordfile` / `gen-credentials.sh` / `README.md`。`passwordfile` 预置服务端账号 `kk-server`（`$7$` PBKDF2 哈希，密码 = `dev-token`）；Agent 账号（用户名=主机名）用 `gen-credentials.sh` 逐主机写入。
+- **环境变量对齐（实测纠偏）**：方案原稿 G1 写服务端用 `KK_MQTT_PREFIX`，但 `server/src/kk_server/config.py` 实际读 **`KK_TOPIC_PREFIX`**（与 Agent 的 `KK_TOPIC_PREFIX` 同名，双端配一个键）。compose 已用正确键名 `KK_TOPIC_PREFIX=kk/v1`，并以代码反查为准，不沿用原稿笔误。
+- **G2 偏差（仓库是 uv workspace）**：根 `pyproject.toml` 声明 `[tool.uv.workspace] members=["server","agent"]`，锁文件在 **根 `uv.lock`**（server 无独立 `uv.lock`）。故 Dockerfile 构建上下文取**仓库根**、用根 `uv.lock` + `uv sync --frozen --no-dev --package kk-server`（而非原稿假设的 server 单锁）。`.dockerignore` 已把 `web/`、`node_modules`、DB 等大目录排除，构建上下文很小。这是相对原稿的必要调整，已在 Dockerfile 注释写明。
+- **G3 落地**：`agent/build/build_binary.sh` 补 `paho.mqtt.*` / `psutil` 的 `--hidden-import`（避免 PyInstaller 漏打包第三方动态子模块）；`scripts/build.sh` 的 `KK_SERVER` 示例由 `wss://.../ws/agent` 改为 `mqtt://mosquitto:1883`。
+- **G4 代码侧已就绪**：`MAX_QUEUED` 可配置（`KK_MAX_QUEUED`，默认 512）+ 入队失败回 `rc=-3` 失败终态，已在阶段 0 的 `transport.py` / `agent config.py` 落实，本阶段无需额外动作。容量估算结论不变（500 台 × 60s ≈ 8.3 msg/s，Mosquitto / 写入均无压力）。
+- **未验证项（诚实标注）**：Windows 开发机无 docker，未本地构建镜像、未实测 ACL `pattern %u` 展开。`pattern %u` 的语义与优先级仍属 §13 风险项，退路是 `gen-credentials.sh` 按主机清单生成显式 `user` 段；CI 用 `eclipse-mosquitto:2` service 容器保证集成测试。
 
 ## 11. 缺陷映射表（评审 P0/P1/P2 + v3 新增 R1–R5 → 方案落点）
 
