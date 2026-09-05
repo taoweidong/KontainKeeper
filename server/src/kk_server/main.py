@@ -76,7 +76,8 @@ def create_app(env=None):
                 if bridge is not None:
                     await bridge.sweep()
                 if n % CLEANUP_PASSES == 0:
-                    await store.cleanup()
+                    stats = await store.cleanup()
+                    log.info("cleanup: %s", stats)
             except asyncio.CancelledError:
                 raise
             except Exception:

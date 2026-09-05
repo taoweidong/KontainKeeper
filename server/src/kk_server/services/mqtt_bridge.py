@@ -18,6 +18,7 @@ import json
 import logging
 import ssl
 import threading
+import time
 
 import paho.mqtt.client as mqtt
 
@@ -46,7 +47,12 @@ class MqttBridge:
         self.connected = threading.Event()
         self._stopping = threading.Event()
         self._sched = None          # 事件循环里跑，用于 to_thread 派发
-        self.stats = {"status": 0, "hb": 0, "result": 0, "rejected": 0}
+        # C5 可观测性：面板只能从这些计数看出「链路是不是活的」——
+        # 心跳在涨说明 Agent 在报，cmd_failed 在涨说明发布侧出了问题。
+        self.stats = {"status": 0, "hb": 0, "result": 0, "rejected": 0,
+                      "cmd_published": 0, "cmd_failed": 0, "upgrade_pushed": 0,
+                      "sweeps": 0, "swept_timeouts": 0, "swept_offline": 0,
+                      "last_msg_ts": 0, "started_at": int(time.time())}
 
         self.cli = mqtt.Client(
             mqtt.CallbackAPIVersion.VERSION2,
@@ -135,6 +141,7 @@ class MqttBridge:
               "result": self._on_result}.get(suffix)
         if fn is None:
             return
+        self.stats["last_msg_ts"] = int(time.time())
         self._dispatch(fn, host, body)
 
     def _dispatch(self, fn, host, body):
@@ -236,9 +243,17 @@ class MqttBridge:
             info = self.cli.publish(self._cmd_topic(row["pod"]),
                                     json.dumps(payload, ensure_ascii=False), qos=QOS_CMD)
         except Exception:
+            self.stats["cmd_failed"] += 1
             log.exception("发布命令失败 id=%s", row["id"])
             return False
-        return info.rc in (mqtt.MQTT_ERR_SUCCESS, mqtt.MQTT_ERR_NO_CONN)
+        ok = info.rc in (mqtt.MQTT_ERR_SUCCESS, mqtt.MQTT_ERR_NO_CONN)
+        # 入队失败（out-queue 满）也要看得见：静默丢命令与丢结果同型，都是石沉大海
+        if ok:
+            self.stats["cmd_published"] += 1
+        else:
+            self.stats["cmd_failed"] += 1
+            log.warning("命令入队失败 id=%s rc=%s（Broker 未连接或队列已满）", row["id"], info.rc)
+        return ok
 
     async def _maybe_push_upgrade(self, host, agent_ver):
         latest = await self.store.get_agent_latest()
@@ -249,15 +264,20 @@ class MqttBridge:
                    "size": latest.get("size", 0), "url": "/api/system/agent/download"}
         try:
             self.cli.publish(self._cmd_topic(host), json.dumps(payload), qos=QOS_CMD)
+            self.stats["upgrade_pushed"] += 1
             log.info("pushed upgrade %s -> %s to %s", agent_ver, latest["version"], host)
         except Exception:
-            log.debug("push upgrade failed", exc_info=True)
+            # 推失败意味着该主机停在旧版本；静默吞掉就再也发现不了
+            log.warning("push upgrade failed host=%s", host, exc_info=True)
 
     # ---- 周期任务 ----
     async def sweep(self):
         """命令超时收敛 + 僵尸在线判定：一个周期任务搞定，不需要每连接一个定时器。"""
         n = await self.store.sweep_command_timeouts()
         stale = await self.store.mark_stale_offline(OFFLINE_GRACE)
+        self.stats["sweeps"] += 1
+        self.stats["swept_timeouts"] += n
+        self.stats["swept_offline"] += stale
         if n or stale:
             log.info("sweep: %d 条命令置 timeout, %d 台判离线", n, stale)
         return n, stale
