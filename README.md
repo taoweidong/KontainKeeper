@@ -39,17 +39,28 @@ web/                     Vue3 前端（独立 pnpm 工程，pure-admin-thin 底�
   src/views/             四个业务页（host/monitor、host/detail、command、audit）
 proto/                   双端通信协议契约（v2）
 scripts/                 构建与部署脚本
+deploy/                  Mosquitto 生产/开发配置 + Agent 容器叠加片段
 docs/                    design / completion-plan-mqtt / architecture-review
 ```
+
+## 文档
+
+- [设计文档](docs/design.md)：整体架构、Broker 居中设计与存储治理
+- [架构评审](docs/architecture-review.md)：缺陷清单与处置映射（P0/P1/P2 + R1–R12）
+- [实现路线图 v3](docs/completion-plan-mqtt.md)：MQTT 收尾 + Vue3 前端的八阶段落地计划
+- [通信协议 v2](proto/messages.md)：MQTT 主题布局、帧格式、QoS/retain 语义与 8 项采集白名单
+- [部署说明](deploy/mosquitto/README.md)：Mosquitto 开发/生产双配置、按主机 ACL 与账号生成
+
+> 所有协议与配置以代码为唯一真相源；文档若与代码冲突，以代码与 `git` 历史为准。
 
 ## 快速开始（本机体验全链路）
 
 ```bash
 uv sync --all-packages          # 安装服务端依赖 + dev 组
 
-# 0. 起一个 MQTT Broker（需要有 docker，或用已有的 Broker）
+# 0. 起一个 MQTT Broker（本地冒烟用开发配置，开匿名；生产见 deploy/mosquitto/README.md）
 docker run -d --name mosquitto -p 1883:1883 \
-  -v $PWD/deploy/mosquitto/test.conf:/mosquitto/config/mosquitto.conf \
+  -v $PWD/deploy/mosquitto/mosquitto.dev.conf:/mosquitto/config/mosquitto.conf \
   eclipse-mosquitto:2
 
 # 1. 启动服务端
@@ -71,7 +82,8 @@ KK_HOST_NAME=demo-host KK_INTERVAL=5 uv run kk-agent
 ### 1. 服务端
 
 ```bash
-docker build -t registry.example.com/kontainkeeper-server:0.1.0 server/
+# 构建上下文为仓库根：Dockerfile 使用根 uv.lock + uv sync；.dockerignore 已排除前端/依赖等大目录
+docker build -f server/Dockerfile -t registry.example.com/kontainkeeper-server:0.1.0 .
 docker run -d --name kontainkeeper \
   -p 8443:8443 \
   -v kontainkeeper-data:/data \
@@ -212,3 +224,14 @@ cd web && pnpm typecheck && pnpm build                # 前端类型检查与构
 - 管理端：会话 token（默认 12 小时过期），命令下发全量审计
 - 命令黑名单拦截危险操作；argv 数组直传 exec，不经 shell 拼接
 - 自更新二进制强制 `sha256` 校验（可选 HMAC）
+
+## 参与贡献
+
+欢迎以 Issue / Pull Request 参与。提交前请先跑通测试（`uv sync --all-packages` 后
+`pytest agent/tests server/tests -q`），并确保 `web/` 前端 `pnpm typecheck && pnpm build` 通过。
+重大改动建议先对照 [实现路线图 v3](docs/completion-plan-mqtt.md) 与
+[架构评审](docs/architecture-review.md)，避免与已落地的设计决策冲突。
+
+## 许可证
+
+本项目以 [MIT License](LICENSE) 开源。
