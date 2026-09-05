@@ -34,6 +34,14 @@ def mask_url(url):
     return "%s://***@%s" % (scheme, rest.rsplit("@", 1)[1])
 
 
+def _num(value):
+    """标量指标转 float；坏值回 None 而不是抛异常让整帧心跳落不了库。"""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _b64_tail(b64, nbytes=2048):
     """从拼接好的 base64 里截末段解码：每 4 字符解 3 字节且组间独立，右截仍合法。"""
     if not b64:

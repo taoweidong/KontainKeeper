@@ -17,6 +17,12 @@ def _long_text():
     return _LONGTEXT
 
 
+# pod 列即主机标识（历史命名，产品术语已统一为「主机 / host」；改名的迁移成本
+# 换不到任何功能收益，故表名与列名保持原样）。
+#
+# cpu / mem_mb / disk_pct 是最近一帧心跳的摘要冗余：500 台列表若逐行 json.loads
+# 完整 last_metrics（每帧 2~4KB）就是 1~2MB 的 CPU 开销，摘要列让列表接口只读列。
+# 新增列靠 store.setup() 的 _ensure_schema 补，既有库无需手工迁移。
 containers = Table(
     "kk_containers", MD,
     Column("pod", String(120), primary_key=True),
@@ -28,6 +34,9 @@ containers = Table(
     Column("last_metrics", _long_text(), nullable=False),
     Column("online", Integer, nullable=False, server_default="0"),
     Column("status_ts", BigInteger, nullable=False, server_default="0"),
+    Column("cpu", Float),
+    Column("mem_mb", Float),
+    Column("disk_pct", Float),
 )
 
 heartbeats = Table(
@@ -69,6 +78,9 @@ commands = Table(
     Column("elapsed_ms", BigInteger),
     Column("out_b64", _long_text(), nullable=False),
     Column("out_chunks", Integer, nullable=False, server_default="0"),
+    # 输出被保留策略清掉后置 1：状态行还在，但命令回显已不可追溯，
+    # 前端据此提示「输出已清理」，而不是让用户对着空白以为命令没执行。
+    Column("out_purged", Integer, nullable=False, server_default="0"),
     Index("idx_cmd_pod", "pod", "created_at"),
 )
 
@@ -111,3 +123,16 @@ kv = Table(
 
 _CMD_COLS = [c.name for c in commands.columns if c.name != "out_b64"]
 ONLINE_GRACE = 180
+
+# 列表摘要视图只读这几列：完整 last_metrics（每帧 2~4KB JSON）不进列表响应。
+# 500 台 × 4KB = 2MB 的 JSON 解析开销，占了列表接口耗时的绝大部分。
+_SUMMARY_COLS = ["pod", "image", "agent_ver", "hb_interval", "online",
+                 "last_seen", "cpu", "mem_mb", "disk_pct"]
+
+# 既有库补列清单：create_all 不会给已存在的表加列，升级后必须自己 ALTER。
+# 类型写三库都认的写法（DOUBLE PRECISION / BIGINT），避免再分支。
+_ADD_COLUMNS = {
+    "kk_containers": [("cpu", "DOUBLE PRECISION"), ("mem_mb", "DOUBLE PRECISION"),
+                      ("disk_pct", "DOUBLE PRECISION")],
+    "kk_commands": [("out_purged", "INTEGER DEFAULT 0")],
+}

@@ -44,14 +44,40 @@ def _container_view(row, online_set):
     }
 
 
+def _container_summary(row, online_set, now):
+    """摘要视图：只回列表页要渲染的标量，不解析 last_metrics（B6）。
+
+    500 台时这一行 json.loads 的差价是几百毫秒——列表是前端 10s 轮询的接口，
+    慢一点会直接放大成服务端的持续负载。
+    """
+    disk_pct = row.get("disk_pct") or 0.0
+    return {
+        "pod": row["pod"],
+        "image": row["image"],
+        "agent_ver": row["agent_ver"],
+        "online": row["pod"] in online_set,
+        "age_sec": max(0, now - row["last_seen"]),
+        "cpu": row.get("cpu"),
+        "mem_mb": row.get("mem_mb"),
+        "disk_pct": disk_pct,
+        "disk_alert": disk_pct >= 85,
+    }
+
+
 @router.get("/containers")
-async def list_containers(request: Request):
+async def list_containers(request: Request, view: str = "full"):
     await current_user(request)
+    if view not in ("full", "summary"):
+        raise HTTPException(status_code=400, detail="view 需为 full 或 summary")
     store = request.app.state.store
     # 一次查回在线集合再逐行拼装：500 台只有两次往返，不在循环里打 500 次查询
-    rows, online = await asyncio.gather(store.list_containers(),
+    rows, online = await asyncio.gather(store.list_containers(view),
                                         store.online_set(ONLINE_GRACE))
-    items = [_container_view(r, online) for r in rows]
+    if view == "summary":
+        now = int(time.time())
+        items = [_container_summary(r, online, now) for r in rows]
+    else:
+        items = [_container_view(r, online) for r in rows]
     return {
         "items": items,
         "total": len(items),

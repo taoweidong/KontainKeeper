@@ -11,14 +11,16 @@ import secrets
 import time
 from urllib.parse import urlparse
 
-from sqlalchemy import (BigInteger, case, delete, func, insert, select, update)
+from sqlalchemy import (BigInteger, and_, case, delete, func, insert, select,
+                        text, update)
 from sqlalchemy.dialects import mysql, postgresql, sqlite
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from .tables import (MD, ONLINE_GRACE, _CMD_COLS, admins, audit, commands,
-                     containers, heartbeats, hourly, kv, revoked_tokens, sessions)
-from .helpers import _b64_tail, _pwdf, mask_url, normalize_url
+from .tables import (MD, ONLINE_GRACE, _ADD_COLUMNS, _CMD_COLS, _SUMMARY_COLS,
+                     admins, audit, commands, containers, heartbeats, hourly, kv,
+                     revoked_tokens, sessions)
+from .helpers import _b64_tail, _num, _pwdf, mask_url, normalize_url
 
 log = logging.getLogger("kk.store")
 
@@ -44,7 +46,36 @@ class Store:
                 for pragma in ("journal_mode=WAL", "busy_timeout=5000", "synchronous=NORMAL"):
                     await conn.exec_driver_sql("PRAGMA " + pragma)
             await conn.run_sync(MD.create_all)
+            await self._ensure_schema(conn)
         log.info("storage ready: dialect=%s url=%s", self.dialect, self.safe_url())
+
+    async def _ensure_schema(self, conn):
+        """给既有库补新增列：create_all 只建表不加列，升级后必须自己 ALTER。
+
+        三处方言差异都收在这一个方法里：列清单查 PRAGMA 还是 information_schema、
+        MySQL 要按 DATABASE() 限定、以及占位符统一用 :name（exec_driver_sql 的
+        位置参数风格各家不同，qmark / $1 / %s 混用必炸）。
+        """
+        for table, cols in _ADD_COLUMNS.items():
+            existing = await self._table_columns(conn, table)
+            for name, ddl in cols:
+                if name in existing:
+                    continue
+                await conn.exec_driver_sql(
+                    "ALTER TABLE %s ADD COLUMN %s %s" % (table, name, ddl))
+                log.info("schema migrated: %s.%s added", table, name)
+
+    async def _table_columns(self, conn, table):
+        if self.dialect == "sqlite":
+            rows = (await conn.exec_driver_sql("PRAGMA table_info(%s)" % table)).fetchall()
+            return {r[1] for r in rows}
+        # MySQL 必须限定 schema，否则同实例里另一个库的同名表会让补列被跳过
+        scope = ("DATABASE()" if self.dialect == "mysql" else "current_schema()")
+        rows = (await conn.execute(text(
+            "SELECT column_name FROM information_schema.columns"
+            " WHERE table_name = :t AND table_schema = " + scope),
+            {"t": table})).fetchall()
+        return {r[0] for r in rows}
 
     def safe_url(self):
         """日志里绝不打印数据库口令。"""
@@ -145,14 +176,41 @@ class Store:
             ts = now
         m = msg.get("metrics") or {}
         raw = json.dumps(msg, ensure_ascii=False)
+        # 摘要列随心跳顺手写：列表接口就不用再逐行解析 last_metrics（B6）
+        summary = self._summary_of(m)
+        # cpu/mem_mb 落 Float 列前先规整：Agent 插件写坏了指标也不能让整帧心跳
+        # 因为类型错误丢掉——曲线少一个点可以忍，整帧没了就是数据空洞。
         async with self.engine.begin() as conn:
             await conn.execute(insert(heartbeats).values(
-                pod=pod, ts=ts, cpu=m.get("cpu"), mem_mb=m.get("mem_mb"), metrics=raw))
+                pod=pod, ts=ts, cpu=_num(m.get("cpu")), mem_mb=_num(m.get("mem_mb")),
+                metrics=raw))
             await conn.execute(update(containers).where(containers.c.pod == pod).values(
-                last_seen=now, hb_interval=int(msg.get("interval") or 60), last_metrics=raw))
+                last_seen=now, hb_interval=int(msg.get("interval") or 60), last_metrics=raw,
+                **summary))
         return ts
 
-    async def list_containers(self):
+    @staticmethod
+    def _summary_of(metrics):
+        """从一帧 metrics 里摘出列表要显示的三个标量；坏数据返回 0 而不是让整帧失败。"""
+        disks = metrics.get("disks") or {}
+        try:
+            pcts = [float((d or {}).get("pct") or 0) for d in disks.values()]
+        except (AttributeError, TypeError, ValueError):
+            pcts = []
+        return {"cpu": _num(metrics.get("cpu")), "mem_mb": _num(metrics.get("mem_mb")),
+                "disk_pct": max(pcts) if pcts else 0.0}
+
+    async def list_containers(self, view="full"):
+        """full = 全列（含完整 last_metrics），summary = 只读摘要列。
+
+        摘要视图存在的理由：500 台 × 每帧 2~4KB 的 last_metrics 全量解析是列表接口
+        的主要开销，而列表页只显示在线/CPU/内存/磁盘告警几个标量。
+        """
+        if view == "summary":
+            return await self._all(select(*(containers.c[c] for c in _SUMMARY_COLS))
+                                   .order_by(containers.c.last_seen.desc()))
+        if view != "full":
+            raise ValueError("view 需为 full 或 summary，收到 %r" % view)
         return await self._all(select(containers).order_by(containers.c.last_seen.desc()))
 
     async def get_container(self, pod):
@@ -448,17 +506,85 @@ class Store:
         await self.kv_set("agg_hour", now_hour - 1)
         return n
 
-    async def cleanup(self, now=None, raw_days=2, cmd_days=30):
+    async def cleanup(self, now=None, raw_days=2, cmd_days=30, hourly_days=90, out_days=7):
+        """存储回收：只增不减的表在这里收敛（修 P1-6）。
+
+        两条不同的保留长度是刻意的：命令状态行要留 30 天（审计可追溯），
+        但 4MB 的命令输出跟着留一个月纯属浪费——输出单独按 7 天清，状态行保持完整。
+        """
         now = int(now or time.time())
-        hours = await self._aggregate_hours(now, raw_days)
-        await self._run(
-            delete(heartbeats).where(heartbeats.c.ts < now - raw_days * 86400),
-            delete(commands).where(commands.c.finished_at.isnot(None))
-            .where(commands.c.finished_at < now - cmd_days * 86400),
-            delete(sessions).where(sessions.c.expires < now),
-            # sweeper 漏掉的僵死命令盖成 lost 并补 finished_at：不补时间戳的 lost 行
-            # 永远落在上面那条 DELETE 的窗口之外，正是 P1-6。
+        stats = {"hours_aggregated": await self._aggregate_hours(now, raw_days)}
+        # 大表分批删：一次 DELETE 掉几十万行会长时间锁表、撑大事务日志，
+        # SQLite 上还会顶住 WAL 让前台写入一起变慢。
+        stats["heartbeats_deleted"] = await self._delete_batched(
+            heartbeats, heartbeats.c.ts < now - raw_days * 86400, heartbeats.c.id)
+        stats["hourly_deleted"] = await self._run(
+            delete(hourly).where(hourly.c.hour < (now - hourly_days * 86400) // 3600))
+        stats["commands_deleted"] = await self._delete_batched(
+            commands, commands.c.finished_at < now - cmd_days * 86400, commands.c.id,
+            extra=commands.c.finished_at.isnot(None))
+        stats["outputs_purged"] = await self._purge_outputs(now, out_days)
+        stats["sessions_deleted"] = await self._run(
+            delete(sessions).where(sessions.c.expires < now))
+        # sweeper 漏掉的僵死命令盖成 lost 并补 finished_at：不补时间戳的 lost 行
+        # 永远落在上面那条 DELETE 的窗口之外，正是 P1-6。
+        stats["commands_lost"] = await self._run(
             update(commands).where(commands.c.status.in_(("sent", "running")))
             .where(commands.c.created_at < now - 3600)
             .values(status="lost", finished_at=now))
-        return {"hours_aggregated": hours}
+        return stats
+
+    async def _delete_batched(self, table, where, pk, batch=5000, extra=None):
+        """按主键分批删除：先挑一批 id 再删，每批各自一个事务。
+
+        为什么不用 DELETE ... LIMIT：PostgreSQL 不支持，MySQL 的 LIMIT 又是方言
+        专属写法，SQLite 还要编译期开关——选主键是唯一三库通用且不锁全表的做法。
+        """
+        cond = where if extra is None else and_(where, extra)
+        total = 0
+        while True:
+            rows = await self._all(select(pk).where(cond).limit(batch))
+            if not rows:
+                return total
+            keys = [r[pk.name] for r in rows]
+            total += await self._run(delete(table).where(pk.in_(keys)))
+            if len(keys) < batch:
+                return total
+
+    async def _purge_outputs(self, now, out_days, batch=2000):
+        """清掉超龄命令的输出文本，保留状态行（id/pod/rc/耗时都还在）。"""
+        if out_days <= 0:
+            return 0
+        cutoff = now - out_days * 86400
+        cond = and_(commands.c.finished_at.isnot(None), commands.c.finished_at < cutoff,
+                    commands.c.out_purged == 0, commands.c.out_b64 != "")
+        total = 0
+        while True:
+            rows = await self._all(select(commands.c.id).where(cond).limit(batch))
+            if not rows:
+                return total
+            ids = [r["id"] for r in rows]
+            total += await self._run(update(commands).where(commands.c.id.in_(ids))
+                                     .values(out_b64="", out_chunks=0, out_purged=1))
+            if len(ids) < batch:
+                return total
+
+    async def counts(self):
+        """可观测面板用的行数与状态分布（C5）。
+
+        不追求单条 SQL：这个接口给运维面板看，几分钟调一次，5 次小查询比一条
+        三库方言不通的大 JOIN 好维护。
+        """
+        total = await self._one(select(func.count().label("n")).select_from(containers))
+        online = await self._one(select(func.count().label("n")).select_from(containers)
+                                 .where(containers.c.online == 1))
+        by_status = {r["status"]: r["n"] for r in await self._all(
+            select(commands.c.status.label("status"), func.count().label("n"))
+            .group_by(commands.c.status))}
+        hb = await self._one(select(func.count().label("n")).select_from(heartbeats))
+        hrs = await self._one(select(func.count().label("n")).select_from(hourly))
+        return {
+            "hosts": {"total": (total or {}).get("n", 0), "online": (online or {}).get("n", 0)},
+            "commands": by_status,
+            "storage": {"heartbeats": (hb or {}).get("n", 0), "hourly": (hrs or {}).get("n", 0)},
+        }
