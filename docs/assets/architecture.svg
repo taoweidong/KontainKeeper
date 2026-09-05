@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 640" font-family="'Segoe UI','Microsoft YaHei',sans-serif">
+  <defs>
+    <marker id="arr" markerWidth="9" markerHeight="9" refX="7.5" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#3B6FB5"/></marker>
+    <marker id="arrB" markerWidth="9" markerHeight="9" refX="7.5" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#4285F4"/></marker>
+    <marker id="arrG" markerWidth="9" markerHeight="9" refX="7.5" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 Z" fill="#2E7D32"/></marker>
+    <style>
+      .box   { fill:#EEF3FB; stroke:#3B6FB5; stroke-width:1.6; }
+      .broker{ fill:#E8F0FE; stroke:#4285F4; stroke-width:1.6; }
+      .comp  { fill:#FFFFFF; stroke:#3B6FB5; stroke-width:1.2; }
+      .compB { fill:#FFFFFF; stroke:#4285F4; stroke-width:1.2; }
+      .db    { fill:#E6F4EA; stroke:#2E7D32; stroke-width:1.6; }
+      .actor { fill:#FCE8E6; stroke:#C5221F; stroke-width:1.6; }
+      .note  { fill:#FFF8E1; stroke:#C5221F; stroke-width:1.2; stroke-dasharray:5 4; }
+      .ctitle{ fill:#1F2D3D; font-size:13px; font-weight:700; text-anchor:middle; }
+      .ctext { fill:#1A3A6B; font-size:13px; text-anchor:middle; }
+      .ctext2{ fill:#1A3A6B; font-size:11.5px; text-anchor:middle; }
+      .lbl   { fill:#555; font-size:12px; text-anchor:middle; }
+      .lblL  { fill:#555; font-size:12px; text-anchor:start; }
+    </style>
+  </defs>
+
+  <!-- 运维人员 (actor) -->
+  <rect class="actor" x="60" y="50" width="120" height="54" rx="10"/>
+  <text class="ctitle" x="120" y="82" fill="#C5221F">运维人员</text>
+
+  <!-- Linux 主机 容器 -->
+  <rect class="box" x="210" y="30" width="210" height="250" rx="12"/>
+  <text class="ctitle" x="315" y="52">Linux 主机</text>
+  <text class="ctext2" x="315" y="69">(vscode-server 容器 / 物理机)</text>
+  <rect class="comp" x="232" y="95" width="166" height="62" rx="8"/>
+  <text class="ctext" x="315" y="120">kk-agent</text>
+  <text class="ctext2" x="315" y="138">psutil 采集 + paho-mqtt</text>
+  <rect class="comp" x="232" y="178" width="166" height="62" rx="8"/>
+  <text class="ctext" x="315" y="203">自定义采集插件</text>
+  <text class="ctext2" x="315" y="221">*.py 热加载</text>
+
+  <!-- Mosquitto Broker -->
+  <rect class="broker" x="480" y="120" width="190" height="95" rx="10"/>
+  <text class="ctitle" x="575" y="148" fill="#1A3A6B">Mosquitto 2.x</text>
+  <text class="ctext2" x="575" y="168">LWT · 离线队列</text>
+  <text class="ctext2" x="575" y="185">pattern ACL</text>
+
+  <!-- kk-server 容器 -->
+  <rect class="box" x="720" y="30" width="230" height="330" rx="12"/>
+  <text class="ctitle" x="835" y="52">kk-server (FastAPI, 无状态)</text>
+  <rect class="comp" x="744" y="92" width="182" height="56" rx="8"/>
+  <text class="ctext" x="835" y="116">MqttBridge</text>
+  <text class="ctext2" x="835" y="134">桥接 / 命令下发</text>
+  <rect class="comp" x="744" y="166" width="182" height="56" rx="8"/>
+  <text class="ctext" x="835" y="190">Store</text>
+  <text class="ctext2" x="835" y="208">SQLAlchemy 2 async</text>
+  <rect class="comp" x="744" y="240" width="182" height="56" rx="8"/>
+  <text class="ctext" x="835" y="264">REST API</text>
+  <text class="ctext2" x="835" y="282">/api/*</text>
+
+  <!-- 数据库 -->
+  <path class="db" d="M985,193 a47.5,18 0 0 0 95,0 v79 a47.5,18 0 0 1 -95,0 z"/>
+  <ellipse class="db" cx="1032.5" cy="193" rx="47.5" ry="18"/>
+  <text class="ctext" x="1032.5" y="222" font-size="11.5">SQLite /</text>
+  <text class="ctext" x="1032.5" y="240" font-size="11.5">PostgreSQL /</text>
+  <text class="ctext" x="1032.5" y="258" font-size="11.5">MySQL</text>
+
+  <!-- 管理前端 容器 -->
+  <rect class="box" x="720" y="385" width="230" height="110" rx="12"/>
+  <text class="ctitle" x="835" y="407">管理前端</text>
+  <text class="ctext2" x="835" y="424">(服务端单端口托管)</text>
+  <rect class="comp" x="744" y="432" width="182" height="50" rx="8"/>
+  <text class="ctext" x="835" y="462">Vue3 + Element Plus + ECharts</text>
+
+  <!-- 连线 -->
+  <!-- Ops -> UI (浏览器) -->
+  <path d="M180,77 L355,77 Q367,77 367,89 L367,428 Q367,440 379,440 L720,440"
+        fill="none" stroke="#3B6FB5" stroke-width="1.6" marker-end="url(#arr)"/>
+  <text class="lblL" x="196" y="66">浏览器 :8443</text>
+
+  <!-- UI -> API (REST 轮询) -->
+  <path d="M835,432 L835,309" fill="none" stroke="#3B6FB5" stroke-width="1.6" marker-end="url(#arr)"/>
+  <text class="lbl" x="858" y="372">REST 轮询</text>
+
+  <!-- API -> Bridge 内部 -->
+  <path d="M835,296 L835,180" fill="none" stroke="#3B6FB5" stroke-width="1.2" marker-end="url(#arr)"/>
+
+  <!-- Bridge -> Broker (MQTT 发布 QoS1) -->
+  <path d="M720,118 L670,160" fill="none" stroke="#4285F4" stroke-width="1.6" marker-end="url(#arrB)"/>
+  <text class="lbl" x="562" y="108">MQTT 发布 (QoS1)</text>
+
+  <!-- Broker -> Bridge (status/hb/result) -->
+  <path d="M670,178 L720,150" fill="none" stroke="#4285F4" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arrB)"/>
+  <text class="lbl" x="556" y="198">status / hb / result</text>
+
+  <!-- Agent -> Broker (MQTT 出站 仅出站) -->
+  <path d="M420,128 L480,152" fill="none" stroke="#4285F4" stroke-width="1.6" marker-end="url(#arrB)"/>
+  <text class="lbl" x="430" y="116">MQTT 出站 (仅出站)</text>
+
+  <!-- Plugin -> Agent (collect) -->
+  <path d="M315,178 L315,157" fill="none" stroke="#3B6FB5" stroke-width="1.4" marker-end="url(#arr)"/>
+  <text class="lblL" x="330" y="172">collect()</text>
+
+  <!-- Store -> DB (异步写入) -->
+  <path d="M926,196 L984,230" fill="none" stroke="#2E7D32" stroke-width="1.6" marker-end="url(#arrG)"/>
+  <text class="lbl" x="945" y="214">异步写入</text>
+
+  <!-- Broker 说明 note -->
+  <path d="M575,215 L575,455" fill="none" stroke="#C5221F" stroke-width="1" stroke-dasharray="4 4"/>
+  <rect class="note" x="470" y="472" width="330" height="86" rx="10"/>
+  <text class="lbl" x="635" y="500" fill="#8a4b00">连接可靠性 / 重连退避 / 离线排队</text>
+  <text class="lbl" x="635" y="520" fill="#8a4b00">/ 在线判定 全部由 Broker 承担</text>
+</svg>
