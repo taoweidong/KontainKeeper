@@ -16,33 +16,33 @@ def _mask(token):
 
 
 @router.get("/tokens")
-def list_tokens(request: Request):
-    current_user(request)
+async def list_tokens(request: Request):
+    await current_user(request)
     store, hub = request.app.state.store, request.app.state
-    revoked = set(store.revoked_tokens())
+    revoked = set(await store.revoked_tokens())
     items = [{"token": _mask(t), "revoked": t in revoked} for t in sorted(hub.agent_tokens)]
     return {"items": items}
 
 
 @router.post("/tokens/revoke")
-def revoke_token(body: TokenBody, request: Request):
-    user = current_user(request)
+async def revoke_token(body: TokenBody, request: Request):
+    user = await current_user(request)
     store, hub = request.app.state.store, request.app.state
     if body.token not in hub.agent_tokens:
         raise HTTPException(status_code=404, detail="token 不在当前接入列表")
-    if store.is_token_revoked(body.token):
+    if await store.is_token_revoked(body.token):
         raise HTTPException(status_code=400, detail="token 已处于吊销状态")
-    store.revoke_token(body.token)
-    store.add_audit(user, "token_revoke", {"token": _mask(body.token)})
+    await store.revoke_token(body.token)
+    await store.add_audit(user, "token_revoke", {"token": _mask(body.token)})
     return {"ok": True, "note": "已在线的连接保持到断开，重连即被拒绝"}
 
 
 @router.post("/tokens/restore")
-def restore_token(body: TokenBody, request: Request):
-    user = current_user(request)
+async def restore_token(body: TokenBody, request: Request):
+    user = await current_user(request)
     store, hub = request.app.state.store, request.app.state
     if body.token not in hub.agent_tokens:
         raise HTTPException(status_code=404, detail="token 不在当前接入列表")
-    store.restore_token(body.token)
-    store.add_audit(user, "token_restore", {"token": _mask(body.token)})
+    await store.restore_token(body.token)
+    await store.add_audit(user, "token_restore", {"token": _mask(body.token)})
     return {"ok": True}

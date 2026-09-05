@@ -1,4 +1,5 @@
-"""容器列表 / 详情 / 指标序列。"""
+"""主机列表 / 详情 / 指标序列。"""
+import asyncio
 import json
 import time
 
@@ -23,8 +24,8 @@ def _disk_alert(metrics):
     return max((d.get("pct", 0) for d in disks.values()), default=0) >= 85
 
 
-def _container_view(row, store):
-    """online 直读 store 的在线列——由桥接按 retained status / LWT 维护，不再查内存连接表。"""
+def _container_view(row, online_set):
+    """online 来自桥接按 retained status / LWT 维护的在线列，不再查内存连接表。"""
     now = int(time.time())
     hb = _parse_metrics(row["last_metrics"])
     metrics = hb.get("metrics") or {}
@@ -35,7 +36,7 @@ def _container_view(row, store):
         "hb_interval": row["hb_interval"],
         "first_seen": row["first_seen"],
         "last_seen": row["last_seen"],
-        "online": store.is_online(row["pod"], ONLINE_GRACE),
+        "online": row["pod"] in online_set,
         "age_sec": max(0, now - row["last_seen"]),
         "metrics": metrics,
         "custom": hb.get("custom") or {},
@@ -44,10 +45,13 @@ def _container_view(row, store):
 
 
 @router.get("/containers")
-def list_containers(request: Request):
-    current_user(request)
+async def list_containers(request: Request):
+    await current_user(request)
     store = request.app.state.store
-    items = [_container_view(r, store) for r in store.list_containers()]
+    # 一次查回在线集合再逐行拼装：500 台只有两次往返，不在循环里打 500 次查询
+    rows, online = await asyncio.gather(store.list_containers(),
+                                        store.online_set(ONLINE_GRACE))
+    items = [_container_view(r, online) for r in rows]
     return {
         "items": items,
         "total": len(items),
@@ -57,20 +61,20 @@ def list_containers(request: Request):
 
 
 @router.get("/containers/{pod}")
-def container_detail(pod: str, request: Request):
-    current_user(request)
+async def container_detail(pod: str, request: Request):
+    await current_user(request)
     store = request.app.state.store
-    row = store.get_container(pod)
+    row = await store.get_container(pod)
     if not row:
         raise HTTPException(status_code=404, detail="容器不存在")
-    view = _container_view(row, store)
-    view["commands"] = store.list_commands(pod=pod, limit=20)
+    view = _container_view(row, await store.online_set(ONLINE_GRACE))
+    view["commands"] = await store.list_commands(pod=pod, limit=20)
     return view
 
 
 @router.get("/containers/{pod}/metrics")
-def container_metrics(pod: str, request: Request, hours: int = 24):
-    current_user(request)
+async def container_metrics(pod: str, request: Request, hours: int = 24):
+    await current_user(request)
     hours = min(max(hours, 1), 24 * 90)
-    series, source = request.app.state.store.metrics_series(pod, hours)
+    series, source = await request.app.state.store.metrics_series(pod, hours)
     return {"pod": pod, "hours": hours, "source": source, "series": series}

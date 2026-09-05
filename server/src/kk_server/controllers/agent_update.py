@@ -9,6 +9,7 @@
 - 服务端记录 sha256，Agent 端下载后校验一致才替换，防损坏/篡改
 - 二进制按平台单槽位（kk-agent），多架构需另行扩展
 """
+import asyncio
 import hashlib
 import json
 import os
@@ -33,7 +34,7 @@ def _bin_path(request: Request):
 
 @router.post("/agent")
 async def upload_agent(request: Request, file: UploadFile = File(...), version: str = Form(...)):
-    user = current_user(request)
+    user = await current_user(request)
     if not version or not version[0].isdigit():
         raise HTTPException(status_code=400, detail="version 非法")
 
@@ -50,29 +51,34 @@ async def upload_agent(request: Request, file: UploadFile = File(...), version: 
         raise HTTPException(status_code=400, detail="二进制为空")
 
     bin_dir = request.app.state.agent_bin_dir
-    os.makedirs(bin_dir, exist_ok=True)
-    dest = _bin_path(request)
-    if os.path.exists(dest):  # 保留上一版，便于回滚
-        try:
-            shutil.move(dest, dest + ".prev")
-        except OSError:
-            pass
-    with open(dest, "wb") as f:
-        f.write(data)
-    if os.name == "posix":
-        os.chmod(dest, 0o755)
+    dest = os.path.join(bin_dir, _BIN_NAME)
+
+    def _write():
+        """最大 64MB 的同步写不要占住事件循环——否则上传时所有心跳与请求都被卡住。"""
+        os.makedirs(bin_dir, exist_ok=True)
+        if os.path.exists(dest):  # 保留上一版，便于回滚
+            try:
+                shutil.move(dest, dest + ".prev")
+            except OSError:
+                pass
+        with open(dest, "wb") as f:
+            f.write(data)
+        if os.name == "posix":
+            os.chmod(dest, 0o755)
+
+    await asyncio.to_thread(_write)
 
     sha = hashlib.sha256(data).hexdigest()
     info = {"version": version, "sha256": sha, "size": len(data)}
-    request.app.state.store.set_agent_latest(info)
-    request.app.state.store.add_audit(user, "agent_upload", info)
+    await request.app.state.store.set_agent_latest(info)
+    await request.app.state.store.add_audit(user, "agent_upload", info)
     return {"ok": True, **info}
 
 
 @router.get("/agent/latest")
-def agent_latest(request: Request, ver: str = ""):
-    agent_token_auth(request)
-    latest = request.app.state.store.get_agent_latest()
+async def agent_latest(request: Request, ver: str = ""):
+    await agent_token_auth(request)
+    latest = await request.app.state.store.get_agent_latest()
     if not latest:
         return JSONResponse({"available": False})
     if not version_lt(ver or "", latest.get("version", "")):
@@ -87,9 +93,9 @@ def agent_latest(request: Request, ver: str = ""):
 
 
 @router.get("/agent/download")
-def agent_download(request: Request):
-    agent_token_auth(request)
-    latest = request.app.state.store.get_agent_latest()
+async def agent_download(request: Request):
+    await agent_token_auth(request)
+    latest = await request.app.state.store.get_agent_latest()
     dest = _bin_path(request)
     if not latest or not os.path.isfile(dest):
         raise HTTPException(status_code=404, detail="no agent binary")

@@ -7,13 +7,13 @@ router = APIRouter(prefix="/api")
 
 
 @router.get("/health")
-def health(request: Request):
+async def health(request: Request):
     store, bridge = request.app.state.store, request.app.state.bridge
     return {
         "ok": True,
         "version": __version__,
         "proto_ver": PROTO_VER,
-        "agents_online": store.online_count(),
+        "agents_online": await store.online_count(),
         "broker": "connected" if (bridge and bridge.connected.is_set()) else "disconnected",
         "bridge": bridge.stats if bridge else None,
     }
