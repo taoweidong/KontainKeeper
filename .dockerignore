@@ -1,0 +1,19 @@
+# 收敛 kk-server 镜像构建上下文（构建上下文为仓库根，避免把前端/依赖/node_modules 等打进去）
+.git
+.workbuddy
+web
+node_modules
+**/node_modules
+**/.venv
+**/__pycache__
+*.pyc
+*.pyo
+*.egg-info
+dist
+build
+agent/dist
+server/dist
+e2e.db
+e2e.db-shm
+e2e.db-wal
+**/*.log

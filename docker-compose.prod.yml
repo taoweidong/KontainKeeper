@@ -1,0 +1,50 @@
+# KontainKeeper 生产全栈（关匿名 + 密码文件 + 按主机 ACL）
+#
+# 使用前：
+#   1) 生成服务端账号（已预置 dev-token，可改密码后重建）：
+#        docker compose run mosquitto mosquitto_passwd -b deploy/mosquitto/passwordfile kk-server <强密码>
+#   2) 为每台 Agent 写入独立账号（用户名=主机名，密码=该机 KK_TOKEN）：
+#        bash deploy/mosquitto/gen-credentials.sh <主机名> <token>
+#   3) 调整下方 KK_MQTT_PASSWORD / KK_AGENT_TOKENS 为真实值（建议走 .env 或 secret 注入，勿写死）。
+#
+# 启动：  docker compose -f docker-compose.prod.yml up --build
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./deploy/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./deploy/mosquitto/passwordfile:/mosquitto/config/passwordfile:ro
+      - ./deploy/mosquitto/aclfile:/mosquitto/config/aclfile:ro
+      - mosquitto-data:/mosquitto/data
+    restart: unless-stopped
+
+  kk-server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    environment:
+      KK_MQTT_URL: mqtt://mosquitto:1883
+      KK_TOPIC_PREFIX: kk/v1
+      KK_MQTT_USERNAME: kk-server
+      KK_MQTT_PASSWORD: dev-token
+      KK_AGENT_TOKENS: dev-token
+      KK_DB_PATH: /data/kk-server.db
+      KK_PORT: "8443"
+      KK_HOST: 0.0.0.0
+      # 生产务必改为强口令（KK_ENV=production 且仍用默认 admin 口令会拒绝启动）
+      KK_ADMIN_PASS: change-me-in-prod
+      KK_ENV: production
+    ports:
+      - "8443:8443"
+    volumes:
+      - kk-data:/data
+    depends_on:
+      - mosquitto
+    restart: unless-stopped
+
+volumes:
+  mosquitto-data:
+  kk-data:

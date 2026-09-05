@@ -1,0 +1,46 @@
+# KontainKeeper 一键全栈（开发 / 演示用，开匿名 Broker，开箱即起）
+#
+# 启动：  docker compose up --build
+# 访问：  http://localhost:8443  （服务端单端口托管前端 + REST API）
+# Agent： KK_SERVER=mqtt://<宿主机IP>:1883 KK_TOKEN=dev-token ./kk-agent
+#
+# 生产部署：改用 docker-compose.prod.yml（关匿名 + 密码文件 + 按主机 ACL）。
+#   docker compose -f docker-compose.prod.yml up --build
+#   并先执行：bash deploy/mosquitto/gen-credentials.sh <主机名> <token>
+#
+# 说明：kk-server 构建上下文为仓库根（uv workspace，锁在根 uv.lock），
+# Dockerfile 在 server/Dockerfile，.dockerignore 已收敛构建上下文。
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./deploy/mosquitto/mosquitto.dev.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data
+    restart: unless-stopped
+
+  kk-server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    # 开发用：匿名 Broker，不传 KK_MQTT_USERNAME/PASSWORD
+    environment:
+      KK_MQTT_URL: mqtt://mosquitto:1883
+      KK_TOPIC_PREFIX: kk/v1
+      KK_AGENT_TOKENS: dev-token
+      KK_DB_PATH: /data/kk-server.db
+      KK_PORT: "8443"
+      KK_HOST: 0.0.0.0
+    ports:
+      - "8443:8443"
+    volumes:
+      - kk-data:/data
+    depends_on:
+      - mosquitto
+    restart: unless-stopped
+
+volumes:
+  mosquitto-data:
+  kk-data:
