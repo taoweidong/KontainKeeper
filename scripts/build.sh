@@ -3,7 +3,7 @@
 # 叠加该二进制（镜像期介入，上线即连，运行时不再依赖容器内 Python）。
 #
 # 用法:
-#   KK_SERVER=wss://kk-server.ops:8443/ws/agent \
+#   KK_SERVER=mqtt://mosquitto:1883 \
 #     BASE_IMAGE=myregistry/vscode-server:1.2 ./scripts/build.sh myregistry/vscode-server-managed:1.2
 #
 # 入口透传方式（docker 原生机制，不经 shell 解析）：
