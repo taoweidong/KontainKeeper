@@ -168,6 +168,22 @@ def test_full_chain(stack):
     assert "disks" in rec["metrics"] and "procs_top" in rec["metrics"]
     assert rec["agent_ver"]
 
+    # 摘要视图：列表页轮询走这条，字段与在线/告警口径必须自洽
+    status, summ = http(port, "GET", "/api/containers?view=summary", token=tok)
+    assert status == 200, summ
+    row = [i for i in summ["items"] if i["pod"] == host][0]
+    assert row["online"] and row["cpu"] is not None and row["mem_mb"] > 0
+    assert row["disk_alert"] == (row["disk_pct"] >= 85)
+    assert "last_metrics" not in row and "metrics" not in row, "摘要不该带完整指标"
+
+    # 可观测面板：链路是否活着要从这里一眼看出
+    status, st = http(port, "GET", "/api/system/stats", token=tok)
+    assert status == 200 and st["ok"], st
+    assert st["hosts"]["online"] >= 1 and st["storage"]["heartbeats"] >= 1
+    assert st["broker"]["connected"] is True
+    assert st["broker"]["stats"]["hb"] >= 1, "桥接心跳计数应随 Agent 上报增长"
+    assert st["broker"]["stats"]["cmd_published"] >= 0
+
     # 下发 shell 命令 → 执行 → 回传（argv 直传，避免含空格路径被 cmdline 拆坏）
     status, body = http(port, "POST", "/api/commands", token=tok, body={
         "pods": [host], "argv": [sys.executable, "-c", "print('kk-ok')"], "timeout": 30})

@@ -3,8 +3,10 @@ import json
 import time
 
 import pytest
+from sqlalchemy import select
 
 from kk_server.models.store import Store
+from kk_server.models.tables import commands, containers, heartbeats, hourly
 
 
 @pytest.fixture
@@ -163,6 +165,148 @@ async def test_cleanup_aggregates_and_prunes(store):
     # 原始明细已被清出 raw 窗口
     raw, _ = await store.metrics_series("pod-c", 2)
     assert raw == []
+
+
+async def test_summary_view_written_with_heartbeat(store):
+    """B6：心跳顺手落摘要列，列表页不必再解析完整 last_metrics。"""
+    await store.upsert_container("pod-sum", "img:1", "0.1.0", 60)
+    await store.record_hb("pod-sum", {
+        "interval": 60, "metrics": {"cpu": 12.5, "mem_mb": 800.0,
+                                    "disks": {"/": {"pct": 91.0}, "/data": {"pct": 40.0}}}})
+    rows = await store.list_containers(view="summary")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["cpu"] == 12.5 and row["mem_mb"] == 800.0
+    # 磁盘告警取的是「最满的那块盘」，不是第一块
+    assert row["disk_pct"] == 91.0
+    assert set(row) == {"pod", "image", "agent_ver", "hb_interval", "online",
+                        "last_seen", "cpu", "mem_mb", "disk_pct"}, \
+        "摘要视图不该把 last_metrics 这种大字段带出来"
+
+
+async def test_summary_tolerates_broken_metrics(store):
+    """坏数据不能让整帧心跳落不了库：摘不到的标量落 None / 0。"""
+    await store.upsert_container("pod-bad", "img", "0.1.0", 60)
+    await store.record_hb("pod-bad", {"metrics": {"cpu": "oops", "disks": "nope"}})
+    row = (await store.list_containers(view="summary"))[0]
+    assert row["cpu"] is None and row["disk_pct"] == 0.0
+    # 完整视图仍然可用：last_metrics 原样保留
+    assert "oops" in (await store.get_container("pod-bad"))["last_metrics"]
+
+
+async def test_list_containers_view_param_guarded(store):
+    await store.upsert_container("pod-v", "img", "0.1.0", 60)
+    assert len(await store.list_containers()) == 1
+    assert len(await store.list_containers("summary")) == 1
+    # 未知 view 不能静默退化成全列查询——那会让前端以为拿到了摘要
+    with pytest.raises(ValueError):
+        await store.list_containers("nope")
+
+
+async def test_schema_migration_adds_missing_columns(tmp_path):
+    """既有库升级：create_all 不加列，setup() 必须自己 ALTER 补上。"""
+    import sqlalchemy as sa
+
+    path = str(tmp_path / "legacy.db")
+    # 先造一个「旧版本」的库：containers 没有摘要列，commands 没有 out_purged
+    legacy = sa.MetaData()
+    sa.Table("kk_containers", legacy,
+             sa.Column("pod", sa.String(120), primary_key=True),
+             sa.Column("image", sa.String(200), nullable=False, server_default=""),
+             sa.Column("agent_ver", sa.String(40), nullable=False, server_default=""),
+             sa.Column("hb_interval", sa.Integer, nullable=False, server_default="60"),
+             sa.Column("first_seen", sa.BigInteger, nullable=False),
+             sa.Column("last_seen", sa.BigInteger, nullable=False),
+             sa.Column("last_metrics", sa.Text, nullable=False),
+             sa.Column("online", sa.Integer, nullable=False, server_default="0"),
+             sa.Column("status_ts", sa.BigInteger, nullable=False, server_default="0"))
+    eng = sa.create_engine("sqlite:///" + path)
+    legacy.create_all(eng)
+    eng.dispose()
+
+    st = Store(path)
+    await st.setup()
+    async with st.engine.begin() as conn:
+        cols = await st._table_columns(conn, "kk_containers")
+        cmd_cols = await st._table_columns(conn, "kk_commands")
+    assert {"cpu", "mem_mb", "disk_pct"} <= cols, cols
+    assert "out_purged" in cmd_cols, cmd_cols
+    # 补列后功能照常：心跳能写、命令能建
+    await st.upsert_container("old-pod", "img", "0.1.0", 60)
+    await st.record_hb("old-pod", {"metrics": {"cpu": 1.0}})
+    assert (await st.list_containers(view="summary"))[0]["cpu"] == 1.0
+    await st.close()
+
+
+async def test_cleanup_purges_stale_command_output(store):
+    """B3：命令输出按 7 天清，状态行保留 30 天——两条保留期互不影响。"""
+    await store.upsert_container("pod-out", "img", "0.1.0", 60)
+    cid = await store.create_command("pod-out", "shell", ["echo"], 30, "admin")
+    await store.append_result({"id": cid, "seq": 0, "total": 1, "done": True, "rc": 0,
+                         "out_b64": "aGVsbG8="})
+    now = int(time.time())
+    await store.exec_sql("UPDATE kk_commands SET finished_at=:a WHERE id=:b",
+                         {"a": now - 8 * 86400, "b": cid})
+    stats = await store.cleanup(now)
+    assert stats["outputs_purged"] == 1
+    row = await store.get_command(cid)
+    # 状态行还在（8 天 < 30 天），但输出已清理且留下可解释的标记
+    assert row["status"] == "done" and row["rc"] == 0
+    assert row["out_purged"] == 1 and await store.command_output(cid) == ""
+    # 再跑一次不能重复计数
+    assert (await store.cleanup(now))["outputs_purged"] == 0
+    # 满 30 天后整行才被删
+    assert (await store.cleanup(now + 31 * 86400))["commands_deleted"] == 1
+    assert await store.get_command(cid) is None
+
+
+async def test_cleanup_prunes_hourly_beyond_retention(store):
+    """hourly 只增不减会让表无限膨胀：90 天外的聚合行必须回收。"""
+    now = int(time.time())
+    old_hour = (now - 120 * 86400) // 3600
+    fresh_hour = (now - 3600) // 3600
+    for h in (old_hour, fresh_hour):
+        await store.exec_sql(
+            "INSERT INTO kk_hourly(pod,hour,samples,cpu_avg,cpu_max,mem_avg,mem_max,"
+            "last_metrics) VALUES(:p,:h,1,1.0,2.0,3.0,4.0,'{}')",
+            {"p": "pod-h", "h": h})
+    stats = await store.cleanup(now)
+    assert stats["hourly_deleted"] == 1
+    left = await store._all(select(hourly.c.hour))
+    assert [r["hour"] for r in left] == [fresh_hour]
+
+
+async def test_cleanup_deletes_heartbeats_in_batches(store):
+    """分批删除：一次清掉远超 batch 的行，不能因为 LIMIT 只删一批就返回。"""
+    await store.upsert_container("pod-bulk", "img", "0.1.0", 60)
+    now = int(time.time())
+    old = now - 5 * 86400
+    rows = [{"p": "pod-bulk", "t": old + i, "c": 1.0, "m": 1.0, "x": "{}"}
+            for i in range(23)]        # 23 > 默认 batch 5 的倍数，逼出多轮循环
+    await store.exec_sql(
+        "INSERT INTO kk_heartbeats(pod,ts,cpu,mem_mb,metrics)"
+        " VALUES(:p,:t,:c,:m,:x)", rows)
+    # 新心跳要留下
+    await store.record_hb("pod-bulk", {"metrics": {"cpu": 9.0}})
+    stats = await store.cleanup(now, raw_days=2)
+    assert stats["heartbeats_deleted"] == 23
+    left = await store._all(select(heartbeats.c.cpu))
+    assert [r["cpu"] for r in left] == [9.0]
+
+
+async def test_counts_feeds_stats_endpoint(store):
+    """C5：stats 面板要的行数与状态分布。"""
+    await store.upsert_container("c1", "img", "0.1.0", 60)
+    await store.set_online("c1", True)
+    await store.upsert_container("c2", "img", "0.1.0", 60)
+    cid = await store.create_command("c1", "shell", ["echo"], 30, "admin")
+    await store.record_hb("c1", {"metrics": {"cpu": 1.0}})
+    counts = await store.counts()
+    assert counts["hosts"] == {"total": 2, "online": 1}
+    assert counts["commands"] == {"pending": 1}
+    assert counts["storage"]["heartbeats"] == 1
+    await store.mark_sent(cid)
+    assert (await store.counts())["commands"] == {"sent": 1}
 
 
 async def test_token_revocation(store):
