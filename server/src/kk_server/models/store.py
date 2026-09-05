@@ -1,21 +1,7 @@
-"""存储层：SQLAlchemy 2 Core + async engine，一套代码适配 SQLite / PostgreSQL / MySQL。
+"""异步存储层：SQLAlchemy 2 Core + async engine，一套代码适配 SQLite / PG / MySQL。
 
-选 SQLAlchemy 而不是继续手写 sqlite3，是因为三种库的差异一次性被它接管了：
-
-| 差异                      | 交给 SQLAlchemy 的什么                       |
-|---------------------------|----------------------------------------------|
-| 占位符风格 ? / %s / :n    | Core 表达式语言                              |
-| upsert 三种写法           | `_upsert()` 一处方言分支（全库仅此一处）     |
-| TEXT 长度上限（MySQL 64KB）| MySQL LONGTEXT variant                      |
-| 主键必须定长（MySQL）     | String(n) 而非 Text                          |
-| 自增列三种写法            | 类型系统 + autoincrement                     |
-| 连接池 / 重连 / 并发      | async engine + pool_pre_ping                 |
-| 阻塞事件循环（评审 P0-2） | async driver（aiosqlite / asyncpg / aiomysql）|
-
-所以本文件不再需要：手拼 SCHEMA 字符串、PRAGMA 建表、threading.Lock 串行化、
-`_outbuf` 进程内缓存、手写 ALTER 列迁移。**阶段 B 的异步化在这里一并完成。**
-
-`KK_DB_URL` 选库；缺省回落到 `KK_DB_PATH` 的 SQLite，既有部署零改动即可升级。
+KK_DB_URL 选库，缺省回落 KK_DB_PATH 的 SQLite。表定义见 tables.py，工具函数见 helpers.py。
+阶段 B 的异步化在这里一并完成——Store 全协程，事件循环不再被数据库拖住。
 """
 import base64
 import hashlib
@@ -23,166 +9,18 @@ import json
 import logging
 import secrets
 import time
-from pathlib import Path
-from urllib.parse import quote, urlparse
+from urllib.parse import urlparse
 
-from sqlalchemy import (BigInteger, Column, Float, Index, Integer, MetaData,
-                        String, Table, Text, case, delete, func, insert, select,
-                        update)
+from sqlalchemy import (BigInteger, case, delete, func, insert, select, update)
 from sqlalchemy.dialects import mysql, postgresql, sqlite
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from .tables import (MD, ONLINE_GRACE, _CMD_COLS, admins, audit, commands,
+                     containers, heartbeats, hourly, kv, revoked_tokens, sessions)
+from .helpers import _b64_tail, _pwdf, mask_url, normalize_url
+
 log = logging.getLogger("kk.store")
-
-MD = MetaData()
-
-# MySQL 的 TEXT 只有 64KB，而命令输出 base64 后最大约 5.6MB（KK_MAX_OUT_MB=4），
-# 不升级成 LONGTEXT 会被静默截断。其余两家原生就是无限长。
-_LONGTEXT = Text().with_variant(mysql.LONGTEXT(), "mysql")
-
-
-def _long_text():
-    return _LONGTEXT
-
-
-containers = Table(
-    "kk_containers", MD,
-    Column("pod", String(120), primary_key=True),
-    Column("image", String(200), nullable=False, server_default=""),
-    Column("agent_ver", String(40), nullable=False, server_default=""),
-    Column("hb_interval", Integer, nullable=False, server_default="60"),
-    Column("first_seen", BigInteger, nullable=False),
-    Column("last_seen", BigInteger, nullable=False),
-    Column("last_metrics", _long_text(), nullable=False),
-    Column("online", Integer, nullable=False, server_default="0"),
-    Column("status_ts", BigInteger, nullable=False, server_default="0"),
-)
-
-heartbeats = Table(
-    "kk_heartbeats", MD,
-    Column("id", Integer, primary_key=True, autoincrement=True),
-    Column("pod", String(120), nullable=False),
-    Column("ts", BigInteger, nullable=False),
-    Column("cpu", Float),
-    Column("mem_mb", Float),
-    Column("metrics", _long_text(), nullable=False),
-    Index("idx_hb_pod_ts", "pod", "ts"),
-)
-
-hourly = Table(
-    "kk_hourly", MD,
-    Column("pod", String(120), primary_key=True),
-    Column("hour", BigInteger, primary_key=True),
-    Column("samples", Integer, nullable=False, server_default="0"),
-    Column("cpu_avg", Float), Column("cpu_max", Float),
-    Column("mem_avg", Float), Column("mem_max", Float),
-    Column("last_metrics", _long_text(), nullable=False),
-)
-
-commands = Table(
-    "kk_commands", MD,
-    Column("id", String(32), primary_key=True),
-    Column("pod", String(120), nullable=False),
-    Column("kind", String(20), nullable=False, server_default="shell"),
-    Column("argv", Text, nullable=False),
-    Column("timeout", Integer, nullable=False, server_default="30"),
-    Column("status", String(12), nullable=False, server_default="pending"),
-    Column("created_by", String(64), nullable=False, server_default=""),
-    Column("created_at", BigInteger, nullable=False),
-    Column("sent_at", BigInteger),
-    Column("finished_at", BigInteger),
-    Column("rc", Integer),
-    Column("timed_out", Integer, nullable=False, server_default="0"),
-    Column("truncated", Integer, nullable=False, server_default="0"),
-    Column("elapsed_ms", BigInteger),
-    Column("out_b64", _long_text(), nullable=False),
-    Column("out_chunks", Integer, nullable=False, server_default="0"),
-    Index("idx_cmd_pod", "pod", "created_at"),
-)
-
-audit = Table(
-    "kk_audit", MD,
-    Column("id", Integer, primary_key=True, autoincrement=True),
-    Column("actor", String(64), nullable=False),
-    Column("action", String(40), nullable=False),
-    Column("detail", Text, nullable=False),
-    Column("ts", BigInteger, nullable=False),
-)
-
-admins = Table(
-    "kk_admins", MD,
-    Column("username", String(64), primary_key=True),
-    Column("salt", String(64), nullable=False),
-    Column("pw_hash", String(128), nullable=False),
-    Column("created", BigInteger, nullable=False),
-)
-
-sessions = Table(
-    "kk_sessions", MD,
-    Column("token", String(64), primary_key=True),
-    Column("username", String(64), nullable=False),
-    Column("created", BigInteger, nullable=False),
-    Column("expires", BigInteger, nullable=False),
-)
-
-revoked_tokens = Table(
-    "kk_revoked_tokens", MD,
-    Column("token", String(128), primary_key=True),
-    Column("ts", BigInteger, nullable=False),
-)
-
-kv = Table(
-    "kk_kv", MD,
-    Column("k", String(64), primary_key=True),   # MySQL 不接受 TEXT 主键，必须定长
-    Column("v", Text, nullable=False),
-)
-
-_CMD_COLS = [c.name for c in commands.columns if c.name != "out_b64"]
-ONLINE_GRACE = 180
-
-
-def _pwdf(salt, password):
-    return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"),
-                               salt.encode("utf-8"), 120_000).hex()
-
-
-def normalize_url(url=None, db_path=None):
-    """把用户写的连接串规整成 async engine 可用的形式。
-
-    - 没有 scheme → 当 SQLite 文件路径（旧 `KK_DB_PATH=kk-server.db` 用法）
-    - 有 scheme → 只换驱动，路径原样保留（写 `postgresql://` 自动补 `+asyncpg`）
-    """
-    u = (url or db_path or "").strip()
-    if "://" not in u:
-        return "sqlite+aiosqlite:///" + u.replace("\\", "/") if u else                "sqlite+aiosqlite:///kk-server.db"
-    scheme, _, rest = u.partition("://")
-    base = scheme.split("+")[0]          # 用户显式写了别的驱动也一并纠正过来
-    return {"sqlite": "sqlite+aiosqlite", "postgresql": "postgresql+asyncpg",
-            "postgres": "postgresql+asyncpg", "mysql": "mysql+aiomysql",
-            "mariadb": "mysql+aiomysql"}.get(base, scheme) + "://" + rest
-
-
-def mask_url(url):
-    """抹掉连接串里的账号口令，用于日志与错误回显。"""
-    if "://" not in url or "@" not in url:
-        return url
-    scheme, rest = url.split("://", 1)
-    return "%s://***@%s" % (scheme, rest.rsplit("@", 1)[1])
-
-
-def _b64_tail(b64, nbytes=2048):
-    """从拼接好的 base64 里截末段解码：每 4 字符解 3 字节且组间独立，右截仍合法。"""
-    if not b64:
-        return ""
-    chars = ((nbytes + 2) // 3) * 4
-    tail = b64[-chars:] if len(b64) > chars else b64
-    tail = tail[-((len(tail) // 4) * 4):] or tail
-    try:
-        return base64.b64decode(tail, validate=False).decode("utf-8", "replace")[-nbytes:]
-    except Exception:
-        return ""
-
 
 class Store:
     """异步存储。全部方法是协程——调用方 await，事件循环不再被数据库拖住。"""
