@@ -121,8 +121,8 @@ soybean-admin 前端（REST 轮询 + ECharts）
 | A | 服务端 MQTT 桥接（MqttBridge 替代 Hub）+ **批量采集打通** + 批量性能 | P0-3、P0-4、P1-8、P1-11、R4、R5、R12 | ✅ 完成（40 项 + 集成 3 项 + 真实进程链路） |
 | B | Store 异步化 + 存储治理（**多库支持改造顺带完成异步化**） | P0-2、P1-5、P2-15、R11 | ✅ 完成（异步化/B2/B3/B4/B5/B6 全部完成；summary 视图 + 心跳容错 + 分批删 + 输出清理） |
 | C | 可靠性加固（v3 收敛为 4 项、约 40 行） | P0-4 残余、P1-10、P2-18/19 | ✅ 完成（C1 清扫器随 A 落地，C5 /api/system/stats 已上线，C2 鉴权迁移留待 G1） |
-| D | **前端 Vue3（soybean-admin 底座）** | P1-7、P2-19 | ✅ 完成（pure-admin-thin 骨架 + 4 个业务页 + API 层 + 静态路由） |
-| E | 协议文档与周边同步 | P1-12 | 🟡 部分（AGENTS.md 已随骨架更新，待补 proto v2 文档） |
+| D | **前端 Vue3（pure-admin-thin 底座）** | P1-7、P2-19 | ✅ 完成（pure-admin-thin 骨架 + 4 个业务页 + API 层 + 静态路由） |
+| E | 协议文档与周边同步 | P1-12 | ✅ 完成（proto v2 + design/AGENTS/README×3 同步 + 评审缺陷打钩） |
 | F | 测试与 CI 还债 | Agent 侧已随阶段 0 完成 | 🟡 部分（test_api.py 新增 ASGI 接口契约；集成测试受 Broker 不可达限制 skip） |
 | G | 构建与部署（docker compose 全栈） | P2-13 | ⬜ 未开始 |
 
