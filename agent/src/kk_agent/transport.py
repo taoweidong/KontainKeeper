@@ -14,10 +14,12 @@ Agent 主线程只做「定时采集 + 发布」。
 
 主题布局（前缀可通过 KK_TOPIC_PREFIX 调整）：
 
-    kk/v1/{host}/status    Agent → Server  在线状态，retain + LWT
-    kk/v1/{host}/hb        Agent → Server  心跳指标，retain
+    kk/v1/{host}/status    Agent → Server  在线状态，QoS1 + retain + LWT
+    kk/v1/{host}/hb        Agent → Server  心跳指标，QoS0，不 retain
     kk/v1/{host}/result    Agent → Server  命令结果，QoS1
     kk/v1/{host}/cmd       Server → Agent  命令下发，QoS1
+
+帧格式与语义以 proto/messages.md（协议 v2）为准。
 """
 import json
 import ssl
