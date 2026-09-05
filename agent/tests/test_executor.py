@@ -43,6 +43,29 @@ def test_run_shell_truncates_and_flags():
     assert len(r["out"]) == 100 and r["truncated"] is True
 
 
+def test_run_shell_read_side_cap_on_large_output():
+    """大输出命令：内存在读取侧即封顶，而非全量缓冲后再截断（资源评审 P1）。
+
+    产出 64MB 输出但 max_out=4KB：若仍是 communicate() 全量缓冲，Agent 内存
+    会被撑到 64MB；读取侧封顶后无论命令产出多少，驻留内存恒为 max_out 附近。
+    """
+    code = "import sys\nfor _ in range(1024):\n    sys.stdout.buffer.write(b'x' * 65536)\n"
+    r = ex.run_shell([sys.executable, "-c", code], timeout=60, max_out=4096)
+    assert r["rc"] == 0, "排水不停止读取，短命命令应正常跑完拿到准确 rc"
+    assert len(r["out"]) == 4096 and r["truncated"] is True
+
+
+def test_run_shell_infinite_output_bounded_and_killed():
+    """`cat /dev/zero` 场景：无限输出 + 超时，输出与内存都必须有界。"""
+    code = ("import sys\nwhile True:\n"
+            "    sys.stdout.buffer.write(b'x' * 65536)\n    sys.stdout.buffer.flush()\n")
+    t0 = time.monotonic()
+    r = ex.run_shell([sys.executable, "-c", code], timeout=2, max_out=4096)
+    assert r["timed_out"] is True and r["rc"] == -1
+    assert len(r["out"]) == 4096 and r["truncated"] is True
+    assert time.monotonic() - t0 < 15, "超时后必须立即回收进程树"
+
+
 def test_runner_delivers_result_to_emit():
     """Runner 的回调契约是 emit(cmd_id, result)——签名不匹配会被线程池吞掉。"""
     got = queue.Queue()

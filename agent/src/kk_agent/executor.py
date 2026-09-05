@@ -6,7 +6,9 @@
   KK_ALLOW_SHELL=0 彻底关闭该能力
 - 用 start_new_session 创建进程组，超时或异常时 killpg 清理整棵子进程树，
   避免 `sh -c "long &"` 之类的命令在超时后留下孤儿进程
-- 输出超过上限时截断并置 truncated 标记，让服务端/使用者知道结果是完整的还是被截的
+- 输出在**读取侧**即封顶 max_out：达到上限后继续排水（丢弃）但不再保留，
+  Agent 内存被硬性限制在 max_out 附近——旧实现用 communicate() 全量缓冲，
+  `cat /dev/zero` 类大输出命令在超时窗口内可把 Agent 吃到 OOM（资源评审 P1）
 """
 import os
 import queue
@@ -17,13 +19,15 @@ import time
 
 SPAWN_ERRORS = (FileNotFoundError, PermissionError, NotADirectoryError, ValueError)
 
+_READ_CHUNK = 65536  # 读取线程的单次排水块大小
+
 
 def run_shell(argv, timeout=30, max_out=4 * 1024 * 1024, use_shell=False):
     """执行 argv（或 shell 字符串），返回 {rc, out, timed_out, elapsed_ms, truncated}。"""
     t0 = time.monotonic()
     timed_out = False
-    raw = b""
-    rc = 126
+    buf = bytearray()
+    state = {"overflow": False}
 
     try:
         p = subprocess.Popen(
@@ -80,30 +84,62 @@ def run_shell(argv, timeout=30, max_out=4 * 1024 * 1024, use_shell=False):
             except Exception:
                 pass
 
+    def _drain():
+        """读取线程：入内存直到 max_out，之后只丢弃。
+
+        必须持续排水而不是停止读取——停读会让子进程阻塞在写管道上挂到超时，
+        短命命令拿不到准确 rc；持续丢弃排水则两者兼得：内存有界 + rc 准确。
+        """
+        stream = p.stdout
+        try:
+            while True:
+                chunk = stream.read1(_READ_CHUNK)
+                if not chunk:
+                    return
+                room = max_out - len(buf)
+                if room > 0:
+                    buf.extend(chunk[:room])
+                    if len(chunk) > room:
+                        state["overflow"] = True
+                else:
+                    state["overflow"] = True
+        except (OSError, ValueError):
+            pass
+        finally:
+            try:
+                stream.close()
+            except Exception:
+                pass
+
+    reader = threading.Thread(target=_drain, daemon=True, name="kk-read")
+    reader.start()
+
+    rc = None
     try:
-        raw, _ = p.communicate(timeout=timeout)
-        rc = p.returncode
+        rc = p.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         timed_out = True
         _kill_tree()
         try:
-            raw, _ = p.communicate(timeout=5)
-        except Exception:
-            raw = b""
+            p.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
         rc = -1
     except Exception as e:
         _kill_tree()
         return {"rc": 125, "out": ("kk-agent: exec error: %s" % e).encode("utf-8", "replace"),
                 "timed_out": False, "elapsed_ms": int((time.monotonic() - t0) * 1000),
-                "truncated": False}
+                "truncated": bool(state["overflow"])}
 
-    truncated = len(raw or b"") > max_out
+    # 读取线程通常随管道 EOF 结束；孙进程占住管道写端的极端情况留给
+    # daemon 线程自行消亡，主流程最多等 2s，不阻塞结果回传。
+    reader.join(timeout=2)
     return {
         "rc": rc if rc is not None else -2,
-        "out": (raw or b"")[:max_out],
+        "out": bytes(buf),
         "timed_out": timed_out,
         "elapsed_ms": int((time.monotonic() - t0) * 1000),
-        "truncated": truncated,
+        "truncated": bool(state["overflow"] or len(buf) > max_out),
     }
 
 
