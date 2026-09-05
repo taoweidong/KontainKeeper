@@ -29,6 +29,7 @@ class Settings:
     mqtt_password: str = ""
     mqtt_tls_ca: str = ""
     mqtt_tls_insecure: bool = False
+    db_url: str = ""      # 放在末尾：不破坏既有按位置构造 Settings 的调用方
 
 
 def _env_int(env, key, default):
@@ -45,6 +46,9 @@ def _env_bool(env, key):
 def load_settings(env=None) -> Settings:
     env = dict(os.environ if env is None else env)
     db_path = env.get("KK_DB_PATH", "kk-server.db")
+    # KK_DB_URL 选库：sqlite+aiosqlite:///x.db | postgresql+asyncpg://... | mysql+aiomysql://...
+    # 省略 async 驱动后缀也可以；不配则回落到 KK_DB_PATH 的 SQLite。
+    db_url = env.get("KK_DB_URL", "").strip()
     agent_tokens = [t.strip() for t in env.get("KK_AGENT_TOKENS", "dev-token").split(",") if t.strip()]
     admin_user = env.get("KK_ADMIN_USER", "admin")
     admin_pass = env.get("KK_ADMIN_PASS", "admin")
@@ -59,7 +63,7 @@ def load_settings(env=None) -> Settings:
             "KK_ENV=production 但仍在用默认口令 admin，存在严重安全风险；"
             "请先通过 KK_ADMIN_PASS 设置强口令再启动")
     return Settings(db_path, agent_tokens, admin_user, admin_pass, cmd_blacklist,
-                    enforced_interval, agent_bin_dir, web_dir,
+                    enforced_interval, agent_bin_dir, web_dir, db_url=db_url,
                     mqtt_url=env.get("KK_MQTT_URL", "").strip(),
                     # 与 Agent 的 KK_TOPIC_PREFIX 同名，双端配一个键不容易写错
                     mqtt_prefix=(env.get("KK_TOPIC_PREFIX") or "kk/v1").strip("/"),

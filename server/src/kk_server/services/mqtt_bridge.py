@@ -138,62 +138,75 @@ class MqttBridge:
         self._dispatch(fn, host, body)
 
     def _dispatch(self, fn, host, body):
-        """把处理调度回事件循环：Store 的连接与锁不做跨线程共享。"""
+        """paho 回调在自已的网络线程，处理器是协程且要用事件循环上的 engine，
+        所以必须调度回那个循环，不能在这条线程里直接 await。"""
         if self.loop is None:
-            fn(host, body)      # 单测/无循环时同步执行
+            # 没有循环说明装配漏了 lifespan：宁可显式拒帧，也不要静默丢数据
+            self.stats["rejected"] += 1
+            log.error("桥接未绑定事件循环，丢弃 %s/%s 帧", host, body.get("id") or "status")
             return
-        self.loop.call_soon_threadsafe(fn, host, body)
+        self.loop.call_soon_threadsafe(self._spawn, fn, host, body)
+
+    def _spawn(self, fn, host, body):
+        task = self.loop.create_task(fn(host, body))
+        task.add_done_callback(self._on_task_done)
+
+    def _on_task_done(self, task):
+        if not task.cancelled() and task.exception():
+            log.error("桥接处理帧失败: %s", task.exception())
 
     # ---- 三类上行帧（事件循环线程）----
-    def _token_ok(self, body):
+    async def _token_ok(self, body):
         token = str(body.get("token") or "")
-        return bool(token) and token in self.tokens and not self.store.is_token_revoked(token)
+        if not token or token not in self.tokens:
+            return False
+        return not await self.store.is_token_revoked(token)
 
-    def _on_status(self, host, body):
-        if not self._token_ok(body):
+    async def _on_status(self, host, body):
+        if not await self._token_ok(body):
             self.stats["rejected"] += 1
-            self.store.add_audit("mqtt", "status_rejected", {"host": host})
+            await self.store.add_audit("mqtt", "status_rejected", {"host": host})
             log.warning("拒绝非法 status：host=%s（token 缺失或不认识）", host)
             return
         if int(body.get("proto_ver") or 0) != self.proto_ver:
             self.stats["rejected"] += 1
-            self.store.add_audit("mqtt", "proto_mismatch",
+            await self.store.add_audit("mqtt", "proto_mismatch",
                                  {"host": host, "proto_ver": body.get("proto_ver")})
             log.warning("协议版本不匹配 host=%s got=%s want=%s，忽略该帧",
                         host, body.get("proto_ver"), self.proto_ver)
             return
         online = bool(body.get("online"))
-        self.store.set_online(host, online, ts=body.get("ts"),
-                              image=str(body.get("image") or ""),
-                              agent_ver=str(body.get("agent_ver") or ""))
+        await self.store.set_online(host, online, ts=body.get("ts"),
+                                    image=str(body.get("image") or ""),
+                                    agent_ver=str(body.get("agent_ver") or ""))
         self.stats["status"] += 1
         if online:
-            self._maybe_push_upgrade(host, str(body.get("agent_ver") or ""))
+            await self._maybe_push_upgrade(host, str(body.get("agent_ver") or ""))
 
-    def _on_hb(self, host, body):
-        if not self.store.get_container(host):
-            # 没上线过的主机直接发心跳：多半是伪造或 status 丢了，不入库
+    async def _on_hb(self, host, body):
+        if not await self.store.get_container(host):
+            # 没上线过的主机直接发心跳：多半是伪造或 status 帧丢了，不入库
             self.stats["rejected"] += 1
-            self.store.add_audit("mqtt", "hb_unknown_host", {"host": host})
+            await self.store.add_audit("mqtt", "hb_unknown_host", {"host": host})
             return
-        self.store.record_hb(host, body)
+        await self.store.record_hb(host, body)
         self.stats["hb"] += 1
 
-    def _on_result(self, host, body):
+    async def _on_result(self, host, body):
         cid = body.get("id")
-        cmd = self.store.get_command(cid) if cid else None
+        cmd = await self.store.get_command(cid) if cid else None
         if cmd is None:
             self.stats["rejected"] += 1
-            self.store.add_audit("mqtt", "result_unknown_cmd", {"host": host, "id": cid})
+            await self.store.add_audit("mqtt", "result_unknown_cmd", {"host": host, "id": cid})
             return
         if cmd["pod"] != host:
             # 归属校验：A 主机不能替 B 主机回传结果（评审 P0-3）
             self.stats["rejected"] += 1
-            self.store.add_audit("mqtt", "result_mismatch",
-                                 {"expect": cmd["pod"], "got": host, "id": cid})
+            await self.store.add_audit("mqtt", "result_mismatch",
+                                       {"expect": cmd["pod"], "got": host, "id": cid})
             log.warning("丢弃跨主机结果 cmd=%s expect=%s got=%s", cid, cmd["pod"], host)
             return
-        self.store.append_result(body, host=host)
+        await self.store.append_result(body, host=host)
         self.stats["result"] += 1
 
     # ---- 下行 ----
@@ -227,8 +240,8 @@ class MqttBridge:
             return False
         return info.rc in (mqtt.MQTT_ERR_SUCCESS, mqtt.MQTT_ERR_NO_CONN)
 
-    def _maybe_push_upgrade(self, host, agent_ver):
-        latest = self.store.get_agent_latest()
+    async def _maybe_push_upgrade(self, host, agent_ver):
+        latest = await self.store.get_agent_latest()
         if not latest or not version_lt(agent_ver or "", latest.get("version", "")):
             return
         payload = {"id": "u-" + host, "kind": "update",
@@ -241,10 +254,10 @@ class MqttBridge:
             log.debug("push upgrade failed", exc_info=True)
 
     # ---- 周期任务 ----
-    def sweep(self):
-        """命令超时收敛 + 僵尸在线判定，交给一个周期任务而不是每连接一个定时器。"""
-        n = self.store.sweep_command_timeouts()
-        stale = self.store.mark_stale_offline(OFFLINE_GRACE)
+    async def sweep(self):
+        """命令超时收敛 + 僵尸在线判定：一个周期任务搞定，不需要每连接一个定时器。"""
+        n = await self.store.sweep_command_timeouts()
+        stale = await self.store.mark_stale_offline(OFFLINE_GRACE)
         if n or stale:
             log.info("sweep: %d 条命令置 timeout, %d 台判离线", n, stale)
         return n, stale

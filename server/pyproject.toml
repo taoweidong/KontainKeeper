@@ -8,11 +8,21 @@ dependencies = [
     "uvicorn[standard]>=0.29",
     "python-multipart>=0.0.9",
     "paho-mqtt>=2.1.0",
-    "aiosqlite>=0.20.0",
+    "aiosqlite>=0.20",
+    "sqlalchemy[asyncio]>=2.0.40",
 ]
 
 [project.scripts]
 kk-server = "kk_server.__main__:main"
+
+[project.optional-dependencies]
+postgres = [
+    "asyncpg>=0.30",
+]
+mysql = [
+    "aiomysql>=0.2.0",
+    "cryptography>=44",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -33,3 +43,5 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

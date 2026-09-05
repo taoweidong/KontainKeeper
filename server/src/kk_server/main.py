@@ -12,7 +12,6 @@ Agent 侧的连接保活、鉴权、离线命令排队全部在 Broker（Mosquit
 import asyncio
 import logging
 import os
-import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -22,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from . import PROTO_VER, __version__
 from .config import load_settings
 from .controllers import register
-from .models.store import Store
+from .models.store import Store, normalize_url
 from .services.mqtt_bridge import MqttBridge, SWEEP_INTERVAL
 
 log = logging.getLogger("kk.server")
@@ -31,12 +30,8 @@ CLEANUP_PASSES = 10   # 每 N 个 sweep 周期做一次存储回收（30s × 10 
 
 def create_app(env=None):
     settings = load_settings(env)
-
-    store = Store(settings.db_path)
-    if store.ensure_admin(settings.admin_user, settings.admin_pass):
-        log.info("admin account %r ensured (created or password refreshed)", settings.admin_user)
-    if settings.admin_pass == "admin":
-        log.warning("using default admin password 'admin', set KK_ADMIN_PASS before production!")
+    # 建库放 lifespan：Store 全异步，装配函数保持同步给 uvicorn/测试用
+    store = Store(normalize_url(settings.db_url, settings.db_path))
 
     # 未配 Broker 时允许只做只读管理（老库查看、审计导出），不拦启动
     bridge = (MqttBridge(store, settings, settings.agent_tokens, proto_ver=PROTO_VER)
@@ -44,36 +39,48 @@ def create_app(env=None):
     if bridge is None:
         log.warning("KK_MQTT_URL 未配置：不连接 Broker，Agent 指标与命令通道不可用")
 
-    stop = threading.Event()
-
-    def janitor():
-        n = 0
-        while not stop.wait(SWEEP_INTERVAL):
-            n += 1
-            try:
-                if bridge:
-                    bridge.sweep()          # 命令超时收敛 + 僵尸在线判定
-                if n % CLEANUP_PASSES == 0:
-                    store.cleanup()
-            except Exception:
-                log.exception("janitor pass failed")
-
     @asynccontextmanager
     async def lifespan(app):
-        # 桥接回调跑在 paho 网络线程，落库必须调度回这里拿到的事件循环
+        await store.setup()
+        if await store.ensure_admin(settings.admin_user, settings.admin_pass):
+            log.info("admin account %r ensured (created or password refreshed)",
+                     settings.admin_user)
+        if settings.admin_pass == "admin":
+            log.warning("using default admin password 'admin', set KK_ADMIN_PASS "
+                        "before production!")
         if bridge is not None:
+            # 桥接回调跑在 paho 网络线程，落库要调度回这里拿到的循环
             bridge.loop = asyncio.get_running_loop()
             await asyncio.to_thread(bridge.start)
-        worker = threading.Thread(target=janitor, daemon=True, name="kk-janitor")
-        worker.start()
+        janitor = asyncio.create_task(_janitor(store, bridge), name="kk-janitor")
         try:
             yield
         finally:
-            # 修 P2-13：原实现存了 Event 却从不 set，收尾逻辑形同虚设
-            stop.set()
-            worker.join(timeout=5)
+            # 修 P2-13：原实现存了个 Event 却从不 set，收尾形同虚设
+            janitor.cancel()
+            try:
+                await janitor
+            except asyncio.CancelledError:
+                pass
             if bridge is not None:
                 await asyncio.to_thread(bridge.stop)
+            await store.close()
+
+    async def _janitor(store, bridge):
+        """周期任务：命令超时收敛 + 僵尸在线判定 + 存储回收。"""
+        n = 0
+        while True:
+            await asyncio.sleep(SWEEP_INTERVAL)
+            n += 1
+            try:
+                if bridge is not None:
+                    await bridge.sweep()
+                if n % CLEANUP_PASSES == 0:
+                    await store.cleanup()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("janitor pass failed")
 
     app = FastAPI(title="KontainKeeper", version=__version__, lifespan=lifespan)
     app.state.settings = settings
