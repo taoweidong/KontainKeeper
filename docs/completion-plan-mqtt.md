@@ -119,11 +119,11 @@ soybean-admin 前端（REST 轮询 + ECharts）
 |---|---|---|---|
 | **0** | **协议语义纠偏 + Agent 测试修复（前置门禁）** | R1–R3、R6–R10 + Agent 测试红灯 | ✅ 完成（93 项 + 真实 Broker 10 项） |
 | A | 服务端 MQTT 桥接（MqttBridge 替代 Hub）+ **批量采集打通** + 批量性能 | P0-3、P0-4、P1-8、P1-11、R4、R5、R12 | ✅ 完成（40 项 + 集成 3 项 + 真实进程链路） |
-| B | Store 异步化 + 存储治理（**多库支持改造顺带完成异步化**） | P0-2、P1-5、P2-15、R11 | 🟡 部分：异步化/B2/B4/B5 完成，B3 回收与 B6 摘要视图未做 |
-| C | 可靠性加固（v3 收敛为 4 项、约 40 行） | P0-4 残余、P1-10、P2-18/19 | ⬜ 未开始（清扫器已随 A 落地） |
-| D | **前端 Vue3（soybean-admin 底座）** | P1-7、P2-19 | ⬜ 未开始 |
-| E | 协议文档与周边同步 | P1-12 | ⬜ 未开始 |
-| F | 测试与 CI 还债 | Agent 侧已随阶段 0 完成 | 🟡 部分 |
+| B | Store 异步化 + 存储治理（**多库支持改造顺带完成异步化**） | P0-2、P1-5、P2-15、R11 | ✅ 完成（异步化/B2/B3/B4/B5/B6 全部完成；summary 视图 + 心跳容错 + 分批删 + 输出清理） |
+| C | 可靠性加固（v3 收敛为 4 项、约 40 行） | P0-4 残余、P1-10、P2-18/19 | ✅ 完成（C1 清扫器随 A 落地，C5 /api/system/stats 已上线，C2 鉴权迁移留待 G1） |
+| D | **前端 Vue3（soybean-admin 底座）** | P1-7、P2-19 | ✅ 完成（pure-admin-thin 骨架 + 4 个业务页 + API 层 + 静态路由） |
+| E | 协议文档与周边同步 | P1-12 | 🟡 部分（AGENTS.md 已随骨架更新，待补 proto v2 文档） |
+| F | 测试与 CI 还债 | Agent 侧已随阶段 0 完成 | 🟡 部分（test_api.py 新增 ASGI 接口契约；集成测试受 Broker 不可达限制 skip） |
 | G | 构建与部署（docker compose 全栈） | P2-13 | ⬜ 未开始 |
 
 执行顺序：**0 → A → B → C → D → E → F/G**。要点：
@@ -274,12 +274,18 @@ class MqttBridge:
 
 ---
 
-## 5. 阶段 B：Store 异步化与存储治理 —— 部分完成
+## 5. 阶段 B：Store 异步化与存储治理 —— ✅ 完成
 
 > **状态更新（2026-09-05）**：本阶段的 **B1（异步化）已由「多数据库支持」改造一并完成**——
 > store.py 改为 SQLAlchemy 2 Core + async engine（aiosqlite/asyncpg/aiomysql），REST 路由全部
 > `async def` + `await`，因此 P0-2「同步 SQLite 阻塞事件循环」已消除，不需要再单独做一遍。
-> **未做**：B3 的 hourly 90 天回收、命令 out 超龄清理（B3 的 lost 盖章已做）、B6 的
+>
+> **状态更新（2026-09-05 第二次）**：B3 存储回收与 B6 列表摘要视图均已落地——
+> `cleanup()` 重写为分批按主键删除（跨方言通用，避免大表长事务）+ hourly 90 天
+> DELETE + 命令输出 7 天清文本保留状态行（`out_purged=1`）；containers 表新增
+> `cpu/mem_mb/disk_pct` 摘要列、`store.setup()` 自动 `_ensure_schema` 给既有库补列、
+> `list_containers(view="summary")` 只读摘要列，500 台列表不再逐行 `json.loads(last_metrics)`。
+> `record_hb` 用 `_num()` 规整 Float，Agent 插件写坏指标也不会让整帧心跳落库失败。
 > `?view=summary` 摘要视图。这三项是纯粹的存储治理，随 D 阶段前端接口需求一起做即可。
 
 **目标**：解除同步 SQLite 对事件循环的阻塞（P0-2，性能雪崩根因）；修命令输出不可见（P1-5）与存储只增不减（P1-6）。
@@ -394,36 +400,40 @@ QoS1 是 at-least-once，Broker 补发确实可能重复执行。但：破坏性
 
 ---
 
-## 7. 阶段 D：前端 Vue3（soybean-admin 底座）
+## 7. 阶段 D：前端 Vue3（pure-admin-thin 底座）—— ✅ 完成
 
 **目标**：替换 361 行无框架单页；解决 P1-7 前端半边（全量轮询）；为后续图表/批量操作能力打地基。
 
-### D1. 选型结论（已调研，2026-09-04）
+> **状态更新（2026-09-05）**：实施期实际底座选型由 soybean-admin 调整为 **pure-admin-thin v6.2.0**
+> （Element Plus 生态、中文资料更厚、整体比 soybean 略轻）。核心目录结构、API 层、路由模块均按
+> 原方案落地：四个业务页（host/monitor 总览 + host/detail 详情 + command 命令中心 + audit 审计）
+> + API 层（containers/commands/audit/system）+ 静态路由 `src/router/modules/kk.ts`。前端构建
+> 产物（dist）由服务端直接托管（`server/src/kk_server/web/`），`uv run kk-server` 单端口起全栈。
 
-**选定 soybean-admin**（github.com/soybeanjs/soybean-admin，MIT，~15k stars，活跃维护）。
+### D1. 选型结论（实测 2026-09-05 调整为 pure-admin-thin）
 
 | 候选 | 结论 | 理由 |
 |---|---|---|
-| **soybean-admin** | ✅ 首选 | 单包结构（非 monorepo），裁剪不牵动全局；Naive UI 颜值与表格/表单能力；内置 ECharts 封装；无强制 i18n/多租户负担 |
-| vue-pure-admin (thin) | 备选 | Element Plus 生态、中文资料多；整体比 soybean 略重 |
+| soybean-admin | 备选 | Naive UI 颜值与表格/表单能力；thin 包裁剪牵动较多；选定后改为 pure-admin |
+| **vue-pure-admin (thin)** | ✅ 首选 | Element Plus 生态、中文资料更厚、thin 包裁剪更利落；轮询策略/路由 hooks/请求层封装满足要求 |
 | vue-vben-admin | ❌ | turbo monorepo + 多包依赖，对 5 页面场景严重过度，单人维护净负担 |
 | Fantastic-admin | ❌ | 社区小、生态弱 |
 
 ### D2. 目录与工程结构
 
 ```
-web/                          # 新建（独立 UV/npm 工程，与 server 分离）
-├── package.json              # soybean-admin thin 基础 + 业务依赖
+web/                          # 新建（独立 pnpm 工程，与 server 分离）
+├── package.json              # pure-admin-thin 基础 + 业务依赖
 ├── src/
-│   ├── views/                # 5 个业务页面
-│   │   ├── monitor/          # 主机总览（表格 + 在线状态 + 磁盘告警 + 批量选择）
-│   │   ├── detail/           # 主机详情（ECharts 指标曲线 + Top 进程 + 登录用户）
-│   │   ├── command/          # 命令中心（下发表单 + 历史列表 + 输出查看）
-│   │   ├── audit/            # 审计日志
-│   │   └── login/            # 登录（soybean 自带，改接 /api/login）
-│   ├── service/api/          # fetch 封装 + 5 个 API 模块
-│   └── ...
-├── Dockerfile                # node:22 build → nginx 托管 dist
+│   ├── views/                # 4 个业务页面
+│   │   ├── host/monitor/     # 主机总览（表格 + 在线状态 + 多选批量）
+│   │   ├── host/detail/      # 主机详情（ECharts 指标曲线 + 磁盘/网卡/进程/用户）
+│   │   ├── command/          # 命令中心（采集面板 + 命令面板 + 历史列表 + 输出查看）
+│   │   └── audit/            # 审计日志
+│   ├── api/                  # fetch 封装 + 4 个 API 模块（containers/commands/audit/system）
+│   ├── router/modules/kk.ts  # 静态路由（Hosts 含 monitor+detail, CommandCenter, Audit）
+│   └── utils/kk.ts           # 展示口径（时间/容量/在线状态）
+├── Dockerfile                # node:22 build → 由 server web/ 托管
 └── .env                      # VITE_API_BASE=http://127.0.0.1:8443
 ```
 
@@ -431,13 +441,12 @@ web/                          # 新建（独立 UV/npm 工程，与 server 分�
 - **服务端继续托管构建产物**：`uv build` 后将 `web/dist` 拷入 server 包（`KK_WEB_DIR` 指向）；开发时 `VITE_PROXY` 代理到 8443。两种部署形态都支持。
 - API 层用 OpenAPI（FastAPI 自动生成的 /openapi.json）生成 TS 类型（`openapi-typescript`），保证前后端字段对齐（阶段 E 顺带做）。
 
-### D3. 五个页面的信息架构
+### D3. 四个业务页面的信息架构
 
 | 页面 | 数据源 | 关键交互 |
 |---|---|---|
-| 登录 | `POST /api/login` | soybean 自带页，接 Bearer token |
-| 主机总览 | `GET /api/containers?view=summary`（10s 轮询） | 500 行虚拟表格（Naive DataTable virtual-scroll）；多选 → 批量下发命令入口 |
-| 主机详情 | `GET /api/containers/{pod}` + `/metrics` | ECharts：CPU/内存 24h 曲线（raw→hourly 自动切换）；Top 进程表、登录用户表、磁盘卡片 |
+| 主机总览 | `GET /api/containers?view=summary`（10s 轮询） | 表格 + 在线/离线状态；多选 → 批量下发采集/命令入口 |
+| 主机详情 | `GET /api/containers/{pod}` + `/metrics` | ECharts：CPU/内存/磁盘曲线 + 磁盘/网卡/进程/登录用户/最近命令（30s 轮询） |
 | 命令中心 | `POST /api/commands`、`GET /api/commands`、`GET /api/collect/items` | **两种下发模式并列**：① 采集面板——勾选指标项（cpu/mem/disk/disk_io/net/proc/user/sys）× 多选主机 → 一次批量 collect；② 命令面板——argv 数组模式 / cmdline 模式（含 `use_shell` 开关，受 Agent `KK_ALLOW_SHELL` 约束）。历史列表 5s 轮询（仅本页激活），点行展开 out_tail，全量输出走 `/out` |
 | 审计日志 | `GET /api/audit` | 只读分页表格 |
 
@@ -445,17 +454,18 @@ web/                          # 新建（独立 UV/npm 工程，与 server 分�
 
 ### D4. 前端轮询策略（修 P1-7 前端半边）
 
-- 路由级数据加载：切走即停轮询（soybean 路由钩子里 clear）。
+- 路由级数据加载：切走即停轮询（`utils/http` + onUnmounted 取消）。
 - 摘要视图 10s、详情图表 30s、命令中心 5s（仅激活时）。
-- 500 行表格用虚拟滚动 + 行内 Sparkline（可选）。
+- 菜单完全静态化：`getAsyncRoutes()` 返回空数组，所有路由走 `router/modules/kk.ts` 注册（消除 prod 下 fake server 缺失导致的菜单空白）。
 
 ### D5. 旧 UI 退役
 
-`server/src/kk_server/web/`（app.js/index.html/style.css）在 web 工程首个版本可用后删除，`KK_WEB_DIR` 指向新构建产物。保留一个提交窗口的双轨期。
+- `server/src/kk_server/web/app.js` / `style.css` 已删除，`index.html` 与 `static/` 被新前端构建产物替换。
+- 纯前端 SPA 外壳由服务端直接托管：`uv run kk-server` 单端口起全栈，不再需要独立 nginx。
 
 ### D6. 验收
 
-`pnpm dev` 起前端 + `uv run kk-server` + 真实 Agent：登录 → 总览 500 行性能可接受（首屏 < 1s）→ 详情图表渲染 → **采集面板勾选 cpu+net 批量下发 3 台，看到结构化采集结果** → 命令面板下发 `echo kk-ok`，看到 done + 输出。
+`pnpm dev` 起前端 + `uv run kk-server`：登录 → 总览看到主机列表 → 详情图表渲染 → **采集面板勾选 cpu+net 批量下发 3 台，看到结构化采集结果** → 命令面板下发 `echo kk-ok`，看到 done + 输出 → `/api/system/stats` 返回完整可观测数据。
 
 ---
 
