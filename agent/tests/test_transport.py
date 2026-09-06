@@ -145,7 +145,32 @@ def test_tls_and_credentials_applied_from_broker_url(monkeypatch):
                                                 "tls_insecure": True})
     assert (fake.username, fake.password) == ("u", "p")
     assert fake.tls_calls[0]["ca_certs"] == "/etc/ca.pem"
-    assert fake.tls_calls[1] == {"insecure": True}
+    # 已配 CA 时 KK_TLS_INSECURE 必须被忽略：paho 的 tls_insecure_set(True)
+    # 会把 verify_mode 一并置成 CERT_NONE，让 CA 校验形同虚设（代码审查 P1-3）
+    assert all(c.get("insecure") is not True for c in fake.tls_calls), \
+        "配了 CA 就不能再降校验，否则 KK_TLS_CA 白配"
+
+
+def test_credentials_fall_back_to_host_and_token(monkeypatch):
+    """只给 KK_SERVER + KK_TOKEN 时也要带凭据，且用户名 = 主机名（ACL 的 %u）。
+
+    只写地址不带用户名的旧行为在禁匿名 Broker 上必然被拒连（代码审查 P1-2）。
+    """
+    tr, fake = make_transport(monkeypatch)
+    assert (fake.username, fake.password) == ("web-01", "tok-1")
+
+
+def test_explicit_mqtt_credentials_win_over_token(monkeypatch):
+    tr, fake = make_transport(monkeypatch, cfg={"mqtt_username": "svc",
+                                                "mqtt_password": "pw"})
+    assert (fake.username, fake.password) == ("svc", "pw")
+
+
+def test_url_credentials_win_over_everything(monkeypatch):
+    tr, fake = make_transport(monkeypatch, cfg={"server": "mqtt://url-user:url-pw@h:1883",
+                                                "mqtt_username": "svc",
+                                                "mqtt_password": "pw"})
+    assert (fake.username, fake.password) == ("url-user", "url-pw")
 
 
 # ---- 主题布局 ----

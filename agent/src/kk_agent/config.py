@@ -31,6 +31,10 @@ def load(env=None, **overrides):
         "keepalive": max(10, _int("KK_KEEPALIVE", 60)),
         "tls_ca": env.get("KK_TLS_CA", "").strip(),
         "tls_insecure": _env_bool(env, "KK_TLS_INSECURE"),
+        # Broker 凭据：缺省取 (KK_HOST_NAME, KK_TOKEN)——生产 ACL 的
+        # `pattern kk/v1/%u/#` 要求用户名 = 主机名（代码审查 P1-2）
+        "mqtt_username": env.get("KK_MQTT_USERNAME", "").strip(),
+        "mqtt_password": env.get("KK_MQTT_PASSWORD", "").strip(),
         "client_id": env.get("KK_CLIENT_ID", "kk").strip(),
 
         # ---- 身份 ----

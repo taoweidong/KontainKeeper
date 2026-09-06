@@ -105,12 +105,33 @@ class Transport:
             protocol=PROTO,
             clean_session=False,  # 持久会话：离线命令由 Broker 排队
         )
-        if broker["username"]:
-            self.cli.username_pw_set(broker["username"], broker["password"])
+        # 凭据优先级：URL 内 user[:pass] > KK_MQTT_USERNAME/PASSWORD > (主机名, KK_TOKEN)。
+        # 只写 KK_SERVER + KK_TOKEN 不带用户名时，在禁匿名 Broker 上必然被拒连，
+        # 且无法满足 ACL `pattern kk/v1/%u/#`（%u = 认证用户名 = 主机名）——
+        # 故用 (KK_HOST_NAME, KK_TOKEN) 兜底（代码审查 P1-2）。
+        user = broker["username"] or cfg.get("mqtt_username") or ""
+        pwd = broker["password"] or cfg.get("mqtt_password") or ""
+        if not user and cfg.get("token"):
+            user, pwd = self.host, cfg["token"]
+        if user:
+            self.cli.username_pw_set(user, pwd)
+        else:
+            self.log.warning("未配置 MQTT 凭据（仅适用于开匿名的开发 Broker）；"
+                             "生产请设 KK_MQTT_USERNAME/PASSWORD 或把凭据写进 KK_SERVER")
         if broker["secure"]:
             ca = cfg.get("tls_ca") or None
-            self.cli.tls_set(ca_certs=ca, cert_reqs=ssl.CERT_REQUIRED if ca else ssl.CERT_NONE)
-            self.cli.tls_insecure_set(bool(cfg.get("tls_insecure")))
+            if ca:
+                # 已配 CA 时**绝不**调 tls_insecure_set(True)：paho 会连带把
+                # verify_mode 置成 CERT_NONE，让 KK_TLS_CA 完全失效（代码审查 P1-3）。
+                # 因此 KK_TLS_INSECURE 在配了 CA 的情况下被显式忽略并告警。
+                if cfg.get("tls_insecure"):
+                    self.log.warning("已配置 KK_TLS_CA，忽略 KK_TLS_INSECURE"
+                                     "（不会为兼容主机名而关闭证书校验）")
+                self.cli.tls_set(ca_certs=ca, cert_reqs=ssl.CERT_REQUIRED)
+            else:
+                self.log.warning("mqtts:// 未配置 KK_TLS_CA：仅加密、不校验对端证书（中间人风险）")
+                self.cli.tls_set(cert_reqs=ssl.CERT_NONE)
+                self.cli.tls_insecure_set(True)
 
         # 遗嘱：异常断开时由 Broker 代为发布 offline（retain，服务端立刻可见）
         self.cli.will_set(self.topic("status"), self._status_payload(False),
