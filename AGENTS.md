@@ -44,11 +44,11 @@ pnpm build       # 产物输出到 web/dist/
 
 ## 关键约束与陷阱
 
-- **Agent 线程模型**：主循环是单线程事件循环，MQTT socket 只由 paho 的后台网络线程触碰；采集/命令/插件在一次性 daemon 线程跑，结果经 `queue.Queue` 回主线程发帧。禁止在回调里直接操作 DB。
+- **Agent 线程模型**：主循环是单线程事件循环，MQTT socket 只由 paho 的后台网络线程触碰；采集/命令/插件在一次性 daemon 线程跑，结果由工作线程直接经 paho 发帧（paho 发布线程安全，不回主线程）；回调里不要做阻塞操作，重活丢给 worker 线程。
 - **三库方言差异全部收在 `Store._upsert` / `Store._ensure_schema` 两处**，不要在别处再分叉：MySQL 大字段必须 LONGTEXT（TEXT 仅 64KB，命令输出 base64 最大 5.6MB 会静默截断）、主键必须定长 `String(n)`、upsert 是 `INSERT IGNORE`（SQLAlchemy 2.0 无 `.ignore()`，必须 `prefix_with("IGNORE")`）；PG/SQLite 用 `on_conflict_do_nothing`。
 - **分批删按主键 `IN`，不要用 `LIMIT`**：PG 不支持 `DELETE...LIMIT`，MySQL 的是方言专属写法，SQLite 还要编译期开关。
 - **`create_all` 只建表不加列**：新增列必须登记 `tables._ADD_COLUMNS`，由 `setup()` 的 `_ensure_schema` 自动 ALTER（SQLite 查 `PRAGMA table_info`，其余查 `information_schema` 且 MySQL 要 `DATABASE()` 限定 schema）。
-- **Windows 开发机兼容**：`resource` 模块不存在（`collector.py` 已 try/except）；采集逻辑经 `fs_root`（KK_FS_ROOT）注入，测试用 `conftest.py::make_fake_fs` 伪造 /proc 树——采集测试不要读真实 `/proc`。
+- **Windows 开发机兼容**：采集基于 psutil（跨平台，不解析 /proc、不注入 fs_root），`agent/tests` 直接读真机/容器指标即可，无需伪造 /proc 树；命令执行的进程树回收按平台分路——POSIX 用 `os.killpg`、Windows 用 `taskkill /F /T`（`executor.py`）。注：`resource` 模块仅 Unix 有，Agent 已不依赖它。
 - **命令下发优先用 argv 数组**，`cmdline` 走 shlex.split，Windows 上含空格路径（如 `D:\Program Files\...`）会被拆坏。
 - **服务端入口是工厂** `kk_server.main:create_app`，没有模块级 `app`；运行走 `python -m kk_server`。测试用 uvicorn.Server 线程 + `create_app(env)`，或用 `httpx.AsyncClient` + `ASGITransport`（`test_api.py` 的做法，不依赖真实端口）。
 - 心跳间隔下限 1s（`agent/src/kk_agent/config.load`），集成测试依赖它在数秒内积累多个序列点；别把下限调回去。

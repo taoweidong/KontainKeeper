@@ -224,7 +224,7 @@ KK_TOKEN=<与 KK_AGENT_TOKENS 一致> \
 | `KK_ALLOW_SHELL` | 允许 `use_shell` 管道模式 | `1` |
 | `KK_MAX_OUT_MB` | 单命令输出上限 | `4` |
 | `KK_MAX_QUEUED` | 离线 out-queue 上限 | `512` |
-| `KK_UPDATE_URL` | 管理 API 基址 | 自动推导 |
+| `KK_UPDATE_URL` | 管理 API 基址（自更新用） | 必填，未配则跳过自更新 |
 | `KK_UPDATE_INTERVAL` | 版本轮询间隔（秒，≥30） | `300` |
 | `KK_UPDATE_DISABLED` | 设为 `1/true` 关闭自更新 | 关闭 |
 | `KK_AGENT_BIN` | 自更新替换目标路径 | 自动 |

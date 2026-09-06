@@ -90,7 +90,7 @@ v1 的 WebSocket close code（`4400/4401/4402/4403/4404`）**已随 WS 删除**�
    "disk_io":{...},
    "net":{...},
    "procs_top":[{"pid":2,"name":"node","cpu":8.0,"mem_mb":117.2}],
-   "users":[{"name":"dev","uid":1000,"procs":12,"vscode":true}],
+   "users":[{"name":"dev","terminal":"pts/0","host":"","started":1690000000}],
    "sys":{...}
  },
  "custom":{"myplugin":{"any":"json"}}

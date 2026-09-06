@@ -121,6 +121,24 @@ compose 全部凭据改 `${VAR}` 引用 `.env`；加启动自检——检测到�
 - ⚠️ 子代理另报「Agent 未校验 topic-host == body.host」为 P2，同意——该防线当前完全依赖 Broker pattern ACL，
   ACL 误配即失去主机隔离，属纵深缺失。
 
+## 修复进度（截至 2026-09-06）
+
+| 项 | 状态 | 提交 | 改动 |
+|---|---|---|---|
+| P0-1 黑名单 shell 形态绕过 | ✅ 已修 | `cac9cff` | `security.py` 单串形态分支 + 归一化 token 集合匹配；`commands.py` 接入；`test_security.py` 15 例 |
+| P0-2 凭据移出版本库 | ✅ 已修 | `c8d763f` | `passwordfile` 删库 + `.gitignore`；`docker-compose.prod.yml` 全凭据改 `${VAR}`；`.env.example`/`passwordfile.example`；`config.py` 启动自检 |
+| P1-1 前端 401 兜底 | ✅ 已修 | 本批次 | `web/src/utils/http/index.ts` 删死路 refresh 分支，401/403 统一清 token 跳登录 |
+| P1-2 / P1-3 Agent MQTT 鉴权 + TLS 不降级 | ✅ 已修 | `c1116fc` | `agent/config.py`+`transport.py` 接入 `KK_TOKEN` 填 user/pass、`tls_insecure` 仅关 hostname 校验；`test_transport.py` |
+| P1-4 长驻主机误判离线 | ✅ 已修 | 本批次 | `store.record_hb` 同步 bump `status_ts`；`test_store.py::test_record_hb_refreshes_status_ts` |
+| P1-5 登录爆破限流 | ✅ 已修 | 本批次 | `controllers/auth.py` 按用户名失败计数 + 第 5 次锁定 5min（锁定时 429）；`test_api.py::test_login_rate_limit_blocks_brute_force` |
+| P1-6 result 帧 QoS1 重投翻倍 | ✅ 已修 | 本批次 | `store.append_result` 以 `last_seq` 水位幂等去重（`case()` 三库通用），无 seq 回退无条件追加；`tables.py` 加 `last_seq` 列 + ALTER 迁移；`test_store.py::test_append_result_is_idempotent_on_redelivery` |
+| P1-7 Agent SIGTERM 转发 | ✅ 已修 | 本批次 | `agent/deploy/entrypoint-wrapper.sh` 后台起 IDE + `trap` 转发 SIGTERM/SIGINT 到 supervisor→Agent |
+| P1-8 `users` 文档示例 | ✅ 已修 | 本批次 | `proto/messages.md` 示例改为 `{name,terminal,host,started}` |
+| P1-9 `KK_UPDATE_URL` 文档 | ✅ 已修 | 本批次 | `README.md` 改为「必填，未配则跳过自更新」 |
+| P1-10 AGENTS.md 过期描述 | ✅ 已修 | 本批次 | 线程模型改为「工作线程直接经 paho 发帧」、采集改为「基于 psutil（不解析 /proc、不注入 fs_root）」 |
+
+P2 / P3 项待排期（见上方清单）。
+
 ## 建议修复顺序
 
 1. **P0-1（黑名单 shell 形态）+ 补绕过测试** —— 安全红线，改动集中在 `is_blacklisted` 一个函数。
