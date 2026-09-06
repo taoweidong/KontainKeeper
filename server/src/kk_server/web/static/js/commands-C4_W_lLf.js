@@ -1,0 +1,1 @@
+import{ay as e}from"./index-Ddu_ABZQ.js";const a=()=>e.request("get","/api/collect/items"),m=t=>e.request("post","/api/commands",{data:t}),o=t=>e.request("get","/api/commands",{params:t}),r=t=>e.request("get",`/api/commands/${t}/out`,{params:{format:"text"}});export{a,m as c,r as g,o as l};
