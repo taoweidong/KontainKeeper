@@ -5,7 +5,8 @@ __pycache__/
 *.db-wal
 *.db-shm
 dist/
-build/
+# 仅忽略 Python 构建目录，web/build/ 是 pure-admin 前端的构建辅助源码，必须入库
+agent/build/
 *.egg-info/
 .venv/
 kk-agent.log*
@@ -13,3 +14,6 @@ kk-agent.log*
 agent_assets/
 *.prev
 .kk-agent.update.*
+# 凭据：Mosquitto 密码文件与本地 .env 严禁入库（代码审查 P0-2，仓库公开）
+deploy/mosquitto/passwordfile
+.env

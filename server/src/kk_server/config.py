@@ -58,10 +58,16 @@ def load_settings(env=None) -> Settings:
     agent_bin_dir = env.get("KK_AGENT_BIN_DIR", "agent_assets")
     web_dir = env.get("KK_WEB_DIR") or None
 
-    if admin_pass == "admin" and os.environ.get("KK_ENV", "").lower() == "production":
+    if admin_pass == "admin" and env.get("KK_ENV", "").strip().lower() == "production":
         raise RuntimeError(
             "KK_ENV=production 但仍在用默认口令 admin，存在严重安全风险；"
             "请先通过 KK_ADMIN_PASS 设置强口令再启动")
+    # 默认 Agent token 同样是公开值（仓库里写死过），生产必须换掉——
+    # 否则任何人都能用已知 token 注册伪主机、读写自己的主题（代码审查 P0-2）
+    if "dev-token" in agent_tokens and env.get("KK_ENV", "").strip().lower() == "production":
+        raise RuntimeError(
+            "KK_ENV=production 但 KK_AGENT_TOKENS 仍含默认公开值 dev-token；"
+            "请为每台主机下发独立 token 再启动")
     return Settings(db_path, agent_tokens, admin_user, admin_pass, cmd_blacklist,
                     enforced_interval, agent_bin_dir, web_dir, db_url=db_url,
                     mqtt_url=env.get("KK_MQTT_URL", "").strip(),
