@@ -1,9 +1,13 @@
-"""M4 资源基线：父进程起临时服务端，独立子进程运行 Agent（伪造 /proc），测量常驻内存。
+"""资源基线：父进程起临时服务端，独立子进程运行 Agent（连真实 Broker），测量常驻内存。
 
-子进程内存独立测量（父进程里不加载 agent/pytest），避免进程内混测失真。
+子进程内存独立测量（父进程里不加载 agent 相关模块），避免进程内混测失真。
+v3 起 Agent 基于 psutil + paho-mqtt（跨平台真实采集，不再伪造 /proc），常驻
+RSS 口径约 25–35MB（见 AGENTS.md）。
+
+前置：本机 1883 端口有 Mosquitto（docker run -d -p 1883:1883 eclipse-mosquitto:2）。
 
 用法: python scripts/bench_agent.py [持续秒数=10]
-输出: 子进程 RSS 均值/最大值、峰值、心跳条数、是否达标（目标 < 15MB，见 docs/design.md）
+输出: 子进程 RSS 均值/最大值、峰值、心跳条数、是否达标
 """
 import ctypes
 import os
@@ -16,10 +20,8 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "server" / "src"))
-sys.path.insert(0, str(ROOT / "agent" / "tests"))
-
-TARGET_MB = 15.0
+BROKER_URL = os.environ.get("KK_BENCH_MQTT", "mqtt://127.0.0.1:1883")
+TARGET_MB = 40.0   # psutil 口径：25–35MB 常驻 + 余量
 
 
 def free_port():
@@ -28,6 +30,16 @@ def free_port():
     port = s.getsockname()[1]
     s.close()
     return port
+
+
+def broker_reachable(timeout=2):
+    try:
+        host = BROKER_URL.split("://", 1)[1].split(":")[0] or "127.0.0.1"
+        port = int(BROKER_URL.rsplit(":", 1)[1]) if ":" in BROKER_URL.split("://", 1)[1] else 1883
+        with socket.create_connection((host, port), timeout):
+            return True
+    except (OSError, ValueError):
+        return False
 
 
 def child_rss_mb(pid):
@@ -69,34 +81,40 @@ def child_rss_mb(pid):
         return None, None
 
 
-def run_agent_child(port, fs_dir):
-    """子进程模式：只加载 agent 相关模块，一直运行，由父进程终止。"""
+def run_agent_child(prefix, fs_dir):
+    """子进程模式：只加载 agent 相关模块，由父进程终止。"""
     sys.path.insert(0, str(ROOT / "agent" / "src"))
     from kk_agent import main as agent_main, config as kk_config
     cfg = kk_config.load(env={
-        "KK_SERVER": "ws://127.0.0.1:%d/ws/agent" % port,
-        "KK_TOKEN": "bench-token",
+        "KK_SERVER": BROKER_URL,
         "KK_INTERVAL": "1",
-        "KK_FS_ROOT": str(fs_dir),
+        "KK_TOPIC_PREFIX": prefix,
         "KK_LOG": "-",
         "KK_LOG_LEVEL": "ERROR",
-        "KK_POD_NAME": "bench-pod",
+        "KK_HOST_NAME": "bench-pod",
+        "KK_UPDATE_DISABLED": "1",
     })
     agent_main.run(cfg=cfg)
 
 
 def main():
-    from conftest import make_fake_fs  # 仅父进程加载（含 pytest），不污染子进程内存
     duration = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else 10
+    if not broker_reachable():
+        print("bench: 本机无 Mosquitto（%s），跳过；见文件头说明" % BROKER_URL)
+        return
 
     tmp = Path(tempfile.mkdtemp(prefix="kk-bench-"))
-    make_fake_fs(tmp / "fs")
     port = free_port()
+    prefix = "kk/bench%d" % port
 
     import uvicorn
     from kk_server.main import create_app
-    app = create_app({"KK_DB_PATH": str(tmp / "bench.db"), "KK_AGENT_TOKENS": "bench-token",
-                      "KK_WEB_DIR": str(tmp / "no-web"), "KK_ADMIN_PASS": "x" * 20,
+    app = create_app({"KK_DB_PATH": str(tmp / "bench.db"),
+                      "KK_MQTT_URL": BROKER_URL,
+                      "KK_TOPIC_PREFIX": prefix,
+                      "KK_MQTT_CLIENT_ID": "kk-server-bench",
+                      "KK_WEB_DIR": str(tmp / "no-web"),
+                      "KK_ADMIN_PASS": "x" * 20,
                       "KK_LOG_LEVEL": "error"})
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error"))
     threading.Thread(target=server.run, daemon=True).start()
@@ -104,7 +122,7 @@ def main():
         time.sleep(0.1)
 
     child = subprocess.Popen(
-        [sys.executable, __file__, "--child", str(port), str(tmp / "fs")],
+        [sys.executable, __file__, "--child", prefix, str(tmp / "fs")],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     print("bench: agent pid=%d, running %ds ..." % (child.pid, duration))
 
@@ -121,6 +139,7 @@ def main():
         child.wait(timeout=5)
     except subprocess.TimeoutExpired:
         child.kill()
+    time.sleep(1)   # 留时间给桥接收尾最后一帧心跳
     server.should_exit = True
 
     rows, _ = app.state.store.metrics_series("bench-pod", 1)
@@ -138,6 +157,6 @@ def main():
 
 if __name__ == "__main__":
     if len(sys.argv) > 3 and sys.argv[1] == "--child":
-        run_agent_child(int(sys.argv[2]), sys.argv[3])
+        run_agent_child(sys.argv[2], sys.argv[3])
     else:
         main()

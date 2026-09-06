@@ -1,15 +1,14 @@
-# KontainKeeper 生产全栈（关匿名 + 密码文件 + 按主机 ACL）
+# KontainKeeper 生产全栈（匿名 Broker + 服务端 IP 白名单，v3）
 #
 # 凭据一律走 .env / secret 注入，**切勿写死在仓库里**（本仓库公开，见 .env.example）：
 #   cp .env.example .env && 填真实值
 #   docker compose -f docker-compose.prod.yml --env-file .env up --build
 #
-# 使用前：
-#   1) 生成服务端账号（写入 passwordfile，该文件已在 .gitignore 中、不入库）：
-#        docker compose run --rm mosquitto mosquitto_passwd -b deploy/mosquitto/passwordfile kk-server <强密码>
-#   2) 为每台 Agent 写入独立账号（用户名=主机名，密码=该机 KK_TOKEN）：
-#        bash deploy/mosquitto/gen-credentials.sh <主机名> <token>
-#   3) 启动前自检：KK_ENV=production 时，仍在用默认 admin 口令或 dev-token 会直接拒绝启动。
+# v3 接入模型：
+#   - Broker 匿名开放（Agent 零凭据，仅需 KK_SERVER 地址）；
+#   - 接入管控在 kk-server：KK_AGENT_IPS 白名单（逗号分隔 IP/CIDR），
+#     白名单外 Agent 的上报全部拒绝并审计；
+#   - KK_ENV=production 启动自检：默认 admin 口令或空白名单会直接拒绝启动。
 
 services:
   mosquitto:
@@ -18,8 +17,6 @@ services:
       - "1883:1883"
     volumes:
       - ./deploy/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
-      - ./deploy/mosquitto/passwordfile:/mosquitto/config/passwordfile:ro
-      - ./deploy/mosquitto/aclfile:/mosquitto/config/aclfile:ro
       - mosquitto-data:/mosquitto/data
     restart: unless-stopped
 
@@ -30,9 +27,7 @@ services:
     environment:
       KK_MQTT_URL: mqtt://mosquitto:1883
       KK_TOPIC_PREFIX: ${KK_TOPIC_PREFIX:-kk/v1}
-      KK_MQTT_USERNAME: ${KK_MQTT_USERNAME:-kk-server}
-      KK_MQTT_PASSWORD: ${KK_MQTT_PASSWORD:?请设置 KK_MQTT_PASSWORD（见 .env.example）}
-      KK_AGENT_TOKENS: ${KK_AGENT_TOKENS:?请设置 KK_AGENT_TOKENS（生产禁止 dev-token）}
+      KK_AGENT_IPS: ${KK_AGENT_IPS:?请设置 KK_AGENT_IPS 接入白名单（逗号分隔 IP/CIDR）}
       KK_DB_PATH: /data/kk-server.db
       KK_PORT: "8443"
       KK_HOST: 0.0.0.0

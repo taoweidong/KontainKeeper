@@ -1,55 +1,29 @@
 # Mosquitto 部署说明
 
-KontainKeeper 把「连接可靠性 / 离线排队 / 在线判定 / 鉴权」整体交给 Mosquitto 2.x。
+KontainKeeper 把「连接可靠性 / 离线排队 / 在线判定」整体交给 Mosquitto 2.x。
 
-## 两种配置
+## 单一配置
 
-| 文件 | 用途 | 匿名 | ACL |
-|---|---|---|---|
-| `mosquitto.dev.conf` | 本地开发 / CI 冒烟 | 开 | 无 |
-| `mosquitto.conf` | 生产 | 关 | `aclfile`（按主机名） |
+`mosquitto.conf` 同时用于开发与生产（`docker-compose.yml` / `docker-compose.prod.yml`
+均挂载它）：**匿名开放、无 ACL**——Agent 零凭据接入，只需知道 Broker 地址。
 
-`docker-compose.yml` 默认挂 `mosquitto.dev.conf`（开箱即起）；`docker-compose.prod.yml` 挂 `mosquitto.conf`。
+## v3 安全模型（内网可信 + 服务端白名单）
 
-## 安全模型
+- **Broker 匿名开放**：Agent 不再维护任何凭据（无 password_file / aclfile /
+  逐主机账号），部署复杂度降到最低。
+- **接入管控上收到 kk-server**：Agent 上行帧（status / hb / result）统一携带
+  自报 `ip`，由服务端 `KK_AGENT_IPS` 白名单校验（IP / CIDR 混合列表），
+  白名单外的上报全部拒绝并审计（`ip_rejected`）。
+- **REST 侧自更新接口**（`/api/system/agent/latest|download`）同样按请求源 IP
+  校验该白名单。
+- **status retain 持久化**：`persistence true` + `mosquitto-data` 卷，Broker
+  重启后在线视图无需等一轮心跳/LWT。
 
-- **用户名 = 主机名**：服务端用固定账号 `kk-server`；每台 Agent 用各自的主机名作用户名、token 作密码。
-- **ACL**：`aclfile` 里 `user kk-server` 拥有 `kk/v1/#` 全读写；`pattern readwrite kk/v1/%u/#` 让每台 Agent 只能读写自身主题子树（`%u` 由 Mosquitto 按认证用户名展开）。
-- **status retain 持久化**：`persistence true` + `mosquitto-data` 卷，Broker 重启后在线视图无需等一轮心跳/LWT。
+## 边界说明（必读）
 
-## 生成 Agent 账号
-
-> **passwordfile 不入库**（已在 `.gitignore` 中，仓库公开，见代码审查 P0-2）。
-> 首次使用请从示例复制或直接生成：
-> `cp deploy/mosquitto/passwordfile.example deploy/mosquitto/passwordfile`
-
-```bash
-# 单台
-bash deploy/mosquitto/gen-credentials.sh web-01 <token>
-# 或直接在容器内（保证哈希算法与 Broker 一致）
-docker compose run --rm mosquitto mosquitto_passwd -b deploy/mosquitto/passwordfile web-01 <token>
-```
-
-## Agent 接入形态（生产必读）
-
-生产 Broker 关闭匿名且按用户名做 ACL，因此 Agent **必须携带凭据**，且用户名要等于主机名
-（否则 `pattern readwrite kk/v1/%u/#` 展开后不是自己的子树）。两种等价写法：
-
-```bash
-# 写法 A：凭据写在 Broker 地址里（用户名=主机名，密码=该机 token）
-KK_SERVER="mqtt://web-01:<token>@broker.ops:1883"
-
-# 写法 B：地址不带凭据，显式指定（缺省时自动取 KK_HOST_NAME / KK_TOKEN）
-KK_SERVER="mqtt://broker.ops:1883" KK_MQTT_USERNAME=web-01 KK_MQTT_PASSWORD=<token>
-```
-
-> 只写 `KK_SERVER=mqtt://broker:1883` + `KK_TOKEN=<token>` **不会被用于 MQTT 鉴权**，
-> 在禁匿名 Broker 上会直接被拒连——这是最容易踩的坑（代码审查 P1-2）。
-
-## 风险与未决项
-
-- **`pattern %u` 的展开语义与优先级**需在真实 Mosquitto 2.x 实测确认（见方案 §13）。
-  退路：用 `gen-credentials.sh` 脚本按主机清单生成显式 `user` 段。
-- Windows 开发机无 docker，无法本地验证 ACL；CI 用 `eclipse-mosquitto:2` service 容器保证。
-- `aclfile` 里的主题前缀目前**写死 `kk/v1`**：若通过 `KK_TOPIC_PREFIX` 改了前缀，
-  必须同步改 `aclfile`，否则 ACL 全部失配（代码审查 P2）。
+- MQTT 经 Broker 中转拿不到发布者真实 TCP 源 IP，白名单基于 Agent 自报值
+  （`KK_ADVERTISE_IP` 显式覆盖 > UDP connect 自动探测出口地址）——适合内网
+  可信环境，不适合不可信网络。
+- 匿名 Broker 下**网络层隔离是唯一不可伪造的边界**：请用防火墙 / 安全组
+  限制 1883 端口的可达范围，只放行服务端与被管理主机所在的网段。
+- 主题前缀默认 `kk/v1`；若改了 `KK_TOPIC_PREFIX`，只需双端一致（无 ACL 需要同步）。

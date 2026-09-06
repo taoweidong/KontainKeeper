@@ -12,9 +12,10 @@
 #   元素作为其参数透传。运行时 wrapper 后台监管 Agent、前台 exec "$@"，
 #   容器生命周期 = 原 IDE 生命周期，用户看到的启动行为不变。
 #
-# 安全说明：KK_TOKEN 不得写入镜像层（docker inspect 即可提取）。请在运行时通过
-#   `docker run -e KK_TOKEN=xxx` 或 k8s Secret 注入；本脚本只把 KK_SERVER 地址等
-#   非敏感配置烧入镜像。
+# 安全说明（v3）：Agent 零凭据接入（匿名 Broker），接入管控由服务端
+#   KK_AGENT_IPS 白名单承担——只有白名单内 IP 的主机上报会被接受。
+#   多网卡/NAT 环境自报 IP 不准时，运行时通过 `docker run -e KK_ADVERTISE_IP=x.x.x.x`
+#   显式覆盖；本脚本只把 KK_SERVER 地址等非敏感配置烧入镜像。
 set -euo pipefail
 
 : "${KK_SERVER:?need KK_SERVER}"
@@ -75,4 +76,4 @@ echo ">> generated entrypoint config:"
 sed 's/^/     /' <<<"$ENTRYPOINT_LINE"
 docker build -t "$OUT_IMAGE" "$WORK"
 echo ">> done: $OUT_IMAGE"
-echo ">> 运行镜像时务必通过 -e KK_TOKEN=xxx 或 k8s Secret 注入令牌（切勿写死在镜像中）。"
+echo ">> Agent 零凭据接入：确认服务端 KK_AGENT_IPS 白名单已包含本机出口 IP 即可上报。"
