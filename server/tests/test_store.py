@@ -3,9 +3,10 @@ import json
 import time
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import insert, select
 
-from kk_server.models.store import Store
+from kk_server.models.helpers import _PWDF_ITERS, _PWDF_ITERS_LEGACY, _pwdf
+from kk_server.models.store import Store, admins
 from kk_server.models.tables import commands, containers, heartbeats, hourly
 
 
@@ -368,3 +369,31 @@ async def test_lost_command_marking(store):
                            {"a": int(time.time()) - 7200, "b": cid})
     await store.cleanup()
     assert (await store.get_command(cid))["status"] == "lost"
+
+
+async def test_verify_admin_rehashes_legacy_hash(store):
+    """P2 安全：120k 存量哈希首次成功登录时原地升级到 310k，旧管理员不被锁出。"""
+    salt = "a" * 32
+    legacy = _pwdf(salt, "old-pass", _PWDF_ITERS_LEGACY)
+    await store._run(insert(admins).values(
+        username="legacy", salt=salt, pw_hash=legacy, created=1))
+    assert await store.verify_admin("legacy", "old-pass") is True
+    # 旧哈希已被原地升级为新迭代数
+    row = await store._one(select(admins.c.pw_hash).where(admins.c.username == "legacy"))
+    assert row["pw_hash"] == _pwdf(salt, "old-pass", _PWDF_ITERS)
+    # 错误口令仍被拒；升级只触发一次
+    assert await store.verify_admin("legacy", "wrong") is False
+    assert await store.verify_admin("legacy", "old-pass") is True
+
+
+async def test_list_containers_pagination(store):
+    """P2：full 视图分页 limit/offset 工作正常；count_containers 反映全量。"""
+    for i in range(5):
+        await store.upsert_container(f"pod-{i}", "img", "0.1.0", 60)
+    page = await store.list_containers("full", limit=2, offset=1)
+    assert len(page) == 2
+    assert await store.count_containers() == 5
+    # 不存在的 view 仍被拒
+    import pytest as _pytest
+    with _pytest.raises(ValueError):
+        await store.list_containers("bogus")
