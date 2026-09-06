@@ -284,7 +284,7 @@ curl -H "Authorization: Bearer <ADMIN_TOKEN>" \
 uv sync --all-packages
 .venv/Scripts/python.exe -m pytest agent/tests -q     # Agent 单元测试
 .venv/Scripts/python.exe -m pytest server/tests -q    # Server 单测 + 端到端集成
-.venv/Scripts/python.exe -m pytest agent/tests server/tests -q   # 全量：159 passed, 3 skipped
+.venv/Scripts/python.exe -m pytest agent/tests server/tests -q   # 全量：193 passed, 3 skipped
 
 cd web && pnpm typecheck && pnpm build                # 前端类型检查与构建
 ```

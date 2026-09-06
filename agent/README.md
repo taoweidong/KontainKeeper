@@ -151,7 +151,7 @@ cd agent
 
 ```bash
 cd agent
-uv run pytest tests -q    # 93 项：MQTT 传输 / psutil 采集 / 执行 / 插件 / 自更新 / 主循环链路
+uv run pytest tests -q    # 102 项：MQTT 传输 / psutil 采集 / 执行 / 插件 / 自更新 / 主循环链路
 ```
 
 ## 约束（重要）
