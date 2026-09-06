@@ -91,6 +91,7 @@ uv sync --all-packages                 # 仓库根执行，统一安装全部成
 | `KK_AGENT_BIN_DIR` | Agent 二进制存储目录 | `agent_assets` |
 | `KK_WEB_DIR` | 前端静态目录（缺省用包内 `web/`） | `<包>/web` |
 | `KK_LOG_LEVEL` | 日志级别 | `info` |
+| `KK_ENV` | 置 `production` 时启用安全熔断：仍用默认口令 `admin` 会拒绝启动 | `""` |
 
 ## REST API 总览
 

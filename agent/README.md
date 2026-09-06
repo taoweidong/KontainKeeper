@@ -122,7 +122,11 @@ cd agent
 | `KK_CLIENT_ID` | MQTT client_id | `kk` |
 | `KK_INTERVAL` | 心跳间隔（秒，下限 1） | `60` |
 | `KK_DISK_PATHS` | 采集的磁盘挂载点，逗号分隔 | `/,/workspace` |
+| `KK_HB_ITEMS` | 心跳采集项精简（逗号分隔，取值同 collect 白名单；空=全采 8 项） | `""` |
+| `KK_TOP_N` | procs_top 进程数上限（1–50） | `5` |
 | `KK_PLUGIN_DIR` | 自定义采集插件目录 | `<包>/plugins` |
+| `KK_PLUGIN_TIMEOUT` | 插件 collect 超时（秒），超时隔离到重载为止 | `5` |
+| `KK_MAX_WORKERS` | 命令执行线程池上限（1–64） | `8` |
 | `KK_FS_ROOT` | 采集根（测试可指向伪造树） | `/` |
 | `KK_ALLOW_SHELL` | 允许 `use_shell` 管道模式 | `1` |
 | `KK_MAX_OUT_MB` | 单条命令输出上限（MB） | `4` |
