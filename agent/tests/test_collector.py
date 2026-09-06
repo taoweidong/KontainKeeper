@@ -267,3 +267,43 @@ def test_collect_full_frame_shape(ps, monkeypatch):
     # 第二轮带基线再采一次：差分路径不报错、ts 前进
     metrics2, _ = c.collect(cfg, state)
     assert metrics2["ts"] >= metrics["ts"]
+
+
+def test_collect_hb_items_subset(ps, monkeypatch):
+    """KK_HB_ITEMS 精简心跳项（资源评审 P3）：只采指定项，proc 遍历不再发生。"""
+    vm = _Ns(total=2048 * MB, used=500 * MB, percent=25.0, available=1548 * MB)
+
+    def _boom(attrs=None):
+        raise AssertionError("proc 项未请求，不应发生全进程遍历")
+
+    monkeypatch.setattr(c, "platform", _Ns(platform=lambda: "Linux", release=lambda: "6.6",
+                                           machine=lambda: "x86_64"))
+    ps(virtual_memory=lambda: vm, swap_memory=lambda: None,
+       cpu_percent=lambda interval=None, percpu=False: ([5.0] if percpu else 5.0),
+       process_iter=_boom,  # 若 proc 项仍被采集，这里立刻失败
+       boot_time=lambda: int(time.time()) - 60)
+    metrics, _ = c.collect({"hb_items": ["cpu", "mem", "sys"]}, {})
+    assert "cpu" in metrics and metrics["mem_mb"] == 500.0
+    assert "procs_top" not in metrics and "disks" not in metrics and "net" not in metrics
+    assert "ts" in metrics
+
+
+def test_collect_hb_items_empty_means_all(ps, monkeypatch):
+    """hb_items 为空/缺省 = 全采 8 项（帧形与旧版完全一致）。"""
+    vm = _Ns(total=2048 * MB, used=500 * MB, percent=25.0, available=1548 * MB)
+    monkeypatch.setattr(c, "platform", _Ns(platform=lambda: "Linux", release=lambda: "6.6",
+                                           machine=lambda: "x86_64"))
+    ps(virtual_memory=lambda: vm, swap_memory=lambda: None,
+       cpu_percent=lambda interval=None, percpu=False: ([5.0] if percpu else 5.0),
+       getloadavg=lambda: (0.1, 0.2, 0.3),
+       disk_partitions=lambda all=False: [_Ns(mountpoint="/", fstype="ext4")],
+       disk_usage=lambda p: _Ns(total=2048 * MB, used=812 * MB, percent=39.6),
+       disk_io_counters=lambda: _Ns(read_bytes=0, write_bytes=0, read_count=0, write_count=0),
+       net_io_counters=lambda pernic=False: {},
+       process_iter=lambda attrs=None: iter([]),
+       users=lambda: [], boot_time=lambda: int(time.time()) - 60)
+    for cfg in ({}, {"hb_items": []}):
+        metrics, state = c.collect(dict(cfg, disk_paths=[], top_n=5), {})
+        for key in ("cpu", "mem_mb", "disks", "net", "procs_top", "users", "ts"):
+            assert key in metrics, (cfg, key)
+        assert set(state) == {"disk_io", "net_io", "ts"}

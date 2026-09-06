@@ -8,6 +8,7 @@ GOOD = "def collect():\n    return {'v': 1}\n"
 GOOD2 = "def collect():\n    return {'v': 2}\n"
 BAD = "def collect():\n    raise RuntimeError('boom')\n"
 NOCOLLECT = "x = 1\n"
+HUNG = "import time\ndef collect():\n    time.sleep(30)\n    return {'v': 1}\n"
 
 
 _mtime_tick = [0]
@@ -46,3 +47,39 @@ def test_hot_reload_on_mtime_change(tmp_path):
 
 def test_missing_dir(tmp_path):
     assert pl.collect_all(str(tmp_path / "nope")) == {}
+
+
+def test_collect_timeout_quarantines_hung_plugin(tmp_path):
+    """卡死插件（资源评审 P2）：超时即跳过且隔离，不拖停 collect_all。"""
+    d = tmp_path / "plugins"
+    d.mkdir()
+    f = d / "hung.py"
+    _write(f, HUNG)
+
+    t0 = time.monotonic()
+    out = pl.collect_all(str(d), timeout=0.5)
+    assert time.monotonic() - t0 < 5, "卡死插件必须在超时后立刻放行，而不是陪跑 30s"
+    assert "hung" not in out
+
+    # 第二轮：已隔离，直接跳过（不再新开执行线程、不再等待）
+    t0 = time.monotonic()
+    assert pl.collect_all(str(d), timeout=0.5) == {}
+    assert time.monotonic() - t0 < 2
+
+    # 作者修改插件（mtime 变化）→ 重载解除隔离，恢复正常出数
+    _write(f, GOOD)
+    assert pl.collect_all(str(d), timeout=5) == {"hung": {"v": 1}}
+
+
+def test_collect_exception_not_quarantined(tmp_path):
+    """偶发异常只跳过本轮、不隔离：下一轮仍会尝试执行（与卡死不同）。"""
+    d = tmp_path / "plugins"
+    d.mkdir()
+    f = d / "bad.py"
+    _write(f, BAD)
+    assert pl.collect_all(str(d)) == {}
+    _write(f, BAD)  # mtime 变化但内容仍是坏的
+    assert pl.collect_all(str(d)) == {}
+    # 未被隔离的证明：换成好内容（mtime 再变）无需「解隔离」逻辑即出数
+    _write(f, GOOD)
+    assert pl.collect_all(str(d)) == {"bad": {"v": 1}}

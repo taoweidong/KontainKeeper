@@ -97,7 +97,7 @@ def _run_collect(cmd, cfg, state_box):
 
 
 def _run_plugin_reload(cfg, log):
-    data = kk_plugins.collect_all(cfg["plugin_dir"], log)
+    data = kk_plugins.collect_all(cfg["plugin_dir"], log, timeout=cfg["plugin_timeout"])
     body = json.dumps({"plugins": data}, ensure_ascii=False)
     return {"rc": 0, "out": body.encode("utf-8"), "timed_out": False, "elapsed_ms": 0}
 
@@ -136,7 +136,8 @@ def submit_heartbeat(tr, cfg, log, state_box, busy):
         try:
             metrics, st = kk_collector.collect(cfg, state_box.value)
             state_box.put(st)
-            custom = kk_plugins.collect_all(cfg["plugin_dir"], log)
+            custom = kk_plugins.collect_all(cfg["plugin_dir"], log,
+                                            timeout=cfg["plugin_timeout"])
             tr.publish_hb(metrics, custom)
         except Exception:
             log.exception("heartbeat collect failed")

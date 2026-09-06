@@ -44,7 +44,14 @@ def load(env=None, **overrides):
         "interval": max(1, _int("KK_INTERVAL", 60)),
         "disk_paths": [p.strip() for p in env.get("KK_DISK_PATHS", "").split(",") if p.strip()],
         "top_n": max(1, min(_int("KK_TOP_N", 5), 50)),
+        # 心跳采集项（KK_HB_ITEMS）：逗号分隔，取值同 kind=collect 白名单
+        # （cpu,mem,disk,disk_io,net,proc,user,sys）；空=全采。千进程主机
+        # 可去掉 proc 项以削掉全进程遍历开销（资源评审 P3）
+        "hb_items": [s.strip() for s in env.get("KK_HB_ITEMS", "").split(",") if s.strip()],
         "plugin_dir": env.get("KK_PLUGIN_DIR", "") or os.path.join(here, "plugins"),
+        # 插件 collect() 超时（秒）：卡死的插件被隔离到 mtime 变化重载为止，
+        # 不再逐心跳泄漏执行线程（资源评审 P2）
+        "plugin_timeout": max(1, _int("KK_PLUGIN_TIMEOUT", 5)),
 
         # ---- 命令执行 ----
         "max_out_mb": max(1, _int("KK_MAX_OUT_MB", 4)),

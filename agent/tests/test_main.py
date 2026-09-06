@@ -14,7 +14,7 @@ from kk_agent import executor as kk_executor
 
 
 CFG = {"interval": 60, "plugin_dir": "", "top_n": 5, "disk_paths": [],
-       "host": "web-01", "allow_shell": True}
+       "host": "web-01", "allow_shell": True, "plugin_timeout": 5}
 
 
 class _NullLog:
@@ -196,7 +196,7 @@ def test_submit_heartbeat_skips_when_busy_and_clears_after(monkeypatch):
         started.put("go")
         return {"cpu": 1.0}, {}
     monkeypatch.setattr(m.kk_collector, "collect", fake_collect)
-    monkeypatch.setattr(m.kk_plugins, "collect_all", lambda d, log: {})
+    monkeypatch.setattr(m.kk_plugins, "collect_all", lambda d, log, timeout=5: {})
     tr = FakeTransport()
     busy = threading.Event()
     busy.set()

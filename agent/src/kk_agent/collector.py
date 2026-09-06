@@ -268,24 +268,20 @@ def collect_items(items, state, cfg=None):
 
 # ---- 完整心跳采集 ----
 
+# 心跳默认全采 8 项；KK_HB_ITEMS 可精简（如千进程主机去掉 proc 项——
+# 全进程遍历 + 双采样是心跳里最贵的一段，资源评审 P3）
+HB_DEFAULT_ITEMS = ["cpu", "mem", "disk", "disk_io", "net", "proc", "user", "sys"]
+
+
 def collect(cfg, state):
-    """一次完整采集。state 携带上次采样用于差分，返回 (metrics, new_state)。"""
-    state = state or {}
-    metrics = {}
-    metrics.update(cpu_metrics())
-    metrics.update(mem_metrics())
-    metrics["disks"] = disk_metrics(cfg.get("disk_paths") or None)
+    """一次完整采集。state 携带上次采样用于差分，返回 (metrics, new_state)。
 
-    disk_io, disk_state = disk_io_metrics(state)
-    metrics.update(disk_io)
-    net, net_state = net_metrics(state)
-    metrics["net"] = net
-
-    top_n = int(cfg.get("top_n") or TOP_N)
-    metrics["procs_top"] = proc_metrics(top_n=top_n)
-    metrics["users"] = user_metrics()
-    metrics.update(sys_metrics())
+    cfg["hb_items"]（KK_HB_ITEMS）缺省或为空时全采；项名白名单与
+    kind=collect 命令一致（ITEM_NAMES），未知项静默忽略。
+    """
+    cfg = cfg or {}
+    items = cfg.get("hb_items") or HB_DEFAULT_ITEMS
+    metrics, new_state = collect_items(items, state or {}, cfg)
     metrics["ts"] = int(time.time())
-
-    new_state = {"disk_io": disk_state, "net_io": net_state, "ts": metrics["ts"]}
+    new_state["ts"] = metrics["ts"]
     return metrics, new_state
