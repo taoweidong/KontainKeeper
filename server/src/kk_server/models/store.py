@@ -377,8 +377,12 @@ class Store:
                         timed_out=1 if msg.get("timed_out") else 0,
                         truncated=1 if (msg.get("truncated") or msg.get("rc") == -3) else 0,
                         elapsed_ms=msg.get("elapsed_ms"), finished_at=now)
-        else:
+        elif seq is None:
             vals.update(status="running")
+        else:
+            # 幂等路径下，迟到重投的非终态分块不能把已终态的命令拉回 running
+            # （否则 sweep 超时器随后会把它错误收敛成 timeout）。
+            vals["status"] = case((applied, "running"), else_=commands.c.status)
         return await self._run(update(commands).where(commands.c.id == cid).values(**vals))
 
     async def sweep_command_timeouts(self, now=None, slack=30):

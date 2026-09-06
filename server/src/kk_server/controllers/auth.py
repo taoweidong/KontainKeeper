@@ -72,8 +72,11 @@ async def logout(request: Request):
         # 先解析出用户名再删会话，便于审计登出主体
         actor = await request.app.state.store.get_session(token)
         await request.app.state.store.delete_session(token)
-    # P2 审计：登出动作此前未留痕，安全事件不可追溯
-    await request.app.state.store.add_audit(actor or "unknown", "logout", {})
+    # P2 审计：登出动作留痕，便于安全事件追溯。
+    # 仅有效会话才写审计：本接口无鉴权，无条件落库会让匿名请求刷审计表
+    # （audit 表只增不减，见 cleanup 的保留策略）。
+    if actor:
+        await request.app.state.store.add_audit(actor, "logout", {})
     return {"ok": True}
 
 

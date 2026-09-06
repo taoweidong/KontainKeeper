@@ -360,6 +360,24 @@ async def test_append_result_is_idempotent_on_redelivery(store):
     assert await store.command_output(cid) == "ABCDEFGHI"
 
 
+async def test_append_result_late_chunk_keeps_terminal_status(store):
+    """迟到重投的非终态分块不得把已终态的命令拉回 running。
+    （否则 sweep 超时器随后会把它错误收敛成 timeout——终态被覆盖。）"""
+    await store.upsert_container("pod-late", "img", "0.1.0", 60)
+    cid = await store.create_command("pod-late", "shell", ["echo"], 30, "admin")
+    base = {"id": cid, "total": 2}
+
+    await store.append_result({**base, "seq": 0, "out_b64": "QUJD", "done": False})
+    await store.append_result({**base, "seq": 1, "out_b64": "REVG", "done": True, "rc": 0})
+    assert (await store.get_command(cid))["status"] == "done"
+
+    # 乱序迟到：done 终态之后 seq=0 的分块才被重投
+    await store.append_result({**base, "seq": 0, "out_b64": "QUJD", "done": False})
+    row = await store.get_command(cid)
+    assert row["status"] == "done", "迟到分块不得回退终态"
+    assert row["out_chunks"] == 2, "迟到分块不得重复拼接"
+
+
 async def test_lost_command_marking(store):
     await store.upsert_container("pod-d", "img", "0.1.0", 60)
     cid = await store.create_command("pod-d", "shell", ["x"], 30, "admin")
