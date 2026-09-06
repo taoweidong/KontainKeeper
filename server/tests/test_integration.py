@@ -94,7 +94,7 @@ def stack(tmp_path):
     host = "it-host-1"
     env = {
         "KK_DB_PATH": str(tmp_path / "it.db"),
-        "KK_AGENT_TOKENS": "it-token",
+        "KK_AGENT_IPS": "127.0.0.1",
         "KK_ADMIN_USER": "admin",
         "KK_ADMIN_PASS": "it-pass-123",
         "KK_WEB_DIR": str(tmp_path / "no-web"),
@@ -115,7 +115,6 @@ def stack(tmp_path):
 
     agent_env = {
         "KK_SERVER": BROKER_URL,
-        "KK_TOKEN": "it-token",
         "KK_INTERVAL": "1",
         "KK_TOPIC_PREFIX": prefix,
         "KK_LOG": "-",
@@ -149,7 +148,7 @@ def test_full_chain(stack):
 
     # 健康检查（含桥接状态）
     status, body = http(port, "GET", "/api/health")
-    assert status == 200 and body["ok"] and body["proto_ver"] == 2
+    assert status == 200 and body["ok"] and body["proto_ver"] == 3
 
     status, _ = http(port, "POST", "/api/login", {"username": "admin", "password": "bad"})
     assert status == 401
@@ -260,17 +259,10 @@ def test_full_chain(stack):
     series = wait_until(series_ok, timeout=45, what=">=2 metric points")
     assert series["source"] == "raw"
 
-    # token 管理
-    status, toks = http(port, "GET", "/api/tokens", token=tok)
-    assert status == 200 and toks["items"] == [{"token": "***", "revoked": False}]
-    status, _ = http(port, "POST", "/api/tokens/revoke", token=tok, body={"token": "it-token"})
-    assert status == 200
-    status, toks = http(port, "GET", "/api/tokens", token=tok)
-    assert toks["items"][0]["revoked"] is True
-    status, _ = http(port, "POST", "/api/tokens/restore", token=tok, body={"token": "it-token"})
-    assert status == 200
-    status, _ = http(port, "POST", "/api/tokens/revoke", token=tok, body={"token": "no-such"})
-    assert status == 404
+    # 白名单外上报的审计（v3 接入管控：127.0.0.1 外的自报 ip 被拒）
+    status, audit = http(port, "GET", "/api/audit?limit=50", token=tok)
+    assert all(a["action"] != "ip_rejected" for a in audit["items"]), \
+        "白名单内的本机 Agent 不应产生拒绝记录"
 
     # 未鉴权访问被拒
     status, _ = http(port, "GET", "/api/containers")
@@ -338,3 +330,50 @@ def test_blacklist_blocks_bypass_variants(stack):
         assert status == 400, "expected block for %r but got %s %s" % (cmdline, status, body)
     status, cmds = http(port, "GET", "/api/commands?limit=100", token=tok)
     assert cmds["items"] == [], "被拦截的命令不应进入命令表"
+
+
+def test_non_whitelisted_ip_agent_rejected(stack):
+    """v3 接入管控端到端：自报白名单外 ip 的模拟 Agent，status 必须被拒。
+
+    服务端配了 KK_AGENT_IPS=127.0.0.1（stack fixture），本测试用 paho 直发
+    自报 192.0.2.66 的 status 帧：主机不得注册、审计必须记 ip_rejected。
+    """
+    import paho.mqtt.client as mqtt
+
+    port, prefix = stack["port"], stack["prefix"]
+    tok = _login(port)
+    broker_host, _, broker_port = BROKER_URL.split("://", 1)[1].partition(":")
+
+    cli = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="kk-it-badip",
+                      protocol=mqtt.MQTTv311, clean_session=False)
+    payload = json.dumps({
+        "online": True, "host": "bad-ip-host", "ip": "192.0.2.66",
+        "agent_ver": "0.3.0", "proto_ver": 3, "image": "it",
+        "interval": 60, "reason": "online", "ts": int(time.time()),
+    }, separators=(",", ":"))
+    connected = threading.Event()
+
+    def on_connect(client, userdata, flags, reason_code, properties=None):
+        if reason_code == 0:
+            client.publish("%s/bad-ip-host/status" % prefix, payload, qos=1, retain=True)
+            connected.set()
+
+    cli.on_connect = on_connect
+    cli.connect(broker_host or "127.0.0.1", int(broker_port or 1883), keepalive=60)
+    cli.loop_start()
+    try:
+        assert connected.wait(10), "模拟 Agent 未连上 Broker"
+
+        def audit_seen():
+            s, b = http(port, "GET", "/api/audit?limit=100", token=tok)
+            return b if any(a["action"] == "ip_rejected" for a in b["items"]) else None
+
+        # 审计出现 = 帧确实到达了服务端且被白名单拦下（排除「没收到」的假通过）
+        assert wait_until(audit_seen, what="ip_rejected audit"), "拒绝必须留下审计"
+
+        s, b = http(port, "GET", "/api/containers", token=tok)
+        assert all(i["pod"] != "bad-ip-host" for i in b["items"]), \
+            "白名单外自报 ip 的主机不得注册"
+    finally:
+        cli.disconnect()
+        cli.loop_stop()

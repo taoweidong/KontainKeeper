@@ -112,12 +112,6 @@ sessions = Table(
     Column("expires", BigInteger, nullable=False),
 )
 
-revoked_tokens = Table(
-    "kk_revoked_tokens", MD,
-    Column("token", String(128), primary_key=True),
-    Column("ts", BigInteger, nullable=False),
-)
-
 kv = Table(
     "kk_kv", MD,
     Column("k", String(64), primary_key=True),   # MySQL 不接受 TEXT 主键，必须定长

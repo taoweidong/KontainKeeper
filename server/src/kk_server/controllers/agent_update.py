@@ -1,11 +1,11 @@
 """Agent 自更新接口：
 
 - POST /api/system/agent       管理员上传新版本二进制（multipart: file + version）
-- GET  /api/system/agent/latest   Agent 用自身 token 查询最新版本清单（落后才 available）
-- GET  /api/system/agent/download Agent 用自身 token 下载二进制（流式）
+- GET  /api/system/agent/latest   Agent 查询最新版本清单（落后才 available）
+- GET  /api/system/agent/download Agent 下载二进制（流式）
 
-安全：
-- 上传需管理员会话；下载/查询仅需 Agent token（与 status 帧同源）
+安全（v3）：
+- 上传需管理员会话；下载/查询按请求方真实源 IP 校验 KK_AGENT_IPS 白名单
 - 服务端记录 sha256，Agent 端下载后校验一致才替换，防损坏/篡改
 - 二进制按平台单槽位（kk-agent），多架构需另行扩展
 """
@@ -18,7 +18,7 @@ import shutil
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from .deps import agent_token_auth, current_user
+from .deps import agent_ip_auth, current_user
 from ..models.version import version_lt
 
 router = APIRouter(prefix="/api/system")
@@ -77,7 +77,7 @@ async def upload_agent(request: Request, file: UploadFile = File(...), version: 
 
 @router.get("/agent/latest")
 async def agent_latest(request: Request, ver: str = ""):
-    await agent_token_auth(request)
+    await agent_ip_auth(request)
     latest = await request.app.state.store.get_agent_latest()
     if not latest:
         return JSONResponse({"available": False})
@@ -94,7 +94,7 @@ async def agent_latest(request: Request, ver: str = ""):
 
 @router.get("/agent/download")
 async def agent_download(request: Request):
-    await agent_token_auth(request)
+    await agent_ip_auth(request)
     latest = await request.app.state.store.get_agent_latest()
     dest = _bin_path(request)
     if not latest or not os.path.isfile(dest):

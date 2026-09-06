@@ -7,7 +7,11 @@
 | 内存 conn dict + 在线判定   | Broker 的 retained status + LWT           |
 | 心跳超时判半开连接（4404）  | MQTT keepalive，由 Broker 强制断开        |
 | 离线命令 pending_for 补发   | 持久会话 + QoS1，Broker 排队重连自动补投  |
-| hello 的 token 校验         | Broker 的 password_file + pattern ACL     |
+| hello 的 token 校验         | 本桥的 KK_AGENT_IPS 白名单（v3，见下）    |
+
+接入管控（v3）：Agent 上行帧统一携带自报 ip，本桥在 _on_message 入口按
+KK_AGENT_IPS 白名单统一校验（ipaddress 网段匹配）。MQTT 经 Broker 中转拿不到
+发布者真实 TCP 源 IP，白名单基于自报值——适合内网可信环境。
 
 线程模型：paho 回调跑在它自己的网络线程，而 SQLite 连接与 Store 的锁都不是
 跨线程共享设计，所以这里一律 `loop.call_soon_threadsafe` 把处理调度回事件循环，
@@ -23,6 +27,7 @@ import time
 
 import paho.mqtt.client as mqtt
 
+from ..config import ip_in_whitelist
 from ..models.version import version_lt
 
 log = logging.getLogger("kk.bridge")
@@ -38,10 +43,10 @@ OFFLINE_GRACE = 180
 
 
 class MqttBridge:
-    def __init__(self, store, settings, tokens, loop=None, proto_ver=2):
+    def __init__(self, store, settings, agent_ips, loop=None, proto_ver=3):
         self.store = store
         self.s = settings
-        self.tokens = set(tokens)
+        self.agent_ips = list(agent_ips)   # ip_network 对象列表；空 = 不设限
         self.proto_ver = proto_ver
         self.loop = loop
         self.prefix = (settings.mqtt_prefix or "kk/v1").strip("/")
@@ -148,6 +153,13 @@ class MqttBridge:
               "result": self._on_result}.get(suffix)
         if fn is None:
             return
+        # v3 接入管控：所有上行帧统一按自报 ip 校验白名单，一处入口管三类帧，
+        # 无状态、服务端重启安全。白名单为空（未配置）时不设限。
+        if not ip_in_whitelist(self.agent_ips, body.get("ip")):
+            self.stats["rejected"] += 1
+            log.warning("拒绝白名单外上报：host=%s ip=%r", host, body.get("ip"))
+            self._dispatch(self._on_ip_rejected, host, body)
+            return
         self.stats["last_msg_ts"] = int(time.time())
         self._dispatch(fn, host, body)
 
@@ -170,18 +182,13 @@ class MqttBridge:
             log.error("桥接处理帧失败: %s", task.exception())
 
     # ---- 三类上行帧（事件循环线程）----
-    async def _token_ok(self, body):
-        token = str(body.get("token") or "")
-        if not token or token not in self.tokens:
-            return False
-        return not await self.store.is_token_revoked(token)
+    async def _on_ip_rejected(self, host, body):
+        """白名单外上报的审计落库（v3 接入管控，替代原 token 拒绝审计）。"""
+        await self.store.add_audit("mqtt", "ip_rejected",
+                             {"host": host, "ip": str(body.get("ip") or ""),
+                              "kind": "status" if "online" in body else "hb"})
 
     async def _on_status(self, host, body):
-        if not await self._token_ok(body):
-            self.stats["rejected"] += 1
-            await self.store.add_audit("mqtt", "status_rejected", {"host": host})
-            log.warning("拒绝非法 status：host=%s（token 缺失或不认识）", host)
-            return
         if int(body.get("proto_ver") or 0) != self.proto_ver:
             self.stats["rejected"] += 1
             await self.store.add_audit("mqtt", "proto_mismatch",

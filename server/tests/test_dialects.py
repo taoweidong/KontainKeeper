@@ -14,7 +14,7 @@ import sqlalchemy
 from sqlalchemy import func, select, update
 
 from kk_server.models.store import (MD, Store, admins, audit, commands, containers,  # noqa: F401
-                                    heartbeats, hourly, kv, normalize_url, revoked_tokens,
+                                    heartbeats, hourly, kv, normalize_url,
                                     sessions, mask_url)
 from sqlalchemy.schema import CreateTable
 
@@ -72,9 +72,7 @@ def test_upsert_compiles_for_every_dialect():
               .compile(dialect=mysql.dialect()))
     assert "ON DUPLICATE KEY UPDATE" in sql.upper()
 
-    # do-nothing 形态（token 吊销、kv 初始化）
-    assert "INSERT IGNORE" in str(mysql.insert(revoked_tokens).values(token="t", ts=1)
-                                  .prefix_with("IGNORE").compile(dialect=mysql.dialect()))
+    # do-nothing 形态（kv 初始化等）
     assert "DO NOTHING" in str(postgresql.insert(kv).values(k="a", v="b")
                                .on_conflict_do_nothing(index_elements=["k"])
                                .compile(dialect=postgresql.dialect())).upper()

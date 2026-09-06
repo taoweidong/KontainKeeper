@@ -4,7 +4,7 @@ KontainKeeper 的**管理服务端**。基于 FastAPI，通过 **MqttBridge 无�
 
 - 订阅 Broker 上的主机心跳/状态/结果，落库并维护在线主机列表与指标；
 - 向 Broker 发布命令（含按项采集），离线期间由 Broker 排队、主机重连自动补投；
-- 提供命令下发、token 管理、审计、Agent 二进制自更新、系统可观测接口。
+- Agent 接入管控（`KK_AGENT_IPS` 白名单）、命令下发、审计、Agent 二进制自更新、系统可观测接口。
 
 服务端**不持有长连接状态**，因此可水平扩容：多实例时 `KK_MQTT_CLIENT_ID` 必须逐实例唯一。
 
@@ -24,9 +24,10 @@ KontainKeeper 的**管理服务端**。基于 FastAPI，通过 **MqttBridge 无�
               ┌────────────────▼────┐   ┌──────▼──────────────┐
               │ services/mqtt_bridge│   │ controllers/ (REST)  │
               │ 订阅 hb/status/result│   │ auth/containers/     │
-              │ 发布 cmd             │   │ commands/tokens/     │
-              │ 超时清扫 / 僵尸下线    │   │ audit/stats/         │
-              │ 版本升级推送          │   │ agent_update         │
+              │ 发布 cmd             │   │ commands/audit/      │
+              │ IP 白名单校验         │   │ stats/agent_update   │
+              │ 超时清扫 / 僵尸下线    │   │                      │
+              │ 版本升级推送          │   │                      │
               └────────┬───────────┘   └─────────┬───────────┘
                        │  订阅/发布                │
               ┌────────▼──────────────────────────▼─────────┐
@@ -44,7 +45,7 @@ KontainKeeper 的**管理服务端**。基于 FastAPI，通过 **MqttBridge 无�
 
 | 模块 | 职责 |
 |---|---|
-| `__init__.py` | 包元信息（`__version__`、`PROTO_VER = 2`） |
+| `__init__.py` | 包元信息（`__version__`、`PROTO_VER = 3`） |
 | `__main__.py` / `main.py` | 入口与 `create_app()` 工厂（**无模块级 `app`**） |
 | `config.py` | `KK_*` 环境变量解析；`COLLECT_ITEMS` 采集项白名单 |
 | `services/mqtt_bridge.py` | MqttBridge：无状态桥接（替代已删的 `hub.py`） |
@@ -63,7 +64,7 @@ KontainKeeper 的**管理服务端**。基于 FastAPI，通过 **MqttBridge 无�
 uv sync --all-packages                 # 仓库根执行，统一安装全部成员
 # 按需装其他库驱动：uv sync --extra postgres / --extra mysql
 
-# 启动（默认管理员 admin/admin，生产务必设 KK_ADMIN_PASS）
+# 启动（默认管理员 admin/admin123，生产务必设 KK_ADMIN_PASS）
 .venv/Scripts/python.exe -m kk_server   # 或 uv run kk-server
 # 浏览器打开 http://localhost:8443 → 登录管理界面
 ```
@@ -77,21 +78,20 @@ uv sync --all-packages                 # 仓库根执行，统一安装全部成
 | `KK_HOST` | 监听地址 | `0.0.0.0` |
 | `KK_PORT` | 监听端口 | `8443` |
 | `KK_MQTT_URL` | Broker 地址（`mqtt://` / `mqtts://`） | 必填 |
-| `KK_MQTT_USERNAME` / `KK_MQTT_PASSWORD` | Broker 鉴权（生产必须） | 空 |
 | `KK_MQTT_CLIENT_ID` | 实例唯一 client_id | `kk-server` |
 | `KK_MQTT_KEEPALIVE` | 保活（秒，下限 10） | `60` |
 | `KK_MQTT_TLS_CA` / `KK_MQTT_TLS_INSECURE` | TLS 配置 | 空 |
 | `KK_TOPIC_PREFIX` | 主题前缀（**双端同名，与 Agent 一致**） | `kk/v1` |
 | `KK_DB_URL` | `sqlite:///...` / `postgresql://...` / `mysql://...` | SQLite |
 | `KK_DB_PATH` | SQLite 路径（`KK_DB_URL` 未设时生效） | `kk-server.db` |
-| `KK_AGENT_TOKENS` | 允许的 Agent token，逗号分隔 | `dev-token` |
-| `KK_ADMIN_USER` / `KK_ADMIN_PASS` | 管理员账号 | `admin`/`admin` |
+| `KK_AGENT_IPS` | Agent 接入白名单（逗号分隔 IP / CIDR；空 = 放行全部，**生产必配**） | `""` |
+| `KK_ADMIN_USER` / `KK_ADMIN_PASS` | 管理员账号 | `admin`/`admin123` |
 | `KK_CMD_BLACKLIST` | 命令黑名单（逗号分隔，命中拒绝并审计） | `rm -rf /,mkfs,reboot,...` |
 | `KK_ENFORCED_INTERVAL` | 强制心跳间隔（秒），留空不强制 | `""` |
 | `KK_AGENT_BIN_DIR` | Agent 二进制存储目录 | `agent_assets` |
 | `KK_WEB_DIR` | 前端静态目录（缺省用包内 `web/`） | `<包>/web` |
 | `KK_LOG_LEVEL` | 日志级别 | `info` |
-| `KK_ENV` | 置 `production` 时启用安全熔断：仍用默认口令 `admin` 会拒绝启动 | `""` |
+| `KK_ENV` | 置 `production` 时启用安全自检：默认口令 `admin123` 或未配 `KK_AGENT_IPS` 白名单均拒绝启动 | `""` |
 
 ## REST API 总览
 
@@ -111,18 +111,16 @@ uv sync --all-packages                 # 仓库根执行，统一安装全部成
 | 命令 | GET | `/api/commands` | 命令列表 |
 | 命令 | GET | `/api/commands/{cid}` | 命令详情与结果 |
 | 命令 | GET | `/api/commands/{cid}/out` | 完整输出（`?format=text\|base64`） |
-| Token | GET | `/api/tokens` | Agent token 列表（脱敏） |
-| Token | POST | `/api/tokens/revoke` | 吊销 token |
-| Token | POST | `/api/tokens/restore` | 恢复 token |
 | 审计 | GET | `/api/audit?limit=` | 审计日志 |
 | 可观测 | GET | `/api/system/stats` | 主机/命令/存储/Broker 统计与 uptime |
 | 自更新 | POST | `/api/system/agent` | 管理员上传新版本二进制（附 version） |
 | 自更新 | GET | `/api/system/agent/latest?ver=` | 查询是否有可用更新（SHA256/size/url） |
 | 自更新 | GET | `/api/system/agent/download` | 下载最新二进制 |
 
-双端通信主题布局与帧格式见 [`proto/messages.md`](../../proto/messages.md)（协议 v2）。
-v1 的 WebSocket close code（`4401/4402/4403/4404`）已随 `/ws/agent` 一并删除，
-改用 MQTT 连接返回码 + `status` 帧内 `token`/`proto_ver` 校验。
+双端通信主题布局与帧格式见 [`proto/messages.md`](../../proto/messages.md)（协议 v3）。
+v1 的 WebSocket close code（`4401/4402/4403/4404`）已随 `/ws/agent` 一并删除；
+v3 起接入管控为：Agent 上行帧自报 `ip` 按 `KK_AGENT_IPS` 白名单校验
+（REST 自更新接口按请求真实源 IP 校验），外加 `status` 帧 `proto_ver` 一致性校验。
 
 ## 存储治理
 
@@ -156,7 +154,7 @@ docker run -d -p 8443:8443 \
 ```bash
 cd server
 .venv/Scripts/python.exe -m pytest tests -q
-# 66 passed, 3 skipped：存储层（含三库方言静态校验）/ 桥接路由与归属校验 /
+# 100 passed, 4 skipped（Broker 不可达时）：存储层（含三库方言静态校验）/ 桥接路由与白名单校验 /
 # 黑名单 / 审计 / REST 接口契约（ASGI Transport）/ 端到端集成
 ```
 

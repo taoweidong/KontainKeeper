@@ -310,17 +310,6 @@ async def test_counts_feeds_stats_endpoint(store):
     assert (await store.counts())["commands"] == {"sent": 1}
 
 
-async def test_token_revocation(store):
-    assert await store.is_token_revoked("t1") is False
-    await store.revoke_token("t1")
-    await store.revoke_token("t1")  # 幂等
-    assert await store.is_token_revoked("t1") is True
-    assert await store.revoked_tokens() == ["t1"]
-    await store.restore_token("t1")
-    assert await store.is_token_revoked("t1") is False
-    assert await store.revoked_tokens() == []
-
-
 async def test_record_hb_refreshes_status_ts(store):
     """P1-4：长驻主机仅靠心跳也要保持在线。record_hb 必须刷新 status_ts，
     否则 mark_stale_offline 会在数个周期后把它误判离线（列表抖动）。"""

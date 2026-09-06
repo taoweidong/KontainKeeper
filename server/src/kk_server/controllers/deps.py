@@ -1,5 +1,7 @@
-"""公共依赖：会话鉴权。"""
+"""公共依赖：会话鉴权与 Agent IP 白名单。"""
 from fastapi import HTTPException, Request
+
+from ..config import ip_in_whitelist
 
 
 async def current_user(request: Request) -> str:
@@ -11,19 +13,16 @@ async def current_user(request: Request) -> str:
     return user
 
 
-async def agent_token_auth(request: Request) -> str:
-    """校验 Agent 自更新接口用的 Bearer / X-KK-Token，与 status 帧同一令牌池。
+async def agent_ip_auth(request: Request) -> str:
+    """Agent 自更新接口的 IP 白名单校验（v3：替代原 Bearer token）。
 
-    注意：MQTT 3.1.1 下服务端看不到发布者的认证身份，主机级隔离由 Broker 的
-    password_file + pattern ACL 保证；这里只保护 HTTP 侧的更新接口。
+    这里拿到的是直连请求的真实 TCP 源 IP（request.client.host），比 MQTT 侧的
+    自报 ip 可靠；注意经反向代理时源 IP 会变成代理地址——Agent 自更新地址
+    应配置为内网直连地址（KK_UPDATE_URL），不走公网反代。
     """
-    h = request.headers.get("Authorization", "")
-    token = h[7:].strip() if h.startswith("Bearer ") else request.headers.get("X-KK-Token", "").strip()
-    tokens = getattr(request.app.state, "agent_tokens", set())
-    if token not in tokens:
-        raise HTTPException(status_code=401, detail="invalid agent token")
-    # 吊销校验：旧 WS hello 是查的，迁移到 MQTT 时差点丢掉这道闸门
-    if await request.app.state.store.is_token_revoked(token):
-        raise HTTPException(status_code=401, detail="agent token revoked")
-    return token
+    ip = request.client.host if request.client else ""
+    networks = getattr(request.app.state, "agent_ips", [])
+    if not ip_in_whitelist(networks, ip):
+        raise HTTPException(status_code=403, detail="agent ip not allowed")
+    return ip
 

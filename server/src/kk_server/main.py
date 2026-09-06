@@ -34,10 +34,13 @@ def create_app(env=None):
     store = Store(normalize_url(settings.db_url, settings.db_path))
 
     # 未配 Broker 时允许只做只读管理（老库查看、审计导出），不拦启动
-    bridge = (MqttBridge(store, settings, settings.agent_tokens, proto_ver=PROTO_VER)
+    bridge = (MqttBridge(store, settings, settings.agent_ips, proto_ver=PROTO_VER)
               if settings.mqtt_url else None)
     if bridge is None:
         log.warning("KK_MQTT_URL 未配置：不连接 Broker，Agent 指标与命令通道不可用")
+    elif not settings.agent_ips:
+        log.warning("KK_AGENT_IPS 未配置：Agent 接入白名单为空，允许所有上报"
+                    "（仅适用于开发/测试；生产请配置 KK_AGENT_IPS）")
 
     @asynccontextmanager
     async def lifespan(app):
@@ -87,7 +90,7 @@ def create_app(env=None):
     app.state.settings = settings
     app.state.store = store
     app.state.bridge = bridge
-    app.state.agent_tokens = set(settings.agent_tokens)
+    app.state.agent_ips = settings.agent_ips   # v3：Agent 接入白名单（REST 侧自更新接口共用）
     app.state.cmd_blacklist = settings.cmd_blacklist
     app.state.agent_bin_dir = settings.agent_bin_dir
 

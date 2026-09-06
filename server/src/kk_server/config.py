@@ -1,4 +1,5 @@
 """KK_* 环境变量解析：服务端全部配置集中于此（项目约定：配置只走环境变量，不引入配置文件）。"""
+import ipaddress
 import os
 from dataclasses import dataclass
 
@@ -13,13 +14,15 @@ COMMAND_KINDS = ["shell", "collect", "plugin_reload"]
 @dataclass
 class Settings:
     db_path: str
-    agent_tokens: list
     admin_user: str
     admin_pass: str
     cmd_blacklist: list
     enforced_interval: int | None
     agent_bin_dir: str
     web_dir: str | None
+    # Agent 接入白名单（v3：替代原 token 认证）。ipaddress.ip_network 对象列表，
+    # 空列表 = 不设限（开发/测试模式，允许所有上报）
+    agent_ips: list
     # ---- MQTT Broker ----
     mqtt_url: str = ""
     mqtt_prefix: str = "kk/v1"
@@ -43,13 +46,42 @@ def _env_bool(env, key):
     return env.get(key, "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def parse_ip_whitelist(raw):
+    """解析 KK_AGENT_IPS：逗号分隔的 IP / CIDR 混合列表 → ip_network 对象列表。
+
+    单个 IP 自动按 /32（IPv6 按 /128）处理；格式非法直接抛 ValueError——
+    白名单写错时启动即失败，好过静默放行或全拒。
+    """
+    nets = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        nets.append(ipaddress.ip_network(part, strict=False))
+    return nets
+
+
+def ip_in_whitelist(networks, ip_str):
+    """校验自报 ip 是否命中白名单。
+
+    MQTT 经 Broker 中转拿不到发布者真实 TCP 源 IP，白名单基于 Agent 自报值
+    （适合内网可信环境）；格式非法的 ip 一律视为不在白名单。
+    """
+    if not networks:
+        return True   # 未配置白名单 = 不设限（开发/测试模式）
+    try:
+        addr = ipaddress.ip_address(str(ip_str or "").strip())
+    except ValueError:
+        return False
+    return any(addr in net for net in networks)
+
+
 def load_settings(env=None) -> Settings:
     env = dict(os.environ if env is None else env)
     db_path = env.get("KK_DB_PATH", "kk-server.db")
     # KK_DB_URL 选库：sqlite+aiosqlite:///x.db | postgresql+asyncpg://... | mysql+aiomysql://...
     # 省略 async 驱动后缀也可以；不配则回落到 KK_DB_PATH 的 SQLite。
     db_url = env.get("KK_DB_URL", "").strip()
-    agent_tokens = [t.strip() for t in env.get("KK_AGENT_TOKENS", "dev-token").split(",") if t.strip()]
     admin_user = env.get("KK_ADMIN_USER", "admin")
     admin_pass = env.get("KK_ADMIN_PASS", "admin123")
     cmd_blacklist = [p.strip().lower() for p in env.get("KK_CMD_BLACKLIST", DEFAULT_BLACKLIST).split(",") if p.strip()]
@@ -57,19 +89,22 @@ def load_settings(env=None) -> Settings:
     enforced_interval = int(enforced_raw) if enforced_raw.isdigit() else None
     agent_bin_dir = env.get("KK_AGENT_BIN_DIR", "agent_assets")
     web_dir = env.get("KK_WEB_DIR") or None
+    # Agent 接入白名单（v3：替代原 KK_AGENT_TOKENS token 池）
+    agent_ips = parse_ip_whitelist(env.get("KK_AGENT_IPS", ""))
 
     if admin_pass == "admin123" and env.get("KK_ENV", "").strip().lower() == "production":
         raise RuntimeError(
             "KK_ENV=production 但仍在用默认口令 admin123，存在严重安全风险；"
             "请先通过 KK_ADMIN_PASS 设置强口令再启动")
-    # 默认 Agent token 同样是公开值（仓库里写死过），生产必须换掉——
-    # 否则任何人都能用已知 token 注册伪主机、读写自己的主题（代码审查 P0-2）
-    if "dev-token" in agent_tokens and env.get("KK_ENV", "").strip().lower() == "production":
+    # 生产必须显式配置 IP 白名单：不配等于对所有上报放行，与内网可信前提
+    # 之外的生产环境不匹配（替代原 dev-token 自检）
+    if not agent_ips and env.get("KK_ENV", "").strip().lower() == "production":
         raise RuntimeError(
-            "KK_ENV=production 但 KK_AGENT_TOKENS 仍含默认公开值 dev-token；"
-            "请为每台主机下发独立 token 再启动")
-    return Settings(db_path, agent_tokens, admin_user, admin_pass, cmd_blacklist,
-                    enforced_interval, agent_bin_dir, web_dir, db_url=db_url,
+            "KK_ENV=production 但 KK_AGENT_IPS 未配置（白名单为空 = 放行所有上报）；"
+            "请设置 KK_AGENT_IPS（逗号分隔 IP/CIDR，如 10.0.0.0/24,192.168.1.5）再启动")
+    return Settings(db_path, admin_user, admin_pass, cmd_blacklist,
+                    enforced_interval, agent_bin_dir, web_dir, agent_ips,
+                    db_url=db_url,
                     mqtt_url=env.get("KK_MQTT_URL", "").strip(),
                     # 与 Agent 的 KK_TOPIC_PREFIX 同名，双端配一个键不容易写错
                     mqtt_prefix=(env.get("KK_TOPIC_PREFIX") or "kk/v1").strip("/"),

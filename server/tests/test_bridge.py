@@ -1,7 +1,7 @@
 """MQTT 桥接单测：不连真实 Broker，用假 publish 与同步派发钉住路由与校验。
 
 覆盖原 test_hub.py 关心、但改由 Broker 承担后仍需服务端把关的部分：
-归属校验、token/协议闸门、命令帧字段还原、URL 解析、主题解析。
+归属校验、IP 白名单/协议闸门、命令帧字段还原、URL 解析、主题解析。
 """
 import base64
 import json
@@ -14,7 +14,10 @@ from kk_server.config import load_settings
 from kk_server.models.store import Store
 from kk_server.services.mqtt_bridge import MqttBridge
 
-TOKEN = "bridge-token"
+# v3 接入管控：Agent 自报 ip 按此白名单校验（10.0.0.0/24 网段 + 单点 IPv6）
+WHITELIST = "10.0.0.0/24,fd00::1/128"
+GOOD_IP = "10.0.0.5"
+BAD_IP = "192.0.2.66"
 
 
 class FakePublish:
@@ -29,25 +32,45 @@ class FakePublish:
 
 @pytest.fixture
 async def bridge(tmp_path):
+    """默认不配白名单（空 = 放行），聚焦路由与归属逻辑。"""
     store = Store(str(tmp_path / "b.db"))
     await store.setup()
     settings = load_settings({
         "KK_DB_PATH": str(tmp_path / "b.db"),
-        "KK_AGENT_TOKENS": TOKEN,
         "KK_MQTT_URL": "mqtt://broker:1883",
         "KK_TOPIC_PREFIX": "kk/v1",
         "KK_MQTT_CLIENT_ID": "kk-server",
         "KK_WEB_DIR": str(tmp_path / "noweb"),
     })
-    b = MqttBridge(store, settings, settings.agent_tokens, loop=None, proto_ver=2)
+    b = MqttBridge(store, settings, settings.agent_ips, loop=None, proto_ver=3)
     b.cli = FakePublish()
     b.store = store
     yield b
     await store.close()
 
 
-def status_frame(host, online=True, token=TOKEN, proto=2, ver="0.2.0"):
-    return {"online": online, "host": host, "token": token, "proto_ver": proto,
+@pytest.fixture
+async def wbridge(tmp_path):
+    """配了 KK_AGENT_IPS 白名单的桥：白名单闸门（_on_message 入口）的回归锁。"""
+    store = Store(str(tmp_path / "wb.db"))
+    await store.setup()
+    settings = load_settings({
+        "KK_DB_PATH": str(tmp_path / "wb.db"),
+        "KK_AGENT_IPS": WHITELIST,
+        "KK_MQTT_URL": "mqtt://broker:1883",
+        "KK_TOPIC_PREFIX": "kk/v1",
+        "KK_MQTT_CLIENT_ID": "kk-server",
+        "KK_WEB_DIR": str(tmp_path / "noweb"),
+    })
+    b = MqttBridge(store, settings, settings.agent_ips, loop=None, proto_ver=3)
+    b.cli = FakePublish()
+    b.store = store
+    yield b
+    await store.close()
+
+
+def status_frame(host, online=True, ip=GOOD_IP, proto=3, ver="0.3.0"):
+    return {"online": online, "host": host, "ip": ip, "proto_ver": proto,
             "agent_ver": ver, "image": "img:1", "interval": 60, "reason": "online",
             "ts": int(time.time())}
 
@@ -103,33 +126,87 @@ async def test_on_message_ignores_garbage(bridge):
     assert called == []
 
 
-# ---- status：鉴权闸门与在线真相 ----
+# ---- status：在线真相 ----
 
 async def test_status_registers_host_online(bridge):
     await bridge._on_status("web-01", status_frame("web-01"))
     assert await bridge.store.is_online("web-01") is True
     row = await bridge.store.get_container("web-01")
-    assert row["image"] == "img:1" and row["agent_ver"] == "0.2.0"
-
-
-async def test_status_without_valid_token_rejected(bridge):
-    await bridge._on_status("evil", status_frame("evil", token="nope"))
-    assert await bridge.store.get_container("evil") is None
-    assert bridge.stats["rejected"] == 1
-    audit = (await bridge.store.list_audit())[0]
-    assert audit["action"] == "status_rejected"
-
-
-async def test_status_revoked_token_rejected(bridge):
-    await bridge.store.revoke_token(TOKEN)
-    await bridge._on_status("web-02", status_frame("web-02"))
-    assert await bridge.store.get_container("web-02") is None
+    assert row["image"] == "img:1" and row["agent_ver"] == "0.3.0"
 
 
 async def test_status_proto_mismatch_ignored(bridge):
     await bridge._on_status("web-03", status_frame("web-03", proto=1))
     assert await bridge.store.get_container("web-03") is None
     assert (await bridge.store.list_audit())[0]["action"] == "proto_mismatch"
+
+
+# ---- v3 白名单闸门（_on_message 入口，三类上行帧统一拦截）----
+
+def _frame(wb, suffix, body):
+    wb._on_message(None, None, types.SimpleNamespace(
+        topic="kk/v1/%s/%s" % (body.get("host") or "h", suffix),
+        payload=json.dumps(body).encode()))
+
+
+async def test_status_from_whitelisted_ip_passes(wbridge):
+    import asyncio
+    wbridge.loop = asyncio.get_running_loop()
+    _frame(wbridge, "status", status_frame("web-01"))
+    await asyncio.sleep(0.05)
+    assert await wbridge.store.is_online("web-01") is True
+
+
+async def test_status_ipv6_whitelist_entry(wbridge):
+    import asyncio
+    wbridge.loop = asyncio.get_running_loop()
+    _frame(wbridge, "status", status_frame("web-v6", ip="fd00::1"))
+    await asyncio.sleep(0.05)
+    assert await wbridge.store.is_online("web-v6") is True
+
+
+async def test_status_from_non_whitelisted_ip_rejected(wbridge):
+    """白名单外的上报：主机不注册、计数拒收、审计 ip_rejected。"""
+    import asyncio
+    wbridge.loop = asyncio.get_running_loop()
+    _frame(wbridge, "status", status_frame("evil", ip=BAD_IP))
+    await asyncio.sleep(0.05)
+    assert await wbridge.store.get_container("evil") is None
+    assert wbridge.stats["rejected"] == 1
+    audit = (await wbridge.store.list_audit())[0]
+    assert audit["action"] == "ip_rejected"
+
+
+async def test_hb_from_non_whitelisted_ip_rejected(wbridge):
+    """闸门在 _on_message 入口：已注册主机的白名单外心跳同样拦下。"""
+    import asyncio
+    wbridge.loop = asyncio.get_running_loop()
+    await wbridge._on_status("web-07", status_frame("web-07"))
+    _frame(wbridge, "hb", {"host": "web-07", "ip": BAD_IP, "ts": int(time.time()),
+                           "metrics": {"mem_mb": 1.0}})
+    await asyncio.sleep(0.05)
+    assert wbridge.stats["hb"] == 0, "白名单外心跳不得入库"
+    assert (await wbridge.store.list_audit())[0]["action"] == "ip_rejected"
+
+
+async def test_missing_or_bogus_ip_rejected_when_whitelist_set(wbridge):
+    """白名单配置后，缺 ip / 格式非法 ip 的帧一律拒绝，不能只靠「有字段」放行。"""
+    import asyncio
+    wbridge.loop = asyncio.get_running_loop()
+    for bad in ("", "not-an-ip", None):
+        _frame(wbridge, "status", status_frame("bogus", ip=bad))
+    await asyncio.sleep(0.05)
+    assert await wbridge.store.get_container("bogus") is None
+    assert wbridge.stats["rejected"] == 3
+
+
+async def test_no_whitelist_means_no_restriction(bridge):
+    """未配置白名单（空）= 放行全部：开发/测试模式不加门槛。"""
+    import asyncio
+    bridge.loop = asyncio.get_running_loop()
+    _frame(bridge, "status", status_frame("any-host", ip=BAD_IP))
+    await asyncio.sleep(0.05)
+    assert await bridge.store.is_online("any-host") is True
 
 
 async def test_lwt_offline_marks_offline(bridge):
@@ -314,3 +391,41 @@ async def test_sweep_marks_zombie_hosts_offline(bridge):
         "UPDATE kk_containers SET status_ts=:a WHERE pod=:b", {"a": 1000, "b": "pod-j"})
     _, stale = await bridge.sweep()
     assert stale >= 1 and await bridge.store.is_online("pod-j") is False
+
+
+# ---- KK_AGENT_IPS 解析与 production 自检 ----
+
+def test_parse_ip_whitelist_mixed_formats():
+    from kk_server.config import parse_ip_whitelist
+    nets = parse_ip_whitelist("10.0.0.0/24, 192.168.1.5 ,fd00::1/128, 172.16.0.7")
+    assert len(nets) == 4
+    assert any("10.0.0.0/24" in str(n) for n in nets)
+    # 单个 IP 自动按主机位全 1 处理（strict=False）
+    assert any("192.168.1.5/32" in str(n) for n in nets)
+    assert any("172.16.0.7/32" in str(n) for n in nets)
+
+
+def test_parse_ip_whitelist_empty_is_empty():
+    from kk_server.config import parse_ip_whitelist
+    assert parse_ip_whitelist("") == []
+    assert parse_ip_whitelist(" , ") == []
+
+
+def test_parse_ip_whitelist_rejects_garbage():
+    """白名单写错时启动即失败，好过静默放行或全拒。"""
+    from kk_server.config import parse_ip_whitelist
+    with pytest.raises(ValueError):
+        parse_ip_whitelist("10.0.0.0/24,not-an-ip")
+
+
+def test_production_requires_whitelist():
+    """KK_ENV=production 必须显式配置 KK_AGENT_IPS：不配等于对所有上报放行。"""
+    with pytest.raises(RuntimeError, match="KK_AGENT_IPS"):
+        load_settings({"KK_ENV": "production",
+                       "KK_ADMIN_PASS": "x" * 20,
+                       "KK_WEB_DIR": "/tmp/noweb"})
+    # 配了就能过
+    s = load_settings({"KK_ENV": "production", "KK_AGENT_IPS": "10.0.0.0/24",
+                       "KK_ADMIN_PASS": "x" * 20,
+                       "KK_WEB_DIR": "/tmp/noweb"})
+    assert len(s.agent_ips) == 1

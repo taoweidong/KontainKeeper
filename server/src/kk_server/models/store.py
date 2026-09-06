@@ -19,7 +19,7 @@ from sqlalchemy.pool import StaticPool
 
 from .tables import (MD, ONLINE_GRACE, _ADD_COLUMNS, _CMD_COLS, _SUMMARY_COLS,
                      admins, audit, commands, containers, heartbeats, hourly, kv,
-                     revoked_tokens, sessions)
+                     sessions)
 from .helpers import (_PWDF_ITERS_LEGACY, _b64_tail, _num, _pwdf,
                        mask_url, normalize_url)
 
@@ -461,24 +461,6 @@ class Store:
     async def default_admin_exists(self):
         return await self._one(select(admins.c.username)
                                .where(admins.c.username == "admin")) is not None
-
-    # ---- Agent token 吊销 ----
-    async def revoke_token(self, token):
-        return await self._upsert(revoked_tokens, {"token": token, "ts": int(time.time())},
-                                  ["token"], None)
-
-    async def restore_token(self, token):
-        return await self._run(delete(revoked_tokens)
-                               .where(revoked_tokens.c.token == token))
-
-    async def is_token_revoked(self, token):
-        return await self._one(select(revoked_tokens.c.token)
-                               .where(revoked_tokens.c.token == token)) is not None
-
-    async def revoked_tokens(self):
-        rows = await self._all(select(revoked_tokens.c.token)
-                               .order_by(revoked_tokens.c.ts))
-        return [r["token"] for r in rows]
 
     # ---- KV / Agent 版本清单 ----
     async def kv_get(self, k, default=None):

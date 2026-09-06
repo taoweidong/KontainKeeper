@@ -18,7 +18,6 @@ PASS = "api-pass"
 @pytest.fixture
 async def api(tmp_path):
     app = create_app({
-        "KK_AGENT_TOKENS": "api-token",
         "KK_ADMIN_USER": ADMIN,
         "KK_ADMIN_PASS": PASS,
         "KK_DB_PATH": str(tmp_path / "api.db"),
