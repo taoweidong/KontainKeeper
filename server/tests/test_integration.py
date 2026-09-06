@@ -317,6 +317,15 @@ def test_blacklist_blocks_bypass_variants(stack):
     """黑名单必须拦住常见绕过写法（双空格、参数顺序、包装命令、高危程序）。"""
     port, host = stack["port"], stack["host"]
     tok = _login(port)
+
+    # 主机注册是异步的（status 帧 → 桥接落库），存在性检查先于黑名单返回 404，
+    # 必须像其他用例一样等到主机可见再下发，否则首条命令会撞上竞态
+    def host_visible():
+        s, b = http(port, "GET", "/api/containers", token=tok)
+        items = [i for i in b.get("items", []) if i["pod"] == host]
+        return items[0] if items else None
+
+    wait_until(host_visible, what="host visible before blacklist tests")
     for cmdline in [
         "rm  -rf /",
         "rm -fr /",
