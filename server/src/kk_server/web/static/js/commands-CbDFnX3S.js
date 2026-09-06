@@ -1,1 +1,0 @@
-import{aA as e}from"./index-Bj-7LEXt.js";const a=()=>e.request("get","/api/collect/items"),m=t=>e.request("post","/api/commands",{data:t}),o=t=>e.request("get","/api/commands",{params:t}),r=t=>e.request("get",`/api/commands/${t}/out`,{params:{format:"text"}});export{o as a,m as c,r as g,a as l};
