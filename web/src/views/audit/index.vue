@@ -36,7 +36,7 @@ async function load() {
 
 const actionType = (a: string): "success" | "danger" | "warning" | "info" => {
   if (a.includes("fail") || a.includes("blocked") || a.includes("rejected")) return "danger";
-  if (a.includes("revoke")) return "warning";
+  if (a.includes("mismatch") || a.includes("timeout")) return "warning";
   if (a.includes("ok") || a.includes("create") || a.includes("restore")) return "success";
   return "info";
 };
