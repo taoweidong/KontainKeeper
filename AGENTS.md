@@ -59,7 +59,7 @@ pnpm build       # 产物输出到 web/dist/
 
 ## 背景阅读
 
-改协议、Agent 资源策略或部署方式前先读 `docs/design.md`（总体设计）与 `proto/messages.md`（v2 MQTT 主题与帧格式）；执行路线图与缺陷账本在 `docs/completion-plan-mqtt.md`；部署流程在 `README.md`。
+改协议、Agent 资源策略或部署方式前先读 `docs/design.md`（总体设计）与 `proto/messages.md`（v2 MQTT 主题与帧格式）；执行路线图与缺陷账本在 `docs/completion-plan-mqtt.md`；生产部署流程在 `docs/deployment.md`，开发环境搭建在 `docs/development.md`。
 
 ## 约定
 

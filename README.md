@@ -119,32 +119,41 @@ web/                     Vue3 前端（独立 pnpm 工程，pure-admin-thin 底�
 proto/                   双端通信协议契约（v2）
 scripts/                 构建与部署脚本
 deploy/                  Mosquitto 生产/开发配置 + Agent 容器叠加片段
-docs/                    design / completion-plan-mqtt / architecture-review
+docs/                    deployment(生产部署) / development(开发搭建) / design / 评审与路线图
 ```
 
 ## 文档
 
-- [设计文档](docs/design.md)：整体架构、Broker 居中设计与存储治理
-- [架构评审](docs/architecture-review.md)：缺陷清单与处置映射（P0/P1/P2 + R1–R13）
-- [实现路线图 v3](docs/completion-plan-mqtt.md)：MQTT 收尾 + Vue3 前端的八阶段落地计划
-- [通信协议 v2](proto/messages.md)：MQTT 主题布局、帧格式、QoS/retain 语义与 8 项采集白名单
-- [部署说明](deploy/mosquitto/README.md)：Mosquitto 开发/生产双配置、按主机 ACL 与账号生成
+按用途分列，职责不重叠：
+
+| 场景 | 文档 |
+|---|---|
+| **生产部署**（从零搭建：Broker / 服务端 / 前端 / Agent 镜像 / TLS / 验证） | [生产环境部署指南](docs/deployment.md) |
+| **开发搭建**（跑起三个工程、测试、联调、常见坑） | [开发环境搭建指南](docs/development.md) |
+| 总体设计与取舍 | [设计文档](docs/design.md) |
+| 缺陷清单与处置映射（P0/P1/P2 + R1–R13） | [架构评审](docs/architecture-review.md) |
+| 八阶段落地计划 | [实现路线图 v3](docs/completion-plan-mqtt.md) |
+| MQTT 主题布局、帧格式、QoS/retain 语义 | [通信协议 v2](proto/messages.md) |
+| Mosquitto 开发/生产双配置、按主机 ACL | [部署说明](deploy/mosquitto/README.md) |
 
 > 所有协议与配置以代码为唯一真相源；文档若与代码冲突，以代码与 `git` 历史为准。
 
 ## 快速开始（本机体验全链路）
 
+五分钟冒烟，用开发配置（匿名 Broker + 默认口令）跑通全链路；
+完整开发环境（前端工程、测试、常见坑）见[开发环境搭建指南](docs/development.md)。
+
 ```bash
 uv sync --all-packages          # 安装服务端依赖 + dev 组
 
-# 0. 起一个 MQTT Broker（本地冒烟用开发配置，开匿名；生产见 deploy/mosquitto/README.md）
+# 0. 起一个 MQTT Broker（本地冒烟用开发配置，开匿名；生产见生产环境部署指南）
 docker run -d --name mosquitto -p 1883:1883 \
   -v $PWD/deploy/mosquitto/mosquitto.dev.conf:/mosquitto/config/mosquitto.conf \
   eclipse-mosquitto:2
 
 # 1. 启动服务端
 .venv/Scripts/python.exe -m kk_server      # 或 uv run kk-server
-#   浏览器打开 http://127.0.0.1:8443 → 登录管理界面（默认 admin/admin）
+#   浏览器打开 http://127.0.0.1:8443 → 登录管理界面（默认 admin/admin123）
 
 # 2. 启动一个 Agent（任意目录）
 KK_SERVER=mqtt://127.0.0.1:1883 KK_TOKEN=dev-token \
@@ -158,90 +167,28 @@ KK_HOST_NAME=demo-host KK_INTERVAL=5 uv run kk-agent
 
 ## 部署到生产
 
-### 1. 服务端
+三步速览（完整步骤、环境变量参考与验证清单见[生产环境部署指南](docs/deployment.md)）：
 
 ```bash
-# 构建上下文为仓库根：Dockerfile 使用根 uv.lock + uv sync；.dockerignore 已排除前端/依赖等大目录
-docker build -f server/Dockerfile -t registry.example.com/kontainkeeper-server:0.1.0 .
-docker run -d --name kontainkeeper \
-  -p 8443:8443 \
-  -v kontainkeeper-data:/data \
-  -e KK_MQTT_URL=mqtt://broker:1883 \
-  -e KK_AGENT_TOKENS=<token> \
-  -e KK_ADMIN_USER=admin \
-  -e KK_ADMIN_PASS=<强密码> \
-  registry.example.com/kontainkeeper-server:0.1.0
+# 1. 生成 Broker 凭据（passwordfile 不入库；服务端账号 + 每台主机一个账号）
+cp deploy/mosquitto/passwordfile.example deploy/mosquitto/passwordfile
+docker compose -f docker-compose.prod.yml run --rm mosquitto \
+  mosquitto_passwd -b deploy/mosquitto/passwordfile kk-server <强密码>
+bash deploy/mosquitto/gen-credentials.sh <主机名> <该机token>
+
+# 2. 准备 .env（强口令；KK_ENV=production 会自检并拒绝默认口令/token）
+cp .env.example .env && vim .env
+
+# 3. 起生产栈（关匿名 Broker + ACL + 服务端）
+docker compose -f docker-compose.prod.yml --env-file .env up -d --build
 ```
 
-服务端无状态，多实例部署时 `KK_MQTT_CLIENT_ID` 必须逐实例唯一（共用会被 Broker 互踢）。
-
-服务端环境变量：
-
-| 变量 | 说明 | 默认 |
-|---|---|---|
-| `KK_MQTT_URL` | Broker 地址（`mqtt://` / `mqtts://`） | 必填 |
-| `KK_MQTT_USERNAME` / `KK_MQTT_PASSWORD` | Broker 鉴权（生产必须） | 空 |
-| `KK_MQTT_CLIENT_ID` | 实例唯一 client_id | `kk-server` |
-| `KK_MQTT_TLS_CA` / `KK_MQTT_TLS_INSECURE` | TLS 配置 | 空 |
-| `KK_TOPIC_PREFIX` | 主题前缀（**双端同名，必须一致**） | `kk/v1` |
-| `KK_DB_URL` | `sqlite:///...` / `postgresql://...` / `mysql://...` | SQLite |
-| `KK_AGENT_TOKENS` | 逗号分隔的 Agent 接入 token | `dev-token` |
-| `KK_ADMIN_USER` / `KK_ADMIN_PASS` | 管理员账号 | `admin`/`admin123` |
-| `KK_CMD_BLACKLIST` | 命令黑名单（逗号分隔子串） | `rm -rf /,mkfs,reboot,...` |
-| `KK_WEB_DIR` | 前端静态目录 | 包内 `web/` |
-
-> **TLS 硬约束（生产必须）**：Broker 连接生产应用 `mqtts://` 或置于内网可信区；
-> 管理端 Web 必须前置 TLS 终结的反向代理，切勿让管理员令牌明文跨越不可信网络。
-
-### 2. 主机侧（镜像制作期介入）
-
-在 vscode-server 镜像 CI 中调用构建脚本，叠加 Agent 并注入接入配置：
-
-```bash
-BASE_IMAGE=myregistry/vscode-server:1.2 \
-KK_SERVER=mqtt://broker.ops:1883 \
-KK_TOKEN=<与 KK_AGENT_TOKENS 一致> \
-  ./scripts/build.sh myregistry/vscode-server-managed:1.2
-```
-
-目标镜像**无需内置 Python**——Agent 已编译为单文件二进制随镜像分发。
-产物镜像入口透传采用 Docker 原生机制：`kk-entrypoint` 作为 ENTRYPOINT 首元素，
-原入口其余元素以参数透传，前台 `exec "$@"` 拉起原入口——主机生命周期 = 原 IDE 生命周期。
-
-### 3. Agent 环境变量（镜像内已注入，一般无需改动）
-
-| 变量 | 说明 | 默认 |
-|---|---|---|
-| `KK_SERVER` | Broker 地址（`mqtt://` / `mqtts://`） | 必填 |
-| `KK_TOKEN` | 接入 token | 必填 |
-| `KK_HOST_NAME` | 主机标识（旧名 `KK_POD_NAME` 兼容） | hostname |
-| `KK_TOPIC_PREFIX` | 主题前缀，与服务端一致 | `kk/v1` |
-| `KK_INTERVAL` | 心跳/采集间隔（秒，下限 1） | `60` |
-| `KK_DISK_PATHS` | 采集的挂载点（逗号分隔；空=自动发现全部物理挂载点） | 自动发现 |
-| `KK_HB_ITEMS` | 心跳采集项（逗号分隔，白名单子集；空=全部 8 项。千进程主机可去掉 `proc`） | 全部 |
-| `KK_PLUGIN_DIR` | 自定义采集插件目录 | `/opt/kk-agent/plugins` |
-| `KK_PLUGIN_TIMEOUT` | 插件 `collect()` 超时（秒），超时插件被隔离直到重载 | `5` |
-| `KK_ALLOW_SHELL` | 允许 `use_shell` 管道模式 | `1` |
-| `KK_MAX_OUT_MB` | 单命令输出上限 | `4` |
-| `KK_MAX_QUEUED` | 离线 out-queue 上限 | `512` |
-| `KK_UPDATE_URL` | 管理 API 基址（自更新用） | 必填，未配则跳过自更新 |
-| `KK_UPDATE_INTERVAL` | 版本轮询间隔（秒，≥30） | `300` |
-| `KK_UPDATE_DISABLED` | 设为 `1/true` 关闭自更新 | 关闭 |
-| `KK_AGENT_BIN` | 自更新替换目标路径 | 自动 |
-
-### 4. Agent 自更新（零人工干预）
-
-Agent 内置版本监控：上线时服务端比对版本，落后即推送 `kind=update` 帧；运行中亦按
-`KK_UPDATE_INTERVAL` 定时轮询。发现新版本后用自身 token 下载二进制，校验 `sha256`
-一致后原子替换并 `execv` 自重启。
-
-发布新版本（管理员）：
-
-```bash
-cd agent && ./build/build_binary.sh
-curl -H "Authorization: Bearer <ADMIN_TOKEN>" -F "version=0.2.0" \
-     -F "file=@dist/kk-agent" https://kk-server.ops:8443/api/system/agent
-```
+- **前端零部署**：构建产物已随包提交，由服务端 8443 端口直接托管；只有改过
+  `web/` 前端代码才需重建同步（见部署指南 §5）。
+- **主机侧**：用 `scripts/build.sh` 把 Agent 叠加进 vscode-server 镜像，
+  token 运行时注入（见部署指南 §7）。
+- **TLS 硬约束**：管理界面必须前置 TLS 终结的反向代理，切勿让管理员令牌明文
+  跨越不可信网络（见部署指南 §6）。
 
 ## 自定义采集插件
 
@@ -308,8 +255,8 @@ cd web && pnpm typecheck && pnpm build                # 前端类型检查与构
 
 ## 参与贡献
 
-欢迎以 Issue / Pull Request 参与。提交前请先跑通测试（`uv sync --all-packages` 后
-`pytest agent/tests server/tests -q`），并确保 `web/` 前端 `pnpm typecheck && pnpm build` 通过。
+欢迎以 Issue / Pull Request 参与。开发环境搭建见[开发环境搭建指南](docs/development.md)，
+其 §10 为提交前检查清单（后端全量测试 + 前端 typecheck/build + 协议四件套同步）。
 重大改动建议先对照 [实现路线图 v3](docs/completion-plan-mqtt.md) 与
 [架构评审](docs/architecture-review.md)，避免与已落地的设计决策冲突。
 
