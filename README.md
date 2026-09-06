@@ -218,7 +218,9 @@ KK_TOKEN=<与 KK_AGENT_TOKENS 一致> \
 | `KK_TOPIC_PREFIX` | 主题前缀，与服务端一致 | `kk/v1` |
 | `KK_INTERVAL` | 心跳/采集间隔（秒，下限 1） | `60` |
 | `KK_DISK_PATHS` | 采集的挂载点 | `/,/workspace` |
+| `KK_HB_ITEMS` | 心跳采集项（逗号分隔，白名单子集；空=全部 8 项。千进程主机可去掉 `proc`） | 全部 |
 | `KK_PLUGIN_DIR` | 自定义采集插件目录 | `/opt/kk-agent/plugins` |
+| `KK_PLUGIN_TIMEOUT` | 插件 `collect()` 超时（秒），超时插件被隔离直到重载 | `5` |
 | `KK_ALLOW_SHELL` | 允许 `use_shell` 管道模式 | `1` |
 | `KK_MAX_OUT_MB` | 单命令输出上限 | `4` |
 | `KK_MAX_QUEUED` | 离线 out-queue 上限 | `512` |
