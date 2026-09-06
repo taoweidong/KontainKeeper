@@ -159,3 +159,13 @@ async def test_login_rate_limit_blocks_brute_force(api):
     finally:
         auth_mod._LOGIN_FAILS.clear()
         auth_mod._LOGIN_LOCKED_UNTIL.clear()
+
+
+async def test_logout_writes_audit(api):
+    """P2 审计：登出动作须留痕（带用户名与动作 'logout'），便于安全事件追溯。"""
+    # api 客户端已带 Bearer（由 fixture 注入）
+    r = await api.client.post("/api/logout")
+    assert r.status_code == 200
+    audits = await api.store.list_audit()
+    actions = [(a["actor"], a["action"]) for a in audits]
+    assert (ADMIN, "logout") in actions

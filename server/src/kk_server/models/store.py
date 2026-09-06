@@ -20,7 +20,8 @@ from sqlalchemy.pool import StaticPool
 from .tables import (MD, ONLINE_GRACE, _ADD_COLUMNS, _CMD_COLS, _SUMMARY_COLS,
                      admins, audit, commands, containers, heartbeats, hourly, kv,
                      revoked_tokens, sessions)
-from .helpers import _b64_tail, _num, _pwdf, mask_url, normalize_url
+from .helpers import (_PWDF_ITERS_LEGACY, _b64_tail, _num, _pwdf,
+                       mask_url, normalize_url)
 
 log = logging.getLogger("kk.store")
 
@@ -201,18 +202,28 @@ class Store:
         return {"cpu": _num(metrics.get("cpu")), "mem_mb": _num(metrics.get("mem_mb")),
                 "disk_pct": max(pcts) if pcts else 0.0}
 
-    async def list_containers(self, view="full"):
+    async def list_containers(self, view="full", limit=None, offset=None):
         """full = 全列（含完整 last_metrics），summary = 只读摘要列。
 
         摘要视图存在的理由：500 台 × 每帧 2~4KB 的 last_metrics 全量解析是列表接口
         的主要开销，而列表页只显示在线/CPU/内存/磁盘告警几个标量。
+
+        limit/offset 用于 full 视图分页（P2：无上限时 500 台完整指标一次性拉回过量）。
         """
-        if view == "summary":
-            return await self._all(select(*(containers.c[c] for c in _SUMMARY_COLS))
-                                   .order_by(containers.c.last_seen.desc()))
-        if view != "full":
+        if view not in ("full", "summary"):
             raise ValueError("view 需为 full 或 summary，收到 %r" % view)
-        return await self._all(select(containers).order_by(containers.c.last_seen.desc()))
+        q = (select(*(containers.c[c] for c in _SUMMARY_COLS))
+             if view == "summary" else select(containers))
+        q = q.order_by(containers.c.last_seen.desc())
+        if limit is not None:
+            q = q.limit(int(limit))
+        if offset:
+            q = q.offset(int(offset))
+        return await self._all(q)
+
+    async def count_containers(self):
+        row = await self._one(select(func.count().label("n")).select_from(containers))
+        return row["n"] if row else 0
 
     async def get_container(self, pod):
         return await self._one(select(containers).where(containers.c.pod == pod))
@@ -415,7 +426,15 @@ class Store:
         row = await self._one(select(admins).where(admins.c.username == username))
         if not row:
             return False
-        return secrets.compare_digest(row["pw_hash"], _pwdf(row["salt"], password))
+        cand = _pwdf(row["salt"], password)
+        if secrets.compare_digest(row["pw_hash"], cand):
+            return True
+        # 兼容旧迭代数的存量哈希：首次成功登录时原地升级到新迭代数
+        if secrets.compare_digest(row["pw_hash"], _pwdf(row["salt"], password, _PWDF_ITERS_LEGACY)):
+            await self._run(update(admins).where(admins.c.username == username)
+                            .values(salt=row["salt"], pw_hash=cand))
+            return True
+        return False
 
     async def create_session(self, username, ttl=12 * 3600):
         token = secrets.token_urlsafe(32)

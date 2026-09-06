@@ -67,8 +67,13 @@ async def login(body: LoginBody, request: Request):
 async def logout(request: Request):
     h = request.headers.get("Authorization", "")
     token = h[7:].strip() if h.startswith("Bearer ") else ""
+    actor = None
     if token:
+        # 先解析出用户名再删会话，便于审计登出主体
+        actor = await request.app.state.store.get_session(token)
         await request.app.state.store.delete_session(token)
+    # P2 审计：登出动作此前未留痕，安全事件不可追溯
+    await request.app.state.store.add_audit(actor or "unknown", "logout", {})
     return {"ok": True}
 
 

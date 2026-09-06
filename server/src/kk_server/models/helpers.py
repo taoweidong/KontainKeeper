@@ -5,9 +5,15 @@
 import base64
 import hashlib
 
-def _pwdf(salt, password):
+# PBKDF2 迭代数（P2 安全评审：120k 偏低，提到 310k 与现代 Broker 口令强度对齐）。
+# 旧哈希用 120k 的存量管理员在「首次成功登录」时原地升级到新迭代数，无需手工迁移。
+_PWDF_ITERS = 310_000
+_PWDF_ITERS_LEGACY = 120_000
+
+
+def _pwdf(salt, password, iters=_PWDF_ITERS):
     return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"),
-                               salt.encode("utf-8"), 120_000).hex()
+                               salt.encode("utf-8"), iters).hex()
 
 
 def normalize_url(url=None, db_path=None):
