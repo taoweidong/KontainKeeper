@@ -185,7 +185,8 @@ class Store:
                 pod=pod, ts=ts, cpu=_num(m.get("cpu")), mem_mb=_num(m.get("mem_mb")),
                 metrics=raw))
             await conn.execute(update(containers).where(containers.c.pod == pod).values(
-                last_seen=now, hb_interval=int(msg.get("interval") or 60), last_metrics=raw,
+                last_seen=now, status_ts=now,
+                hb_interval=int(msg.get("interval") or 60), last_metrics=raw,
                 **summary))
         return ts
 
@@ -339,14 +340,27 @@ class Store:
         输出累加直接在 SQL 里拼 base64 字符串：Agent 的 48KB 分块长度是 3 的整数倍，
         拼接结果仍是整段输出的合法 base64——省掉逐块解码重编码的 O(n²)，
         也不再需要进程内缓存（重启不丢，修 P2-15）。
+
+        QoS1「至少一次」：Broker 重投时同一 seq 块会被重复拼接，导致命令输出翻倍。
+        以 last_seq 为水位做幂等去重（只应用严格更大的 seq）；无 seq 的帧回退为无条件追加。
         """
         cid = msg.get("id")
         if cid is None:
             return None
         chunk = str(msg.get("out_b64") or "")
+        seq = msg.get("seq")
         now = int(time.time())
-        cat = commands.c.out_b64 + chunk          # 表达式级拼接，三库通用
-        vals = {"out_b64": cat, "out_chunks": commands.c.out_chunks + 1}
+        if seq is None:
+            # 老/畸形帧：无 seq 无法去重，保持原语义无条件拼接
+            cat = commands.c.out_b64 + chunk          # 表达式级拼接，三库通用
+            vals = {"out_b64": cat, "out_chunks": commands.c.out_chunks + 1}
+        else:
+            # 幂等路径：仅当 seq 严格大于已应用水位才拼接，避免重投翻倍
+            applied = commands.c.last_seq < seq
+            cat = case((applied, commands.c.out_b64 + chunk), else_=commands.c.out_b64)
+            chunks = case((applied, commands.c.out_chunks + 1), else_=commands.c.out_chunks)
+            last_seq_v = case((applied, seq), else_=commands.c.last_seq)
+            vals = {"out_b64": cat, "out_chunks": chunks, "last_seq": last_seq_v}
         if msg.get("done"):
             vals.update(status="done", rc=msg.get("rc"),
                         timed_out=1 if msg.get("timed_out") else 0,

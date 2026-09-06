@@ -78,6 +78,9 @@ commands = Table(
     Column("elapsed_ms", BigInteger),
     Column("out_b64", _long_text(), nullable=False),
     Column("out_chunks", Integer, nullable=False, server_default="0"),
+    # 结果帧幂等水位：已应用的最大 seq。默认 -1 使首块 seq=0 也能被应用
+    # （P1-6：QoS1 重投同 seq 块会导致输出翻倍）。
+    Column("last_seq", Integer, nullable=False, server_default="-1"),
     # 输出被保留策略清掉后置 1：状态行还在，但命令回显已不可追溯，
     # 前端据此提示「输出已清理」，而不是让用户对着空白以为命令没执行。
     Column("out_purged", Integer, nullable=False, server_default="0"),
@@ -134,5 +137,6 @@ _SUMMARY_COLS = ["pod", "image", "agent_ver", "hb_interval", "online",
 _ADD_COLUMNS = {
     "kk_containers": [("cpu", "DOUBLE PRECISION"), ("mem_mb", "DOUBLE PRECISION"),
                       ("disk_pct", "DOUBLE PRECISION")],
-    "kk_commands": [("out_purged", "INTEGER DEFAULT 0")],
+    "kk_commands": [("out_purged", "INTEGER DEFAULT 0"),
+                     ("last_seq", "INTEGER DEFAULT -1")],
 }

@@ -128,3 +128,34 @@ async def test_command_channel_unavailable_without_broker(api):
     r = await api.client.post("/api/commands",
                               json={"pods": ["host-a"], "argv": ["echo", "hi"]})
     assert r.status_code == 503 and "KK_MQTT_URL" in r.json()["detail"]
+
+
+async def test_login_rate_limit_blocks_brute_force(api):
+    """P1-5：连续失败达阈值后临时锁定，正确口令也被拒，直至锁定到期。"""
+    from kk_server.controllers import auth as auth_mod
+    auth_mod._LOGIN_FAILS.clear()
+    auth_mod._LOGIN_LOCKED_UNTIL.clear()
+    try:
+        await api.store.ensure_admin(ADMIN, PASS)  # 确保账号存在
+        # 前 4 次失败 → 401，第 5 次触发锁定 → 429
+        codes = []
+        for _ in range(5):
+            r = await api.client.post("/api/login",
+                                      json={"username": ADMIN, "password": "nope"})
+            codes.append(r.status_code)
+        assert codes[:4] == [401, 401, 401, 401], codes
+        assert codes[4] == 429, codes
+
+        # 锁定窗口内即便口令正确也被拒
+        r = await api.client.post("/api/login",
+                                  json={"username": ADMIN, "password": PASS})
+        assert r.status_code == 429
+
+        # 解除锁定后恢复正常
+        auth_mod._LOGIN_LOCKED_UNTIL.clear()
+        r = await api.client.post("/api/login",
+                                  json={"username": ADMIN, "password": PASS})
+        assert r.status_code == 200 and "token" in r.json()
+    finally:
+        auth_mod._LOGIN_FAILS.clear()
+        auth_mod._LOGIN_LOCKED_UNTIL.clear()

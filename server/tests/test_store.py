@@ -320,6 +320,45 @@ async def test_token_revocation(store):
     assert await store.revoked_tokens() == []
 
 
+async def test_record_hb_refreshes_status_ts(store):
+    """P1-4：长驻主机仅靠心跳也要保持在线。record_hb 必须刷新 status_ts，
+    否则 mark_stale_offline 会在数个周期后把它误判离线（列表抖动）。"""
+    await store.upsert_container("pod-hb", "img", "0.1.0", 60)
+    await store.set_online("pod-hb", True)
+    # 模拟「早已上线、很久没发 status 帧」：把 status_ts 推到很久以前
+    await store.exec_sql("UPDATE kk_containers SET status_ts=:a WHERE pod=:b",
+                         {"a": 1000, "b": "pod-hb"})
+    assert await store.is_online("pod-hb") is False  # 宽限兜底已判离线
+
+    # 持续心跳应当把它重新拉回在线（仅 last_seen 不刷新 status_ts 时做不到）
+    await store.record_hb("pod-hb", {"interval": 60, "metrics": {"cpu": 1.0}})
+    assert await store.is_online("pod-hb") is True
+    assert (await store.get_container("pod-hb"))["status_ts"] > 1000
+
+
+async def test_append_result_is_idempotent_on_redelivery(store):
+    """P1-6：QoS1「至少一次」，Broker 重投同 seq 块会重复拼接导致输出翻倍。
+    以 last_seq 为水位，同 seq 重投必须被幂等丢弃。"""
+    await store.upsert_container("pod-dup", "img", "0.1.0", 60)
+    cid = await store.create_command("pod-dup", "shell", ["echo"], 30, "admin")
+    base = {"id": cid, "total": 2}
+
+    await store.append_result({**base, "seq": 0, "out_b64": "QUJD", "done": False})
+    await store.append_result({**base, "seq": 1, "out_b64": "REVG", "done": True, "rc": 0})
+    assert await store.command_output(cid) == "ABCDEF"
+
+    # 重投：同 seq 块再发一次，输出不得翻倍
+    await store.append_result({**base, "seq": 0, "out_b64": "QUJD", "done": False})
+    await store.append_result({**base, "seq": 1, "out_b64": "REVG", "done": True, "rc": 0})
+    assert await store.command_output(cid) == "ABCDEF"
+    row = await store.get_command(cid)
+    assert row["out_chunks"] == 2 and row["last_seq"] == 1
+
+    # 无 seq 的帧仍按原语义无条件追加（向后兼容）
+    await store.append_result({"id": cid, "out_b64": "R0hJ", "done": True})
+    assert await store.command_output(cid) == "ABCDEFGHI"
+
+
 async def test_lost_command_marking(store):
     await store.upsert_container("pod-d", "img", "0.1.0", 60)
     cid = await store.create_command("pod-d", "shell", ["x"], 30, "admin")
