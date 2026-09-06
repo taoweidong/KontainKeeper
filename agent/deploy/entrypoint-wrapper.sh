@@ -35,6 +35,8 @@ cleanup_stale_mei() {
 }
 
 supervise() {
+  # 监管循环自身也要接信号：转发给 Agent 子进程后退出，避免 Agent 被 SIGKILL。
+  trap 'kill -TERM "$AGENT_PID" 2>/dev/null; exit 0' TERM INT
   while true; do
     rotate_log
     "$KK_BIN" >>"$KK_LOG" 2>&1 &
@@ -45,6 +47,16 @@ supervise() {
   done
 }
 
+# 信号转发（P1-7）：容器停止时把 SIGTERM/SIGINT 转发给监管循环与 Agent 子进程，
+# 让 Agent 能发优雅下线帧、清理 _MEI，而不是被 SIGKILL 丢掉下线帧。
+forward_signal() {
+  sig="$1"
+  [ -n "${SUPERVISOR_PID:-}" ] && kill -"$sig" "$SUPERVISOR_PID" 2>/dev/null
+  [ -n "${IDE_PID:-}" ] && kill -"$sig" "$IDE_PID" 2>/dev/null
+}
+trap 'forward_signal TERM' TERM
+trap 'forward_signal INT' INT
+
 cleanup_stale_mei
 
 echo "$(date) kk-entrypoint: supervising $KK_BIN" >>"$KK_LOG"
@@ -52,9 +64,20 @@ supervise &
 SUPERVISOR_PID=$!
 
 if [ "$#" -gt 0 ]; then
-  # 原镜像入口作为前台进程（exec 形式，参数由 Docker 注入）
-  exec "$@"
+  # 原镜像入口作为后台子进程（参数由 Docker 注入，不经任何 shell/JSON 解析）。
+  # 不再用 exec：exec 会替换本进程、丢失 trap，导致信号无法转发给 Agent。
+  # IDE 退出即视为容器任务结束，随后收掉监管循环。
+  "$@" &
+  IDE_PID=$!
 fi
 
-# 无入口参数：纯监管模式，保持容器常驻
-wait "$SUPERVISOR_PID"
+# 等待关键子进程：有 IDE 等 IDE，无则等监管循环（纯监管模式常驻）。
+if [ -n "${IDE_PID:-}" ]; then
+  wait "$IDE_PID"
+else
+  wait "$SUPERVISOR_PID"
+fi
+
+# 收尾：IDE 退出后确保 Agent 随监管循环一起退出
+[ -n "${SUPERVISOR_PID:-}" ] && kill -TERM "$SUPERVISOR_PID" 2>/dev/null
+wait 2>/dev/null
