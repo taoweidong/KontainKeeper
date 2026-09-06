@@ -16,6 +16,16 @@ export const ageText = (sec?: number | null): string => {
   return `${Math.floor(sec / 86400)} 天前`;
 };
 
+/** 时长格式化（非相对时间）：用于运行时长、执行耗时等区间语义 */
+export const durText = (sec?: number | null): string => {
+  if (sec === null || sec === undefined) return "-";
+  const s = Math.max(0, Math.round(sec));
+  if (s < 60) return `${s} 秒`;
+  if (s < 3600) return `${Math.floor(s / 60)} 分 ${s % 60} 秒`;
+  if (s < 86400) return `${Math.floor(s / 3600)} 小时 ${Math.floor((s % 3600) / 60)} 分`;
+  return `${Math.floor(s / 86400)} 天 ${Math.floor((s % 86400) / 3600)} 小时`;
+};
+
 export const mbText = (mb?: number | null): string => {
   if (mb === null || mb === undefined) return "-";
   return mb >= 1024 ? `${(mb / 1024).toFixed(2)} GB` : `${Math.round(mb)} MB`;

@@ -255,9 +255,6 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.kk-card {
-  margin: 16px;
-}
 .kk-toolbar {
   display: flex;
   flex-wrap: wrap;
