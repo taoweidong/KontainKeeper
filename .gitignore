@@ -17,3 +17,5 @@ agent_assets/
 # 凭据：Mosquitto 密码文件与本地 .env 严禁入库（代码审查 P0-2，仓库公开）
 deploy/mosquitto/passwordfile
 .env
+# 本地工作日志（审查会话记忆），非项目产物
+.workbuddy/
