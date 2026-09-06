@@ -102,7 +102,12 @@ async def create_commands(body: CommandBody, request: Request):
     timeout = min(max(body.timeout, 1), 600)
     # 黑名单只约束真正会执行命令的形态；collect/plugin_reload 不经 shell
     argv_for_check = payload.get("argv") if isinstance(payload, dict) else payload
-    if body.kind == "shell" and is_blacklisted(argv_for_check, request.app.state.cmd_blacklist):
+    # use_shell 形态下 argv[0] 是整条命令串，必须按 shell 语义切分后再校验，
+    # 否则 basename(argv[0]) 取不到程序名，结构校验整体失效（代码审查 P0-1）
+    use_shell = isinstance(payload, dict) and bool(payload.get("use_shell"))
+    if body.kind == "shell" and is_blacklisted(argv_for_check,
+                                               request.app.state.cmd_blacklist,
+                                               use_shell=use_shell):
         await store.add_audit(user, "command_blocked", {"argv": argv_for_check, "pods": body.pods})
         raise HTTPException(status_code=400, detail="命令命中黑名单，已被拒绝并记录审计")
 
