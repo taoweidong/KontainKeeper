@@ -85,9 +85,9 @@ paho 的后台网络线程触碰，业务结果统一回主线程：
 
 ```bash
 cd agent
-uv run kk-agent                       # 等价 python -m kk_agent，吸收 KK_* 环境变量
-# 或显式指定：
-KK_SERVER=mqtt://127.0.0.1:1883 KK_TOKEN=dev-token \
+uv run kk-agent mqtt://127.0.0.1:1883      # 最简形态：位置参数 = 服务端地址（v3 零凭据）
+# 或用环境变量：
+KK_SERVER=mqtt://127.0.0.1:1883 \
 KK_HOST_NAME=demo-host KK_INTERVAL=5 uv run kk-agent
 ```
 
@@ -113,15 +113,15 @@ cd agent
 
 | 变量 | 说明 | 默认值 |
 |---|---|---|
-| `KK_SERVER` | Broker 地址（`mqtt://` / `mqtts://`） | 必填 |
-| `KK_TOKEN` | 接入 token（须服务端 `KK_AGENT_TOKENS` 之一） | 必填 |
+| `KK_SERVER` | Broker 地址（`mqtt://` / `mqtts://`，**不含凭据**；也可作位置参数传入） | 必填 |
+| `KK_ADVERTISE_IP` | 自报出口 IP 覆盖（默认 UDP connect 自动探测；服务端按 `KK_AGENT_IPS` 白名单校验） | 自动探测 |
 | `KK_HOST_NAME` | 主机标识（旧名 `KK_POD_NAME` 兼容） | 主机名 |
 | `KK_TOPIC_PREFIX` | 主题前缀，与服务端一致 | `kk/v1` |
 | `KK_KEEPALIVE` | MQTT 保活（秒，下限 10） | `60` |
 | `KK_TLS_CA` / `KK_TLS_INSECURE` | TLS 配置 | 空 |
 | `KK_CLIENT_ID` | MQTT client_id | `kk` |
 | `KK_INTERVAL` | 心跳间隔（秒，下限 1） | `60` |
-| `KK_DISK_PATHS` | 采集的磁盘挂载点，逗号分隔 | `/,/workspace` |
+| `KK_DISK_PATHS` | 采集的磁盘挂载点，逗号分隔；空 = 自动发现全部物理挂载点 | `""` |
 | `KK_HB_ITEMS` | 心跳采集项精简（逗号分隔，取值同 collect 白名单；空=全采 8 项） | `""` |
 | `KK_TOP_N` | procs_top 进程数上限（1–50） | `5` |
 | `KK_PLUGIN_DIR` | 自定义采集插件目录 | `<包>/plugins` |
@@ -151,7 +151,7 @@ cd agent
 
 ```bash
 cd agent
-uv run pytest tests -q    # 102 项：MQTT 传输 / psutil 采集 / 执行 / 插件 / 自更新 / 主循环链路
+uv run pytest tests -q    # 101 项：MQTT 传输 / psutil 采集 / 执行 / 插件 / 自更新 / 主循环链路
 ```
 
 ## 约束（重要）
@@ -161,4 +161,4 @@ uv run pytest tests -q    # 102 项：MQTT 传输 / psutil 采集 / 执行 / 插
 - **结果必须收敛**：任一分块发送失败要补发 `rc=-3` 失败终态，绝不让服务端那行命令停在 `running`。
 - **依赖限于 psutil + paho-mqtt**（均为成熟 BSD/EPL 组件）。新增第三方依赖前先确认
   能否编译进单文件二进制、以及 RSS 增量是否可接受。
-- 协议版本 `PROTO_VER = 2` 见 `config.py`，与服务端必须一致（见 `proto/messages.md`）。
+- 协议版本 `PROTO_VER = 3` 见 `config.py`，与服务端必须一致（见 `proto/messages.md`）。

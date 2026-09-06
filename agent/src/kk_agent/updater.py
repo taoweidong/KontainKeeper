@@ -91,8 +91,8 @@ def _build_opener(insecure):
     return urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
 
 
-def _http_get(url, token, timeout=15, as_bytes=False, insecure=False):
-    req = urllib.request.Request(url, headers={"Authorization": "Bearer %s" % token})
+def _http_get(url, timeout=15, as_bytes=False, insecure=False):
+    req = urllib.request.Request(url)
     with _build_opener(insecure).open(req, timeout=timeout) as resp:
         data = resp.read()
     return data if as_bytes else data.decode("utf-8", "replace")
@@ -106,8 +106,7 @@ def fetch_latest(cfg, log):
         return None
     url = "%s%s/latest?ver=%s" % (base, UPDATE_PATH, kk_config.AGENT_VER)
     try:
-        info = json.loads(_http_get(url, cfg.get("token", ""), timeout=15,
-                                    insecure=cfg.get("update_insecure")))
+        info = json.loads(_http_get(url, timeout=15, insecure=cfg.get("update_insecure")))
     except Exception as e:
         log.debug("fetch latest version failed: %s", e)
         return None
@@ -160,9 +159,9 @@ def _verify_signature(data, manifest, cfg, log):
     return True
 
 
-def download_binary(url, token, log, insecure=False, max_bytes=MAX_BIN_BYTES):
+def download_binary(url, log, insecure=False, max_bytes=MAX_BIN_BYTES):
     """分块下载二进制，带大小上限保护。"""
-    req = urllib.request.Request(url, headers={"Authorization": "Bearer %s" % token})
+    req = urllib.request.Request(url)
     buf = bytearray()
     with _build_opener(insecure).open(req, timeout=60) as resp:
         while True:
@@ -229,7 +228,7 @@ def apply_manifest(cfg, log, manifest):
 
     log.info("agent update available: %s -> %s, downloading", kk_config.AGENT_VER, ver)
     with _update_lock:
-        data = download_binary(url, cfg.get("token", ""), log, cfg.get("update_insecure"))
+        data = download_binary(url, log, cfg.get("update_insecure"))
         if not _verify_signature(data, manifest, cfg, log):
             return False
         verify_and_replace(data, target)

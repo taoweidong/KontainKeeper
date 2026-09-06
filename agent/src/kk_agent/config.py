@@ -3,8 +3,8 @@ import os
 import socket
 import sys
 
-AGENT_VER = "0.2.0"
-PROTO_VER = 2  # MQTT 主题布局与帧格式（v1 为旧的自研 WebSocket 协议）
+AGENT_VER = "0.3.0"
+PROTO_VER = 3  # MQTT 主题布局与帧格式（v3 = 去 token，上行帧携带 ip 供白名单校验）
 
 DEFAULT_TOPIC_PREFIX = "kk/v1"
 
@@ -24,18 +24,17 @@ def load(env=None, **overrides):
 
     here = os.path.dirname(os.path.abspath(__file__))
     cfg = {
-        # ---- MQTT 连接 ----
+        # ---- MQTT 连接（匿名 Broker：不再携带任何凭据）----
         "server": env.get("KK_SERVER", "").strip(),
-        "token": env.get("KK_TOKEN", "").strip(),
         "topic_prefix": env.get("KK_TOPIC_PREFIX", DEFAULT_TOPIC_PREFIX).strip(),
         "keepalive": max(10, _int("KK_KEEPALIVE", 60)),
         "tls_ca": env.get("KK_TLS_CA", "").strip(),
         "tls_insecure": _env_bool(env, "KK_TLS_INSECURE"),
-        # Broker 凭据：缺省取 (KK_HOST_NAME, KK_TOKEN)——生产 ACL 的
-        # `pattern kk/v1/%u/#` 要求用户名 = 主机名（代码审查 P1-2）
-        "mqtt_username": env.get("KK_MQTT_USERNAME", "").strip(),
-        "mqtt_password": env.get("KK_MQTT_PASSWORD", "").strip(),
         "client_id": env.get("KK_CLIENT_ID", "kk").strip(),
+        # 出口 IP 自报值（写入 status/hb/result 帧供服务端白名单校验）：
+        # 缺省自动探测（UDP connect 到 Broker 选出可达网卡的本地地址），
+        # 多网卡/NAT 下探测不准时可用 KK_ADVERTISE_IP 显式覆盖
+        "advertise_ip": env.get("KK_ADVERTISE_IP", "").strip(),
 
         # ---- 身份 ----
         # 主机名即 Agent 在管理平台上的唯一标识，克隆机请显式设置避免重复

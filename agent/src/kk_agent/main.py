@@ -147,9 +147,12 @@ def submit_heartbeat(tr, cfg, log, state_box, busy):
     threading.Thread(target=work, daemon=True, name="kk-hb").start()
 
 
-def run(stop=None, cfg=None):
+def run(stop=None, cfg=None, overrides=None):
     stop = stop or threading.Event()
-    cfg = cfg or kk_config.load()
+    # overrides：入口位置参数（如 ./kk-agent mqtt://broker:1883）优先于环境变量。
+    # 注意必须 ** 展开——load 的签名是 load(env=None, **overrides)，
+    # 写成 load(overrides=...) 会把字面量 "overrides" 当配置键塞进 cfg。
+    cfg = cfg or kk_config.load(**(overrides or {}))
     log = kk_logutil.get_logger(cfg["log_path"], cfg["log_level"])
 
     if not cfg["server"]:

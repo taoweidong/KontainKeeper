@@ -19,9 +19,10 @@ Agent 主线程只做「定时采集 + 发布」。
     kk/v1/{host}/result    Agent → Server  命令结果，QoS1
     kk/v1/{host}/cmd       Server → Agent  命令下发，QoS1
 
-帧格式与语义以 proto/messages.md（协议 v2）为准。
+帧格式与语义以 proto/messages.md（协议 v3）为准。
 """
 import json
+import socket
 import ssl
 import threading
 import time
@@ -47,7 +48,12 @@ class TransportError(Exception):
 
 
 def parse_broker(url, default_port=1883):
-    """解析 mqtt://[user:pass@]host[:port] → dict。mqtts:// 启用 TLS。"""
+    """解析 mqtt://host[:port] → dict。mqtts:// 启用 TLS。
+
+    v3 起不再支持 URL 内嵌凭据（Broker 匿名模式，权限管理由服务端
+    KK_AGENT_IPS 白名单承担）；带 user:pass@ 的旧写法显式报错，
+    避免凭据被当成主机名解析出难以理解的连接错误。
+    """
     s = (url or "").strip()
     secure = s.startswith("mqtts://")
     if secure:
@@ -55,11 +61,10 @@ def parse_broker(url, default_port=1883):
     elif not s.startswith("mqtt://"):
         raise TransportError("KK_SERVER 必须是 mqtt:// 或 mqtts:// 地址，当前为 %r" % url)
     rest = s[len("mqtt://"):]
-    user = password = ""
     if "@" in rest:
-        # 从右往左切：密码本身可以含 '@'，主机名不行
-        cred, rest = rest.rsplit("@", 1)
-        user, _, password = cred.partition(":")
+        raise TransportError(
+            "KK_SERVER 不再支持内嵌凭据（v3 起 Broker 匿名模式）：直接写地址即可，"
+            "如 mqtt://broker:1883")
     if rest.startswith("["):
         host, _, port = rest[1:].partition("]")   # IPv6 字面量 [::1]:1883
         port = port.lstrip(":")
@@ -72,9 +77,25 @@ def parse_broker(url, default_port=1883):
         "host": host,
         "port": int(port or (8883 if secure else default_port)),
         "secure": secure,
-        "username": user,
-        "password": password,
     }
+
+
+def detect_outbound_ip(host, port=1883):
+    """探测本机到 Broker 方向的出口 IP。
+
+    UDP connect 只在内核里选路由（不会实际发包），getsockname 拿到的即是
+    Broker 可达网卡上的本地地址——多网卡环境自动选中正确一侧。探测失败
+    （如无网络栈）返回空串，帧里 ip 留空由服务端按白名单拒绝。
+    """
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect((host, port))
+            return s.getsockname()[0]
+        finally:
+            s.close()
+    except OSError:
+        return ""
 
 
 class Transport:
@@ -96,6 +117,11 @@ class Transport:
         self.broker = broker
         self.connected = threading.Event()
         self._stopping = threading.Event()
+        # 出口 IP 自报（v3）：KK_ADVERTISE_IP 显式覆盖 > 自动探测。
+        # 服务端据 KK_AGENT_IPS 白名单校验该值（MQTT 经 Broker 中转拿不到
+        # 发布者真实 TCP 源 IP，自报是协议约束下的务实解，适合内网可信环境）
+        self.ip = (cfg.get("advertise_ip") or
+                   detect_outbound_ip(broker["host"], broker["port"]))
 
         # client_id 必须稳定：Broker 靠它识别「同一个 Agent」并保留离线命令队列
         client_id = "%s-%s" % (cfg.get("client_id") or "kk", self.host)
@@ -105,19 +131,6 @@ class Transport:
             protocol=PROTO,
             clean_session=False,  # 持久会话：离线命令由 Broker 排队
         )
-        # 凭据优先级：URL 内 user[:pass] > KK_MQTT_USERNAME/PASSWORD > (主机名, KK_TOKEN)。
-        # 只写 KK_SERVER + KK_TOKEN 不带用户名时，在禁匿名 Broker 上必然被拒连，
-        # 且无法满足 ACL `pattern kk/v1/%u/#`（%u = 认证用户名 = 主机名）——
-        # 故用 (KK_HOST_NAME, KK_TOKEN) 兜底（代码审查 P1-2）。
-        user = broker["username"] or cfg.get("mqtt_username") or ""
-        pwd = broker["password"] or cfg.get("mqtt_password") or ""
-        if not user and cfg.get("token"):
-            user, pwd = self.host, cfg["token"]
-        if user:
-            self.cli.username_pw_set(user, pwd)
-        else:
-            self.log.warning("未配置 MQTT 凭据（仅适用于开匿名的开发 Broker）；"
-                             "生产请设 KK_MQTT_USERNAME/PASSWORD 或把凭据写进 KK_SERVER")
         if broker["secure"]:
             ca = cfg.get("tls_ca") or None
             if ca:
@@ -152,13 +165,12 @@ class Transport:
 
     # ---- 载荷 ----
     def _status_payload(self, online, reason=""):
-        # 带 token：服务端据此确认这台主机有权注册。生产环境真正的主机级隔离
-        # 由 Broker 的 password_file + pattern ACL 保证（见方案 G1），这里等价于
-        # 旧 WS hello 的校验，避免未配 ACL 时通道完全敞开。
+        # 带 ip（v3）：服务端据 KK_AGENT_IPS 白名单校验，白名单外的上报全部
+        # 拒绝并审计。Broker 匿名模式下这是唯一的接入管控手段。
         return json.dumps({
             "online": online,
             "host": self.host,
-            "token": self.cfg.get("token", ""),
+            "ip": self.ip,
             "agent_ver": kk_config.AGENT_VER,
             "proto_ver": kk_config.PROTO_VER,
             "image": self.cfg.get("image", ""),
@@ -226,6 +238,7 @@ class Transport:
     def publish_hb(self, metrics, custom=None):
         payload = json.dumps({
             "host": self.host,
+            "ip": self.ip,
             "ts": int(time.time()),
             "interval": self.cfg["interval"],
             "agent_ver": kk_config.AGENT_VER,
@@ -238,7 +251,9 @@ class Transport:
 
     def publish_result(self, result):
         """命令结果分块回传；每块 QoS1，末块带 done 标记。"""
-        payload = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+        frame = dict(result)
+        frame["ip"] = self.ip   # v3：上行帧统一携带自报 ip 供白名单校验
+        payload = json.dumps(frame, ensure_ascii=False, separators=(",", ":"))
         return self._pub("result", payload, QOS_CMD, False)
 
     # ---- 回调（运行在 paho 网络线程）----

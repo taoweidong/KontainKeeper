@@ -179,6 +179,42 @@ def test_dispatch_collect_passes_items_through(monkeypatch):
     assert b'"cpu"' in decode(tr.frames)
 
 
+# ---- 入口位置参数 → 配置 ----
+
+def test_run_positional_overrides_reach_config(monkeypatch):
+    """入口位置参数（./kk-agent mqtt://broker:1883）必须覆盖到 cfg["server"]。
+
+    回归锁：run 曾写成 load(overrides=...)，字面量 "overrides" 被当成配置键
+    塞进 cfg，server 覆盖从未生效——二进制一参拉起直接报「KK_SERVER 未配置」
+    退出（2026-09-06 WSL 端到端验证抓到）。
+    """
+    monkeypatch.delenv("KK_SERVER", raising=False)
+    made = {}
+
+    class FakeTransport:
+        def __init__(self, cfg, log):
+            made["server"] = cfg["server"]
+            made["cfg_keys"] = set(cfg)
+            self.on_cmd = None
+
+        def start(self):
+            pass
+
+        def wait_ready(self, timeout=10, stop=None):
+            return True
+
+        def stop(self, reason=""):
+            pass
+
+    monkeypatch.setattr(m, "Transport", FakeTransport)
+    stop = threading.Event()
+    stop.set()
+    m.run(stop=stop, overrides={"server": "mqtt://broker.test:1883"})
+    assert made.get("server") == "mqtt://broker.test:1883"
+    assert "overrides" not in made.get("cfg_keys", {"overrides"}), \
+        "overrides 不得作为配置键残留"
+
+
 # ---- 差分基线容器 ----
 
 def test_statebox_returns_copy_so_callers_cannot_mutate():

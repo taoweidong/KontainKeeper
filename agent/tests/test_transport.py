@@ -24,7 +24,7 @@ CFG = {
     "image": "img:1",
     "client_id": "kk",
     "max_queued": 999,
-    "token": "tok-1",
+    "advertise_ip": "10.0.0.5",
 }
 
 
@@ -42,15 +42,11 @@ class FakeClient:
         self.will = None
         self.publish_rc = publish_rc
         self._connected = connected
-        self.username = self.password = None
         self.tls_calls = []
         self.max_queued = None
         self.reconnect_delay = None
         self.clean_session = None
         self.client_id = None
-
-    def username_pw_set(self, user, password):
-        self.username, self.password = user, password
 
     def tls_set(self, **kw):
         self.tls_calls.append(kw)
@@ -91,7 +87,6 @@ def make_transport(monkeypatch, cfg=None, **fake_kw):
     ("mqtt://h", ("h", 1883, False)),
     ("mqtt://h:1884", ("h", 1884, False)),
     ("mqtts://h", ("h", 8883, True)),
-    ("mqtts://u:p@h:8884", ("h", 8884, True)),
     ("mqtt://[::1]:1883", ("::1", 1883, False)),
 ])
 def test_parse_broker(url, expect):
@@ -99,11 +94,10 @@ def test_parse_broker(url, expect):
     assert (got["host"], got["port"], got["secure"]) == expect
 
 
-def test_parse_broker_credentials_are_urlsplit_but_password_may_hold_at():
-    got = tp.parse_broker("mqtt://kk:pa@ss@h")
-    assert got["host"] == "h"
-    assert got["username"] == "kk"
-    assert got["password"] == "pa@ss"
+def test_parse_broker_rejects_embedded_credentials():
+    """v3 起 Broker 匿名模式：URL 内嵌凭据必须显式报错，而不是被当成主机名。"""
+    with pytest.raises(tp.TransportError, match="内嵌凭据"):
+        tp.parse_broker("mqtt://u:p@h:1883")
 
 
 @pytest.mark.parametrize("bad", ["ws://h/ws/agent", "http://h", "", None])
@@ -120,7 +114,7 @@ def test_session_identity_and_will(monkeypatch):
     assert fake.will["retain"] is True and fake.will["qos"] == tp.QOS_CMD
     will = json.loads(fake.will["payload"])
     assert will["online"] is False and will["host"] == "web-01"
-    assert will["token"] == "tok-1", "LWT 与 status 必须同形，服务端都要能认主机"
+    assert will["ip"] == "10.0.0.5", "LWT 与 status 必须同形（都带自报 ip），服务端都要能认主机"
     assert fake.max_queued == 999, "KK_MAX_QUEUED 必须传给 paho，否则大输出断线仍会被静默淘汰"
     assert fake.reconnect_delay == (tp.RECONNECT_MIN, tp.RECONNECT_MAX)
 
@@ -139,38 +133,38 @@ def test_client_id_is_stable_and_host_scoped(monkeypatch):
     assert captured["kwargs"]["protocol"] == tp.PROTO
 
 
-def test_tls_and_credentials_applied_from_broker_url(monkeypatch):
-    tr, fake = make_transport(monkeypatch, cfg={"server": "mqtts://u:p@h:8883",
+def test_tls_applied_for_mqtts(monkeypatch):
+    """mqtts:// + CA：TLS 按配置生效；已配 CA 时 KK_TLS_INSECURE 必须被忽略——
+    paho 的 tls_insecure_set(True) 会把 verify_mode 一并置成 CERT_NONE，
+    让 CA 校验形同虚设（代码审查 P1-3）。"""
+    tr, fake = make_transport(monkeypatch, cfg={"server": "mqtts://h:8883",
                                                 "tls_ca": "/etc/ca.pem",
                                                 "tls_insecure": True})
-    assert (fake.username, fake.password) == ("u", "p")
     assert fake.tls_calls[0]["ca_certs"] == "/etc/ca.pem"
-    # 已配 CA 时 KK_TLS_INSECURE 必须被忽略：paho 的 tls_insecure_set(True)
-    # 会把 verify_mode 一并置成 CERT_NONE，让 CA 校验形同虚设（代码审查 P1-3）
     assert all(c.get("insecure") is not True for c in fake.tls_calls), \
         "配了 CA 就不能再降校验，否则 KK_TLS_CA 白配"
 
 
-def test_credentials_fall_back_to_host_and_token(monkeypatch):
-    """只给 KK_SERVER + KK_TOKEN 时也要带凭据，且用户名 = 主机名（ACL 的 %u）。
+# ---- 出口 IP 自报（v3）----
 
-    只写地址不带用户名的旧行为在禁匿名 Broker 上必然被拒连（代码审查 P1-2）。
-    """
-    tr, fake = make_transport(monkeypatch)
-    assert (fake.username, fake.password) == ("web-01", "tok-1")
-
-
-def test_explicit_mqtt_credentials_win_over_token(monkeypatch):
-    tr, fake = make_transport(monkeypatch, cfg={"mqtt_username": "svc",
-                                                "mqtt_password": "pw"})
-    assert (fake.username, fake.password) == ("svc", "pw")
+def test_advertise_ip_explicit_wins_over_probe(monkeypatch):
+    """KK_ADVERTISE_IP 显式配置优先于自动探测：多网卡/NAT 下探测不准时的人工覆盖。"""
+    monkeypatch.setattr(tp, "detect_outbound_ip", lambda h, p=1883: "192.0.2.9")
+    tr, _ = make_transport(monkeypatch, cfg={"advertise_ip": "10.9.9.9"})
+    assert tr.ip == "10.9.9.9"
 
 
-def test_url_credentials_win_over_everything(monkeypatch):
-    tr, fake = make_transport(monkeypatch, cfg={"server": "mqtt://url-user:url-pw@h:1883",
-                                                "mqtt_username": "svc",
-                                                "mqtt_password": "pw"})
-    assert (fake.username, fake.password) == ("url-user", "url-pw")
+def test_ip_auto_detected_when_not_configured(monkeypatch):
+    monkeypatch.setattr(tp, "detect_outbound_ip", lambda h, p=1883: "192.0.2.7")
+    tr, _ = make_transport(monkeypatch, cfg={"advertise_ip": ""})
+    assert tr.ip == "192.0.2.7"
+
+
+def test_ip_probe_failure_leaves_empty(monkeypatch):
+    """探测失败（无网络栈）时 ip 留空，由服务端按白名单拒绝——不能编造地址。"""
+    monkeypatch.setattr(tp, "detect_outbound_ip", lambda h, p=1883: "")
+    tr, _ = make_transport(monkeypatch, cfg={"advertise_ip": ""})
+    assert tr.ip == ""
 
 
 # ---- 主题布局 ----
@@ -198,7 +192,7 @@ def test_heartbeat_is_qos0_and_not_retained(monkeypatch):
     assert frame["retain"] is False, "心跳绝不能 retain"
     body = json.loads(frame["payload"])
     assert body["metrics"]["mem_mb"] == 1.0 and body["custom"]["plug"]["v"] == 1
-    assert body["host"] == "web-01" and "ts" in body
+    assert body["host"] == "web-01" and body["ip"] == "10.0.0.5" and "ts" in body
 
 
 def test_status_is_retained_qos1(monkeypatch):
@@ -208,7 +202,7 @@ def test_status_is_retained_qos1(monkeypatch):
     frame = fake.published[-1]
     assert frame["qos"] == tp.QOS_CMD and frame["retain"] is True
     body = json.loads(frame["payload"])
-    assert body["online"] is True and body["token"] == "tok-1"
+    assert body["online"] is True and body["ip"] == "10.0.0.5"
 
 
 def test_qos1_publish_is_queued_even_while_disconnected(monkeypatch):
