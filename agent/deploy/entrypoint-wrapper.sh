@@ -27,6 +27,13 @@ rotate_log() {
   fi
 }
 
+# PyInstaller onefile 被 SIGKILL 时解压目录 /tmp/_MEI* 不会自清（资源评审 P3）。
+# 容器启动时顺手清理 60 分钟前的残留；带存活实例的目录因 mtime 新鲜而得以保留。
+cleanup_stale_mei() {
+  find /tmp -maxdepth 1 -name '_MEI*' -type d -mmin +60 -exec rm -rf {} + 2>/dev/null
+  return 0
+}
+
 supervise() {
   while true; do
     rotate_log
@@ -37,6 +44,8 @@ supervise() {
     sleep 5
   done
 }
+
+cleanup_stale_mei
 
 echo "$(date) kk-entrypoint: supervising $KK_BIN" >>"$KK_LOG"
 supervise &
