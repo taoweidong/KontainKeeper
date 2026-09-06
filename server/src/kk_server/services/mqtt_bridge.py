@@ -14,6 +14,7 @@
 在事件循环里同步落库。多实例扩容只需改 `_sub_topics`（加 `$share/{group}/` 前缀）
 并保证每个实例 client_id 唯一——共用 client_id 会被 Broker 判为重复会话而互相踢下线。
 """
+import asyncio
 import json
 import logging
 import ssl
@@ -47,6 +48,12 @@ class MqttBridge:
         self.connected = threading.Event()
         self._stopping = threading.Event()
         self._sched = None          # 事件循环里跑，用于 to_thread 派发
+        # 同一命令 result 分块的串行锁：create_task 并发处理时，各帧的
+        # get_command/append_result 完成顺序与到达顺序不一致，会让
+        # append_result 的「严格递增水位」把后处理的中间块静默丢弃
+        # （E2E 实测：200KB 输出 5 块只落库 2-4 块且 truncated=0）。
+        # asyncio.Lock 按 await 顺序唤醒，task 启动序=帧到达序，加锁即恢复有序。
+        self._result_locks = {}
         # C5 可观测性：面板只能从这些计数看出「链路是不是活的」——
         # 心跳在涨说明 Agent 在报，cmd_failed 在涨说明发布侧出了问题。
         self.stats = {"status": 0, "hb": 0, "result": 0, "rejected": 0,
@@ -201,20 +208,30 @@ class MqttBridge:
 
     async def _on_result(self, host, body):
         cid = body.get("id")
-        cmd = await self.store.get_command(cid) if cid else None
-        if cmd is None:
-            self.stats["rejected"] += 1
-            await self.store.add_audit("mqtt", "result_unknown_cmd", {"host": host, "id": cid})
+        if not cid:
             return
-        if cmd["pod"] != host:
-            # 归属校验：A 主机不能替 B 主机回传结果（评审 P0-3）
-            self.stats["rejected"] += 1
-            await self.store.add_audit("mqtt", "result_mismatch",
-                                       {"expect": cmd["pod"], "got": host, "id": cid})
-            log.warning("丢弃跨主机结果 cmd=%s expect=%s got=%s", cid, cmd["pod"], host)
-            return
-        await self.store.append_result(body, host=host)
-        self.stats["result"] += 1
+        lock = self._result_locks.get(cid)
+        if lock is None:
+            lock = self._result_locks[cid] = asyncio.Lock()
+        async with lock:
+            cmd = await self.store.get_command(cid)
+            if cmd is None:
+                self.stats["rejected"] += 1
+                await self.store.add_audit("mqtt", "result_unknown_cmd", {"host": host, "id": cid})
+                return
+            if cmd["pod"] != host:
+                # 归属校验：A 主机不能替 B 主机回传结果（评审 P0-3）
+                self.stats["rejected"] += 1
+                await self.store.add_audit("mqtt", "result_mismatch",
+                                           {"expect": cmd["pod"], "got": host, "id": cid})
+                log.warning("丢弃跨主机结果 cmd=%s expect=%s got=%s", cid, cmd["pod"], host)
+                return
+            await self.store.append_result(body, host=host)
+            self.stats["result"] += 1
+            # 终态帧处理完即可回收锁；迟到重投的旧帧重建锁后会被
+            # 水位去重挡掉，单帧处理也不再有并发交错
+            if body.get("done"):
+                self._result_locks.pop(cid, None)
 
     # ---- 下行 ----
     def _cmd_topic(self, host):

@@ -206,6 +206,43 @@ async def test_result_appends_and_completes(bridge):
     assert await bridge.store.command_output(cid) == "part1-part2"
 
 
+async def test_result_chunks_concurrent_no_data_loss(bridge):
+    """回归：分块帧并发处理时不得丢中间块（水位去重的乱序防线）。
+
+    _spawn 用 create_task 并发调度各 result 帧，帧内首个 await 让出后
+    DB 完成顺序与到达顺序不一致；首帧被人为放慢时，无串行锁的实现
+    会让后到的 done 帧先落库（last_seq 跳到末块），中间块全被
+    「严格递增水位」丢弃——E2E 实测 200KB 输出 5 块只落 2-4 块。
+    """
+    import asyncio
+
+    await bridge._on_status("pod-e", status_frame("pod-e"))
+    cid = (await bridge.store.create_commands_batch(["pod-e"], "shell", ["cat", "big"], 30, "admin"))[0]
+    data = b"x" * 204800                       # 5 块：4×48KB + 8KB
+    chunk = 48 * 1024
+    frames = []
+    for i in range(0, len(data), chunk):
+        last = i + chunk >= len(data)
+        frames.append({"id": cid, "seq": len(frames), "total": 5,
+                       "out_b64": base64.b64encode(data[i:i + chunk]).decode(),
+                       "done": last, **({"rc": 0, "timed_out": False,
+                                         "elapsed_ms": 9, "truncated": False} if last else {})})
+    orig = bridge.store.append_result
+
+    async def slow_first(msg, host=None):
+        if msg.get("seq") == 0:
+            await asyncio.sleep(0.05)          # 模拟首帧 DB 慢，放大并发交错
+        return await orig(msg, host=host)
+
+    bridge.store.append_result = slow_first
+    # 模拟 _spawn 的 create_task 并发：按到达顺序同时调度全部分块帧
+    await asyncio.gather(*[bridge._on_result("pod-e", f) for f in frames])
+    row = await bridge.store.get_command(cid)
+    assert row["status"] == "done" and row["out_chunks"] == 5
+    out = base64.b64decode(row["out_b64"])
+    assert len(out) == len(data) and out == data
+
+
 # ---- 下行命令帧 ----
 
 async def test_dispatch_shell_payload(bridge):
