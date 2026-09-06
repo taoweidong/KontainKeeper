@@ -51,16 +51,16 @@ def load_settings(env=None) -> Settings:
     db_url = env.get("KK_DB_URL", "").strip()
     agent_tokens = [t.strip() for t in env.get("KK_AGENT_TOKENS", "dev-token").split(",") if t.strip()]
     admin_user = env.get("KK_ADMIN_USER", "admin")
-    admin_pass = env.get("KK_ADMIN_PASS", "admin")
+    admin_pass = env.get("KK_ADMIN_PASS", "admin123")
     cmd_blacklist = [p.strip().lower() for p in env.get("KK_CMD_BLACKLIST", DEFAULT_BLACKLIST).split(",") if p.strip()]
     enforced_raw = env.get("KK_ENFORCED_INTERVAL", "").strip()
     enforced_interval = int(enforced_raw) if enforced_raw.isdigit() else None
     agent_bin_dir = env.get("KK_AGENT_BIN_DIR", "agent_assets")
     web_dir = env.get("KK_WEB_DIR") or None
 
-    if admin_pass == "admin" and env.get("KK_ENV", "").strip().lower() == "production":
+    if admin_pass == "admin123" and env.get("KK_ENV", "").strip().lower() == "production":
         raise RuntimeError(
-            "KK_ENV=production 但仍在用默认口令 admin，存在严重安全风险；"
+            "KK_ENV=production 但仍在用默认口令 admin123，存在严重安全风险；"
             "请先通过 KK_ADMIN_PASS 设置强口令再启动")
     # 默认 Agent token 同样是公开值（仓库里写死过），生产必须换掉——
     # 否则任何人都能用已知 token 注册伪主机、读写自己的主题（代码审查 P0-2）

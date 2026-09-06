@@ -45,8 +45,8 @@ def create_app(env=None):
         if await store.ensure_admin(settings.admin_user, settings.admin_pass):
             log.info("admin account %r ensured (created or password refreshed)",
                      settings.admin_user)
-        if settings.admin_pass == "admin":
-            log.warning("using default admin password 'admin', set KK_ADMIN_PASS "
+        if settings.admin_pass == "admin123":
+            log.warning("using default admin password 'admin123', set KK_ADMIN_PASS "
                         "before production!")
         if bridge is not None:
             # 桥接回调跑在 paho 网络线程，落库要调度回这里拿到的循环

@@ -186,7 +186,7 @@ docker run -d --name kontainkeeper \
 | `KK_TOPIC_PREFIX` | 主题前缀（**双端同名，必须一致**） | `kk/v1` |
 | `KK_DB_URL` | `sqlite:///...` / `postgresql://...` / `mysql://...` | SQLite |
 | `KK_AGENT_TOKENS` | 逗号分隔的 Agent 接入 token | `dev-token` |
-| `KK_ADMIN_USER` / `KK_ADMIN_PASS` | 管理员账号 | `admin`/`admin` |
+| `KK_ADMIN_USER` / `KK_ADMIN_PASS` | 管理员账号 | `admin`/`admin123` |
 | `KK_CMD_BLACKLIST` | 命令黑名单（逗号分隔子串） | `rm -rf /,mkfs,reboot,...` |
 | `KK_WEB_DIR` | 前端静态目录 | 包内 `web/` |
 
