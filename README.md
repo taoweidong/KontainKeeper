@@ -125,7 +125,7 @@ docs/                    design / completion-plan-mqtt / architecture-review
 ## 文档
 
 - [设计文档](docs/design.md)：整体架构、Broker 居中设计与存储治理
-- [架构评审](docs/architecture-review.md)：缺陷清单与处置映射（P0/P1/P2 + R1–R12）
+- [架构评审](docs/architecture-review.md)：缺陷清单与处置映射（P0/P1/P2 + R1–R13）
 - [实现路线图 v3](docs/completion-plan-mqtt.md)：MQTT 收尾 + Vue3 前端的八阶段落地计划
 - [通信协议 v2](proto/messages.md)：MQTT 主题布局、帧格式、QoS/retain 语义与 8 项采集白名单
 - [部署说明](deploy/mosquitto/README.md)：Mosquitto 开发/生产双配置、按主机 ACL 与账号生成
@@ -217,7 +217,7 @@ KK_TOKEN=<与 KK_AGENT_TOKENS 一致> \
 | `KK_HOST_NAME` | 主机标识（旧名 `KK_POD_NAME` 兼容） | hostname |
 | `KK_TOPIC_PREFIX` | 主题前缀，与服务端一致 | `kk/v1` |
 | `KK_INTERVAL` | 心跳/采集间隔（秒，下限 1） | `60` |
-| `KK_DISK_PATHS` | 采集的挂载点 | `/,/workspace` |
+| `KK_DISK_PATHS` | 采集的挂载点（逗号分隔；空=自动发现全部物理挂载点） | 自动发现 |
 | `KK_HB_ITEMS` | 心跳采集项（逗号分隔，白名单子集；空=全部 8 项。千进程主机可去掉 `proc`） | 全部 |
 | `KK_PLUGIN_DIR` | 自定义采集插件目录 | `/opt/kk-agent/plugins` |
 | `KK_PLUGIN_TIMEOUT` | 插件 `collect()` 超时（秒），超时插件被隔离直到重载 | `5` |
@@ -284,7 +284,7 @@ curl -H "Authorization: Bearer <ADMIN_TOKEN>" \
 uv sync --all-packages
 .venv/Scripts/python.exe -m pytest agent/tests -q     # Agent 单元测试
 .venv/Scripts/python.exe -m pytest server/tests -q    # Server 单测 + 端到端集成
-.venv/Scripts/python.exe -m pytest agent/tests server/tests -q   # 全量：193 passed, 3 skipped
+.venv/Scripts/python.exe -m pytest agent/tests server/tests -q   # 全量 194 条：Broker 可达时 194 passed；不可达时 191 passed + 3 skipped（集成用例）
 
 cd web && pnpm typecheck && pnpm build                # 前端类型检查与构建
 ```

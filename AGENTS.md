@@ -31,7 +31,7 @@ web/ Vue3 前端（REST 轮询 + ECharts，构建产物由 kk-server 托管）
 # 后端（仓库根目录；uv run 会去下载 Python 3.12 而失败，务必用 .venv 直调）
 .venv/Scripts/python.exe -m pytest agent/tests -q      # Agent 单测
 .venv/Scripts/python.exe -m pytest server/tests -q      # Server 单测 + 集成
-.venv/Scripts/python.exe -m pytest agent/tests server/tests -q   # 全量：193 passed, 3 skipped
+.venv/Scripts/python.exe -m pytest agent/tests server/tests -q   # 全量 194 条：Broker 可达时 194 passed；不可达时 191 passed + 3 skipped（集成用例）
 .venv/Scripts/python.exe -m kk_server                   # 起服务端（默认 admin/admin）
 
 # 前端（web/ 目录）

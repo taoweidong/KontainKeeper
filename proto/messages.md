@@ -186,7 +186,9 @@ cpu, mem, disk, disk_io, net, proc, user, sys
 
 ## 7. 约束
 
-- 单帧上限 16MB（Agent 解析器保护阈值）；心跳帧典型 2–4KB。
+- 帧尺寸由分块机制约束：result 固定 48KB/块（base64 后约 64KB），心跳帧典型 2–4KB，
+  均低于 Mosquitto 2.x 默认 `message_size_limit`（1MB，部署配置未放宽）。
+  v1 WS 解析器的 16MB 保护阈值已随 `ws.py` 删除，应用层不再有独立帧上限。
 - 所有 `ts` 为 Unix 秒。
 - 命令输出分块 48KB，总量超 4MB 截断并置 `truncated`。
 - Agent 侧离线 out-queue 上限 `MAX_QUEUED = 512`（可配）；超出会被淘汰，

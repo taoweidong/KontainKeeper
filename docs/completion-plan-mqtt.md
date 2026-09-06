@@ -615,12 +615,14 @@ pattern readwrite kk/v1/%u/#
 
 - **R2 修复引入的新边界**（必须先想清楚再改）：结果不再立即丢弃，转而依赖 paho out-queue；`MAX_QUEUED=512` 在大输出断线时会溢出并被静默淘汰。**修复必须与「入队失败 → 回 `rc=−3` 失败终态」同批落地**（见 G4），否则只是把「立即丢」变成「静默丢」。
 - **Mosquitto ACL pattern 的 `%u` 展开**：`pattern readwrite kk/v1/%u/#` 依赖「认证用户名 = 主机名」约定，其在 `acl_file` 中的展开与优先级需真实 Mosquitto 2.x 实测。退路：脚本按主机清单生成显式 `user` 段（500 台完全可管理）。
+  **实测更新（2026-09-06，WSL Ubuntu 22.04 + Mosquitto 1.6.9）**：`pattern %u` 展开验证通过——Agent 用户仅能读写自身子树、越权发布被 `Denied PUBLISH` 拒绝、匿名连接拒绝；但 1.6.9 ≠ 2.x，生产（官方 2.x 镜像）仍需在 G 阶段复测一次。另实测发现 Debian 系 mosquitto 以 root 启动后降权为 `mosquitto` 用户，**配置文件若放在 root-only 目录（如 /root），SIGHUP 重载会因读不到 passwordfile 而 fail-closed 拒绝一切连接**——部署时配置目录须对 mosquitto 用户可读（docker 场景天然满足）。
 - **soybean-admin 裁剪深度**：thin 分支与主分支差异需拉取后确认；若 demo 页耦合较深、裁剪工作量超预期，备选 pure-admin-thin。**决策点：拉代码后 30 分钟内定，超时即换备选。**
 - **Windows 开发机的 Mosquitto 集成测试**：依赖 docker；不可用时用 `mqtt` marker skip，CI 用 service 容器保证。
 - **Agent RSS 口径变更**：psutil + paho 后常驻 RSS 预计 25–35MB（原 <15MB 作废）。Linux 主机场景可接受，但 design.md / AGENTS.md 的「纯标准库」卖点必须同步改掉（阶段 E），否则文档与代码互相打脸。
 - **retain 持久化**：`status` retain 需 `persistence true` + data 卷，否则 Broker 重启后在线状态需等一轮心跳/LWT 才恢复（compose 已规划 data 卷）。
 - **proto v1 → v2 过渡**：直接切换（双端同仓同发），不留兼容层；`4401/4402/4403/4404` close code 语义随 WS 删除，v2 文档改用 MQTT 连接返回码 + LWT 描述。
 - **已提交但已知红灯**：`66e54fc` 提交时 Agent 测试 11 项失败（提交信息已标注）。阶段 0 的第一件事就是清零，不要在其上叠加其他 Agent 改动。
+- **R13（2026-09-06 E2E 实测发现，已修）——result 分块并发乱序丢块**：`MqttBridge._spawn` 用 `create_task` 并发调度各 result 帧，帧内首个 `await`（`get_command`）让出后 DB 完成顺序与消息到达顺序不一致；`append_result` 的「last_seq 严格递增水位」会把后处理的中间分块静默丢弃。E2E 实测 200KB 输出（5 块）仅落库 2-4 块且 `truncated=0` 无任何标记——**输出静默丢失**，单元测试逐帧顺序 `await` 复现不了。修复：`_on_result` 按 cmd id 加 `asyncio.Lock` 串行化（锁唤醒序 = task 启动序 = 帧到达序），终态帧后回收锁；回归测试 `test_result_chunks_concurrent_no_data_loss`（首帧人为延迟 50ms 放大交错，旧代码下该测试失败 `out_chunks=2`）。
 
 ---
 
