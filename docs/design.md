@@ -23,7 +23,7 @@
 │   · LWT 遗嘱：Agent 异常掉线自动发布 offline                        │
 │   · Retained status：服务端重启立刻恢复全量在线视图                   │
 │   · 持久会话 + QoS1：离线期间命令排队，重连自动补投                   │
-│   · pattern ACL：kk/v1/%u/# ，一台主机只能读写自己的主题              │
+│   · 匿名开放（v3）：零凭据接入，管控上收服务端白名单                   │
 └──────────────▲───────────────────────────────────────────────────┘
                │ 出站 MQTT（主机 → Broker，唯一通道，主机无需暴露端口）
 ┌──────────────┴───────────────────────────────────────────────────┐
@@ -43,7 +43,7 @@
    这四件事，v1 是自研的（内存连接表 + 手写补发 + 超时判定 ≈ 200 行且有多处缺陷），
    现在全部由 MQTT Broker 承担。服务端因此**无状态**，可水平扩容。
 
-主题布局与帧格式见 [`proto/messages.md`](../proto/messages.md)（协议 v2）。
+主题布局与帧格式见 [`proto/messages.md`](../proto/messages.md)（协议 v3：匿名 Broker + 服务端 IP 白名单）。
 
 ## 2. 为什么是 MQTT
 
@@ -83,7 +83,7 @@ kk_agent/                 # 独立 Python 包（编译为单文件二进制）
 ├── __main__.py        # 入口（python -m kk_agent，或 ./kk-agent 二进制）
 ├── main.py            # 事件循环：调度、心跳、命令分发、结果分块回传
 ├── transport.py       # MQTT 传输（paho）：LWT、QoS 分级、重连、离线队列
-├── config.py          # env: KK_SERVER, KK_TOKEN, KK_INTERVAL, KK_TOPIC_PREFIX ...
+├── config.py          # env: KK_SERVER, KK_ADVERTISE_IP, KK_INTERVAL, KK_TOPIC_PREFIX ...
 ├── collector.py       # psutil 采集，含 collect_items() 按项采集
 ├── executor.py        # 命令执行（timeout + 输出封顶 + 一次性工作线程）
 ├── plugin_loader.py   # 插件热加载（按 mtime）
@@ -122,7 +122,8 @@ CMD ["<原 CMD 元素...>"]
 exec "$@"   # 原启动命令，用户侧完全不变
 ```
 
-`KK_TOKEN` 不写入镜像层，由运行时注入。
+v3 起 Agent 零凭据接入（Broker 匿名开放），镜像内只烧入 `KK_SERVER` 等
+非敏感配置；接入管控由服务端 `KK_AGENT_IPS` 白名单承担（上行帧自报 `ip` 校验）。
 
 ## 4. 服务端 kk-server
 
@@ -147,7 +148,6 @@ kk_server/
 │   ├── auth.py        # 管理员登录/登出
 │   ├── containers.py  # 主机列表（?view=summary）/详情/指标
 │   ├── commands.py    # 命令下发（含 kind=collect）/结果/采集项
-│   ├── tokens.py      # 接入 token 查看/吊销
 │   ├── audit.py       # 审计日志
 │   ├── stats.py       # GET /api/system/stats 可观测
 │   └── agent_update.py# Agent 自更新上传/清单/下载
@@ -187,7 +187,7 @@ KontainKeeper/
 ├── agent/                         # kk-agent（独立 UV 项目）
 ├── server/                        # kk-server（独立 UV 项目）
 ├── web/                           # Vue3 前端（独立 pnpm 工程）
-├── proto/messages.md              # 协议 v2（MQTT 主题与帧格式）
+├── proto/messages.md              # 协议 v3（MQTT 主题与帧格式，匿名 Broker + IP 白名单）
 ├── scripts/                       # 构建与部署脚本
 └── pyproject.toml                 # UV 工作区虚拟根
 ```
@@ -202,13 +202,17 @@ KontainKeeper/
 
 ## 7. 安全模型
 
+> v3 安全面收缩：服务仅运行在**内网可信环境**，Agent 去 token 化以换取极简部署
+>（单二进制 + 一个地址即拉起）。Broker 匿名开放后，不可伪造的边界只剩网络层。
+
 | 层 | 机制 |
 |---|---|
-| Agent ↔ Broker | MQTT 鉴权（用户名 = 主机名）+ pattern ACL `kk/v1/%u/#`，一台主机只能读写自己的主题 |
-| 主机身份伪造 | Broker 已认证用户名 ↔ `status` 帧 `host` 一致；不一致即拒并审计 |
+| Agent 接入 | Broker 匿名开放；上行帧（status/hb/result）统一携带自报 `ip`，服务端按 `KK_AGENT_IPS` 白名单（IP/CIDR）校验，名单外拒收并审计 `ip_rejected` |
+| 自更新下载 | REST 接口按请求**真实 TCP 源 IP** 校验同一白名单（比 MQTT 自报值可靠） |
 | 命令滥用 | 服务端黑名单（`KK_CMD_BLACKLIST`）在源头拦截 + argv 直传不经 shell + 全量审计 |
-| 自更新 | sha256 强制校验（可选 HMAC），防损坏/篡改 |
+| 自更新完整性 | sha256 强制校验（可选 HMAC），防损坏/篡改 |
 | 管理端 | 会话 token（12h 过期）；生产必须前置 TLS 终结 |
+| 网络边界 | 匿名 Broker 下唯一不可伪造的隔离：防火墙/安全组限制 1883 端口可达范围；`KK_ENV=production` 未配白名单拒绝启动 |
 
 ## 8. 风险与对策
 

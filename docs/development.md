@@ -21,12 +21,12 @@
 agent/src/kk_agent/    transport.py(MQTT) / collector.py(psutil) / executor.py /
                        updater.py(自更新) / plugin_loader.py / main.py
 server/src/kk_server/  models/(store,tables,version) / services/(mqtt_bridge,security) /
-                       controllers/(auth,containers,commands,audit,tokens,stats,agent_update,health) /
+                       controllers/(auth,containers,commands,audit,stats,agent_update,health) /
                        main.py(create_app 工厂，python -m kk_server 运行)
 web/src/               api/(业务 API 层) / views/(四个业务页) / router/modules/kk.ts(静态路由)
-proto/messages.md      双端通信协议契约（v2 MQTT），改协议必读
+proto/messages.md      双端通信协议契约（v3 MQTT：匿名 Broker + IP 白名单），改协议必读
 scripts/               build.sh(管理镜像) / mqtt_e2e.py(Broker 冒烟) / bench_agent.py / loadtest.py
-deploy/mosquitto/      dev/prod 两套 Broker 配置 + 凭据生成脚本
+deploy/mosquitto/      匿名 Broker 配置（mosquitto.conf，开发/生产同源）
 ```
 
 ## 1. 前置条件
@@ -59,7 +59,7 @@ uv sync --all-packages        # 服务端 + Agent + dev 组（pytest/httpx 等�
 
 ```bash
 docker run -d --name mosquitto -p 1883:1883 \
-  -v $PWD/deploy/mosquitto/mosquitto.dev.conf:/mosquitto/config/mosquitto.conf \
+  -v $PWD/deploy/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf \
   eclipse-mosquitto:2
 ```
 
@@ -76,7 +76,9 @@ Windows 侧经 WSL2 localhost 转发直连 `127.0.0.1:1883`：
 wsl -d Ubuntu-22.04 -- sudo apt-get install -y mosquitto mosquitto-clients
 ```
 
-`mosquitto.dev.conf` 开匿名、无 ACL——**仅用于本机联调与 CI**，不要用于生产。
+v3 起 Broker 统一匿名开放（`allow_anonymous true`，无 passwordfile / ACL），
+开发与生产同一份配置；接入管控由服务端 `KK_AGENT_IPS` 白名单承担
+（开发环境不配白名单 = 放行全部，见 §6）。
 
 ## 4. 启动服务端
 
@@ -128,11 +130,10 @@ rm -rf ../server/src/kk_server/web/* && cp -r dist/* ../server/src/kk_server/web
 
 ## 6. 运行 Agent（源码方式）
 
-任意目录执行（Linux/macOS）：
+v3 起 Agent 零凭据接入——只需要 Broker 地址。任意目录执行（Linux/macOS）：
 
 ```bash
 KK_SERVER=mqtt://127.0.0.1:1883 \
-KK_TOKEN=dev-token \
 KK_HOST_NAME=demo-host \
 KK_INTERVAL=5 \
 uv run kk-agent
@@ -141,16 +142,23 @@ uv run kk-agent
 Windows 用 `.venv` 直调（理由见 §9.1）：
 
 ```powershell
-$env:KK_SERVER="mqtt://127.0.0.1:1883"; $env:KK_TOKEN="dev-token";
-$env:KK_HOST_NAME="demo-host"; $env:KK_INTERVAL="5";
+$env:KK_SERVER="mqtt://127.0.0.1:1883"; $env:KK_HOST_NAME="demo-host";
+$env:KK_INTERVAL="5";
 .venv\Scripts\python.exe -m kk_agent
+```
+
+也可以直接传位置参数（最简形式）：
+
+```bash
+uv run kk-agent mqtt://127.0.0.1:1883
 ```
 
 验证链路：管理界面「主机总览」出现 `demo-host` → 详情页看曲线（**指标要等
 首帧心跳**，不是上线即有）→ 命令中心下发命令 → 结果回传、审计留痕。
 
-> 开发环境 Broker 是匿名的，`KK_TOKEN` 只用于服务端校验 status 帧；
-> 生产环境的凭据要求完全不同（用户名=主机名），见部署指南 §7.3。
+> 接入管控说明：Agent 上行帧携带自报 `ip`（自动探测，`KK_ADVERTISE_IP` 可覆盖），
+> 服务端按 `KK_AGENT_IPS` 白名单校验。开发环境不配白名单即放行全部；
+> 生产环境必须配置（`KK_ENV=production` 未配会拒绝启动），见部署指南 §4.1。
 
 自定义采集插件：往 `KK_PLUGIN_DIR`（缺省 `<包目录>/plugins/`）放任意 `*.py`，
 实现 `collect() -> dict` 即随心跳自动上报，mtime 变化热加载无需重启：
@@ -163,7 +171,7 @@ def collect():
 ## 7. 测试
 
 ```bash
-# 全量（194 条）
+# 全量（201 条）
 .venv/Scripts/python.exe -m pytest agent/tests server/tests -q
 # 分包
 .venv/Scripts/python.exe -m pytest agent/tests -q      # Agent 单测
@@ -172,7 +180,7 @@ def collect():
 cd web && pnpm typecheck && pnpm build
 ```
 
-- **Broker 可达**时 194 passed；**不可达**时 191 passed + 3 skipped
+- **Broker 可达**时 201 passed；**不可达**时 197 passed + 4 skipped
   （端到端集成用例自动跳过，不会误报失败）——跑全量前先起 §3 的 Mosquitto。
 - `agent/tests` 覆盖 MQTT 传输（主题/QoS/retain/离线队列）、psutil 采集、
   命令执行、插件热加载、自更新；Windows 上直接读真机指标，无需伪造 /proc。
@@ -239,7 +247,7 @@ cd agent && ./build/build_binary.sh     # 产出 agent/dist/kk-agent（Windows �
 ## 10. 提交前检查清单
 
 ```bash
-.venv/Scripts/python.exe -m pytest agent/tests server/tests -q   # 全绿（或 191+3 skip）
+.venv/Scripts/python.exe -m pytest agent/tests server/tests -q   # 全绿（或 197+4 skip）
 cd web && pnpm typecheck && pnpm build                          # 前端通过
 ```
 

@@ -25,14 +25,17 @@
 
 | 组件 | 形态 | 端口 | 职责 |
 |---|---|---|---|
-| Mosquitto 2.x | Docker 容器 | 1883 | 消息中枢：鉴权、ACL、LWT 离线判定、离线命令排队 |
-| kk-server | Docker 容器（或裸机） | 8443 | REST API + MQTT 桥接 + 数据库读写 + 前端静态托管 |
+| Mosquitto 2.x | Docker 容器 | 1883 | 消息中枢（匿名开放）：LWT 离线判定、离线命令排队 |
+| kk-server | Docker 容器（或裸机） | 8443 | REST API + MQTT 桥接 + **`KK_AGENT_IPS` 接入白名单** + 数据库读写 + 前端静态托管 |
 | 管理前端 | kk-server 托管 | 同 8443 | 浏览器访问，无需单独部署 |
-| kk-agent | 编译进目标主机镜像 | 仅出站 | psutil 指标采集 + 远程命令执行 + 自更新 |
+| kk-agent | 编译进目标主机镜像 | 仅出站 | psutil 指标采集 + 远程命令执行 + 自更新（零凭据接入） |
 
 关键认知（决定部署动作）：
 
-- **Agent 只出站**：被管理主机只需能主动连到 Broker 的 1883，无需任何入站端口。
+- **Agent 只出站、零凭据**：被管理主机只需能主动连到 Broker 的 1883，
+  无需任何入站端口，也不需要注入 token / 账号密码。
+- **接入管控在服务端**：Agent 上行帧携带自报 `ip`，由 kk-server 的
+  `KK_AGENT_IPS` 白名单（IP / CIDR 列表）校验，名单外全部拒绝并审计。
 - **服务端无状态**：连接可靠性全在 Broker；kk-server 可多实例扩容（见 §9.3）。
 - **前端零部署**：构建产物随 kk-server 包内分发（`server/src/kk_server/web/`），
   只有改过前端代码才需要重建（见 §5）。
@@ -61,55 +64,22 @@ cd KontainKeeper
 Broker 与 kk-server 一起起）。若 Broker 必须独立部署，参照
 [deploy/mosquitto/README.md](../deploy/mosquitto/README.md) 用同一套配置文件单独起。
 
-### 3.1 生产配置要点（`deploy/mosquitto/mosquitto.conf`）
+### 3.1 配置要点（`deploy/mosquitto/mosquitto.conf`）
 
-- `allow_anonymous false` + `password_file` + `acl_file`：所有连接须鉴权；
-- **用户名即主机名**：服务端用固定账号 `kk-server`，每台 Agent 用各自主机名；
-- ACL（`deploy/mosquitto/aclfile`）：`kk-server` 拥有 `kk/v1/#` 全读写；
-  `pattern readwrite kk/v1/%u/#` 让每台 Agent 只能读写自己的主题子树；
-- `persistence true`：status retain 帧落盘，Broker 重启后在线视图立即可用。
+- **匿名开放**（`allow_anonymous true`）：Agent 零凭据接入，无需生成
+  passwordfile / aclfile / 逐主机账号；
+- `persistence true`：status retain 帧落盘，Broker 重启后在线视图立即可用；
+- 接入管控由 kk-server 的 `KK_AGENT_IPS` 白名单承担（见 §4.1），不在 Broker 做；
+- **网络层隔离**：匿名 Broker 下唯一不可伪造的边界，建议用防火墙 / 安全组
+  限制 1883 端口只对服务端与被管理主机网段开放。
 
-### 3.2 生成凭据（首次必做）
+### 3.2 验证 Broker（§4 栈启动后执行）
 
-`passwordfile` 不入库（`.gitignore` 已排除，仓库公开）。首次使用先复制示例：
-
-```bash
-cp deploy/mosquitto/passwordfile.example deploy/mosquitto/passwordfile
-```
-
-**第一步：创建服务端桥接账号**（用户名固定 `kk-server`，密码自定强口令，
-与 `.env` 里的 `KK_MQTT_PASSWORD` 一致）：
+匿名即可正常订阅（挂起等待消息，Ctrl-C 退出即可）：
 
 ```bash
 docker compose -f docker-compose.prod.yml run --rm mosquitto \
-  mosquitto_passwd -b deploy/mosquitto/passwordfile kk-server <服务端强密码>
-```
-
-**第二步：为每台被管理主机创建账号**（用户名 = 主机名，密码 = 该机的 Agent token）：
-
-```bash
-bash deploy/mosquitto/gen-credentials.sh web-01 <web-01的token>
-bash deploy/mosquitto/gen-credentials.sh web-02 <web-02的token>
-```
-
-> 逐主机独立 token，切勿多台共用（服务端 `KK_AGENT_TOKENS` 也按台登记）。
-
-### 3.3 验证 Broker（§4 栈启动后执行）
-
-匿名连接应被拒（证明 `allow_anonymous false` 生效）：
-
-```bash
-docker compose -f docker-compose.prod.yml run --rm mosquitto \
-  mosquitto_sub -h mosquitto -p 1883 -t 'kk/v1/#' -C 1 -W 3
-# 预期：Connection error / not authorised
-```
-
-正确凭据可正常订阅（挂起等待消息，Ctrl-C 退出即可）：
-
-```bash
-docker compose -f docker-compose.prod.yml run --rm mosquitto \
-  mosquitto_sub -h mosquitto -p 1883 -u kk-server -P <服务端密码> \
-  -t 'kk/v1/#' -C 1 -W 5
+  mosquitto_sub -h mosquitto -p 1883 -t 'kk/v1/#' -C 1 -W 5
 ```
 
 ## 4. 部署服务端 kk-server
@@ -125,9 +95,33 @@ cp .env.example .env
 填写（完整字段见 `.env.example` 注释）：
 
 ```ini
-KK_MQTT_PASSWORD=<§3.2 第一步设置的 kk-server 密码>
-KK_AGENT_TOKENS=<所有主机 token，逗号分隔，禁止 dev-token>
+KK_AGENT_IPS=<Agent 接入白名单：逗号分隔 IP / CIDR，如 10.0.0.0/24,192.168.1.5>
 KK_ADMIN_PASS=<管理界面强口令>
+```
+
+> 白名单是 v3 的接入管控手段：只有名单内 IP 的 Agent 才能上报数据，
+> 其余全部拒绝并审计。`KK_ENV=production` 时未配置会直接拒绝启动。
+
+**白名单工作机制（v3，替代 token 认证）**：
+
+1. **自报**：Agent 连 Broker 时自动探测「到 Broker 方向的出口 IP」（UDP connect），
+   写入每条上行帧的 `ip` 字段——MQTT 经 Broker 中转拿不到发布者真实 TCP 源 IP，
+   白名单基于自报值，适合内网可信环境；
+2. **校验**：kk-server 在消息入口按 `KK_AGENT_IPS` 逐一匹配（`ipaddress` 网段语义），
+   命中任一网段即放行，全部未命中则丢弃该帧并记 WARNING 日志
+   （`拒绝白名单外上报：host=xxx ip='x.x.x.x'`），同时在审计页留下 `ip_rejected` 记录；
+3. **语法**：逗号分隔的 **精确 IP 与 CIDR 网段混合列表**，单个 IP 自动按 `/32`
+   （IPv6 按 `/128`）处理；格式写错（如笔误的网段）**启动即失败**，好过静默全拒。
+
+配置示例（覆盖被管理主机网段，可混写）：
+
+```ini
+# 整个网段放行（推荐，新增主机无需改配置）
+KK_AGENT_IPS=10.0.0.0/24
+# 网段 + 个别精确 IP 混合
+KK_AGENT_IPS=10.0.0.0/24,192.168.1.5
+# 多网段
+KK_AGENT_IPS=10.0.0.0/24,10.99.0.0/16
 ```
 
 **第二步：启动**：
@@ -157,9 +151,7 @@ docker run -d --name kontainkeeper \
   -p 8443:8443 \
   -v kontainkeeper-data:/data \
   -e KK_MQTT_URL=mqtt://broker:1883 \
-  -e KK_MQTT_USERNAME=kk-server \
-  -e KK_MQTT_PASSWORD=<服务端密码> \
-  -e KK_AGENT_TOKENS=<token清单> \
+  -e KK_AGENT_IPS=10.0.0.0/24,192.168.1.5 \
   -e KK_ADMIN_USER=admin \
   -e KK_ADMIN_PASS=<强密码> \
   -e KK_ENV=production \
@@ -171,33 +163,33 @@ docker run -d --name kontainkeeper \
 ```bash
 uv sync --all-packages --extra postgres   # 或 --extra mysql；纯 SQLite 则不加
 export KK_MQTT_URL=mqtt://broker:1883 \
-       KK_MQTT_USERNAME=kk-server KK_MQTT_PASSWORD=<服务端密码> \
-       KK_AGENT_TOKENS=<token清单> KK_ADMIN_PASS=<强密码> KK_ENV=production
+       KK_AGENT_IPS=10.0.0.0/24,192.168.1.5 \
+       KK_ADMIN_PASS=<强密码> KK_ENV=production
 uv run kk-server                            # 监听 0.0.0.0:8443
 ```
 
 ### 4.4 启动安全自检（KK_ENV=production）
 
-`config.py` 在 `KK_ENV=production` 时会**直接拒绝启动**以下两种情况：
+`config.py` 在 `KK_ENV=production` 时会**直接拒绝启动**以下情况：
 
 - 管理口令仍是默认 `admin123`；
-- `KK_AGENT_TOKENS` 仍含公开默认值 `dev-token`。
+- `KK_AGENT_IPS` 未配置（白名单为空 = 放行所有上报）。
 
-自检不过会抛 `RuntimeError` 并退出，按提示换强值后重启。
+自检不过会抛 `RuntimeError` 并退出，按提示修正后重启。
 
 ### 4.5 服务端环境变量参考
 
 | 变量 | 说明 | 默认 |
 |---|---|---|
 | `KK_MQTT_URL` | Broker 地址（`mqtt://` / `mqtts://`） | 必填 |
-| `KK_MQTT_USERNAME` / `KK_MQTT_PASSWORD` | Broker 鉴权（生产必须） | 空 |
+| `KK_AGENT_IPS` | Agent 接入白名单（逗号分隔 IP / CIDR；**生产必配**，空 = 放行全部） | 空 |
 | `KK_MQTT_CLIENT_ID` | 实例唯一 client_id；**多实例必须逐实例唯一**，否则被 Broker 互踢 | `kk-server` |
 | `KK_MQTT_KEEPALIVE` | MQTT 保活秒数（下限 10） | `60` |
+| `KK_MQTT_USERNAME` / `KK_MQTT_PASSWORD` | 服务端连 Broker 的凭据（Broker 匿名时留空） | 空 |
 | `KK_MQTT_TLS_CA` / `KK_MQTT_TLS_INSECURE` | Broker TLS 配置 | 空 |
-| `KK_TOPIC_PREFIX` | 主题前缀（**双端同名，必须一致**；改了须同步 `aclfile`） | `kk/v1` |
+| `KK_TOPIC_PREFIX` | 主题前缀（**双端同名，必须一致**） | `kk/v1` |
 | `KK_DB_PATH` | SQLite 文件路径 | `kk-server.db` |
 | `KK_DB_URL` | 选库：`sqlite+aiosqlite:///` / `postgresql+asyncpg://` / `mysql+aiomysql://`，配了优先于 `KK_DB_PATH` | SQLite |
-| `KK_AGENT_TOKENS` | 逗号分隔的 Agent 接入 token | `dev-token` |
 | `KK_ADMIN_USER` / `KK_ADMIN_PASS` | 管理员账号 | `admin` / `admin123` |
 | `KK_CMD_BLACKLIST` | 命令黑名单（逗号分隔子串，拦危险命令） | `rm -rf /,mkfs,...` |
 | `KK_HOST` / `KK_PORT` | 监听地址 / 端口 | `0.0.0.0` / `8443` |
@@ -259,10 +251,15 @@ server {
    `KK_MQTT_TLS_CA`，Agent 侧对应 `KK_TLS_CA`）；Broker 与 Agent 同处内网可信区
    时可用 `mqtt://`。
 
-## 7. 制作内置 Agent 的主机镜像
+## 7. 部署 Agent 到被管理主机
 
-被管理主机不装任何东西——Agent 在**镜像制作期**叠加进 vscode-server（或其他）基础镜像，
-上线即连、容器用户无感知。
+v3 起接入**零凭据**：Agent 不携带任何 token / 账号密码，唯一前提是该主机出口 IP
+在服务端 `KK_AGENT_IPS` 白名单内（§4.1）。按主机形态二选一：
+
+| 方式 | 适用场景 | 小节 |
+|---|---|---|
+| 镜像内置 | 新建主机 / 批量装机（vscode-server 容器等），上线即连、用户无感知 | §7.1–7.2 |
+| 二进制直接拉起 | 已有主机，免制作镜像，一条命令接入 | §7.3 |
 
 ### 7.1 构建管理镜像
 
@@ -287,40 +284,101 @@ KK_SERVER=mqtt://broker.ops.example.com:1883 \
 运行期行为：`kk-entrypoint` 后台监管 Agent（崩溃 5s 拉起），前台拉起原 IDE 入口，
 **容器生命周期 = 原 IDE 生命周期**，用户看到的启动行为不变。
 
-### 7.2 运行镜像：注入 token（切勿烧入镜像）
+### 7.2 方式一：镜像内置（新建主机 / 批量装机）
 
-`KK_TOKEN` 属敏感值，**不得写入镜像层**（`docker inspect` 即可提取）。
-运行时注入：
-
-```bash
-docker run -e KK_TOKEN=<该主机token> ... myregistry/vscode-server-managed:1.2
-# K8S 场景用 Secret 注入同名环境变量
-```
-
-### 7.3 Agent 的 Broker 凭据（最易踩的坑）
-
-生产 Broker 关匿名且按用户名做 ACL，Agent 连接必须满足
-**MQTT 用户名 = 主机名、密码 = 该机 token**（否则 `pattern kk/v1/%u/#`
-展开后不是自己的子树，会被拒）。两种等价写法：
+v3 起 Agent 不携带任何凭据（Broker 匿名开放），`docker run` 无需注入 token：
 
 ```bash
-# 写法 A：凭据写在 Broker 地址里
-KK_SERVER="mqtt://web-01:<token>@broker.ops:1883"
-
-# 写法 B：地址不带凭据，显式指定（缺省自动取 KK_HOST_NAME / KK_TOKEN）
-KK_SERVER="mqtt://broker.ops:1883" KK_MQTT_USERNAME=web-01 KK_MQTT_PASSWORD=<token>
+docker run ... myregistry/vscode-server-managed:1.2
 ```
 
-> 只写 `KK_SERVER=mqtt://broker:1883` + `KK_TOKEN=<token>` **不会用于 MQTT 鉴权**，
-> 在禁匿名 Broker 上直接被拒连。
+唯一前提：该主机的出口 IP 在服务端 `KK_AGENT_IPS` 白名单内（按网段配置时
+通常天然覆盖，如 `10.0.0.0/24`）。
 
-### 7.4 Agent 环境变量参考（镜像内已注入大部分，一般无需改动）
+### 7.3 方式二：已有主机直接拉起二进制（免制作镜像）
+
+v3 的核心简化：Agent 是**零依赖单文件二进制**，目标主机**无需 Python、无需装包、
+无需任何凭据配置**，一条命令拉起。
+
+**第一步：在构建机编译并分发**（目标主机不需要出网）：
+
+```bash
+cd agent && ./build/build_binary.sh          # 产出 dist/kk-agent（Linux 单文件，约 8–12MB）
+scp dist/kk-agent user@target-host:/opt/kk-agent
+ssh user@target-host chmod +x /opt/kk-agent
+```
+
+**第二步：目标主机上一条命令拉起**（位置参数 = Broker 地址，零凭据）：
+
+```bash
+/opt/kk-agent mqtt://broker.ops.example.com:1883
+```
+
+常用可选参数（均非必须，详见 §7.5）：
+
+```bash
+KK_HOST_NAME=host-a KK_INTERVAL=30 /opt/kk-agent mqtt://broker.ops.example.com:1883
+```
+
+**第三步（推荐）：systemd 常驻**，开机自启 + 崩溃自动拉起：
+
+```ini
+# /etc/systemd/system/kk-agent.service
+[Unit]
+Description=KontainKeeper Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/opt/kk-agent mqtt://broker.ops.example.com:1883
+Restart=always
+RestartSec=5
+# 可选覆盖：主机标识 / 心跳间隔 / 自报 IP
+# Environment=KK_HOST_NAME=host-a
+# Environment=KK_INTERVAL=30
+# Environment=KK_ADVERTISE_IP=10.0.0.15
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+systemctl daemon-reload && systemctl enable --now kk-agent
+journalctl -u kk-agent -f          # 看到 "mqtt connected" 即为上线成功
+```
+
+> 拉起失败的两种典型排障：报「KK_SERVER 未配置」= 没带位置参数也没设环境变量；
+> 进程在跑但管理界面不出现 = 出口 IP 不在白名单（查审计 `ip_rejected`，见 §7.4）。
+
+### 7.4 自报 IP 不准时的覆盖（多网卡 / NAT / 回环）
+
+Agent 默认用 UDP connect 自动探测「到 Broker 方向的出口 IP」写入上行帧，
+多网卡环境自动选中正确一侧。NAT / 探测不准时用 `KK_ADVERTISE_IP` 显式覆盖：
+
+```bash
+docker run -e KK_ADVERTISE_IP=10.0.0.15 ... myregistry/vscode-server-managed:1.2
+# 或二进制直接拉起时：
+KK_ADVERTISE_IP=10.0.0.15 /opt/kk-agent mqtt://broker.ops.example.com:1883
+```
+
+> 自报 IP 不在白名单内的主机会被服务端拒绝上报并在审计页留下 `ip_rejected`
+> 记录——排查「主机上线但总也不出现」时先查这里。
+
+典型的三种现象（真实验证环境实测）：
+
+| 现象 | 原因 | 处置 |
+|---|---|---|
+| Broker 与 Agent 同机（WSL/本机回环），自报 `127.0.0.1` 被拒 | 探测到回环地址，白名单没放行回环 | 设 `KK_ADVERTISE_IP=<真实内网 IP>`，或白名单加入该网段 |
+| Agent 在跑、`mqtt connected`，但界面不出现 | 自报 IP 不在白名单，帧被丢弃 | 审计页查 `ip_rejected`、服务端日志查「拒绝白名单外上报」 |
+| 多网卡主机时好时坏 | 自动探测随路由选中不同网卡 | 固定 `KK_ADVERTISE_IP` |
+
+### 7.5 Agent 环境变量参考（镜像内已注入大部分，一般无需改动）
 
 | 变量 | 说明 | 默认 |
 |---|---|---|
-| `KK_SERVER` | Broker 地址（`mqtt://` / `mqtts://`，可内嵌凭据） | 必填 |
-| `KK_TOKEN` | 接入 token（同时是 status 帧校验值） | 必填 |
-| `KK_HOST_NAME` | 主机标识（= Broker 用户名；旧名 `KK_POD_NAME` 兼容） | hostname |
+| `KK_SERVER` | Broker 地址（`mqtt://` / `mqtts://`，**不含凭据**） | 必填 |
+| `KK_ADVERTISE_IP` | 自报出口 IP 覆盖（多网卡 / NAT 下用） | 自动探测 |
+| `KK_HOST_NAME` | 主机标识（旧名 `KK_POD_NAME` 兼容） | hostname |
 | `KK_TOPIC_PREFIX` | 主题前缀，须与服务端一致 | `kk/v1` |
 | `KK_INTERVAL` | 心跳/采集间隔（秒，下限 1） | `60` |
 | `KK_DISK_PATHS` | 采集挂载点（逗号分隔；空 = 自动发现全部物理挂载点） | 自动发现 |
@@ -342,7 +400,7 @@ KK_SERVER="mqtt://broker.ops:1883" KK_MQTT_USERNAME=web-01 KK_MQTT_PASSWORD=<tok
 2. **登录管理界面**：浏览器打开 `https://kk-server.ops.example.com`，
    用 `KK_ADMIN_USER` / `KK_ADMIN_PASS` 登录。
    注意：同一用户名连续输错 5 次口令会锁定 300 秒（防爆破）。
-3. **启动一台被管理主机**（token 运行时注入，见 §7.2）：
+3. **启动一台被管理主机**（零凭据：镜像内置见 §7.2，或二进制直接拉起见 §7.3）：
    管理界面「主机总览」应在数十秒内出现该主机（状态 = 在线）。
    **指标要等首帧心跳**（默认 60s 间隔，可临时调小 `KK_INTERVAL` 加速验证），
    详情页出现 CPU/内存曲线即为全链路通。
@@ -350,9 +408,13 @@ KK_SERVER="mqtt://broker.ops:1883" KK_MQTT_USERNAME=web-01 KK_MQTT_PASSWORD=<tok
    历史列表出现结果、审计页出现 `command` 记录。
 5. **离线判定**：停掉该主机容器，管理界面状态很快变为离线
    （优雅停止由 Agent 发离线帧，强杀/崩溃则由 Broker 的 LWT 机制接管）。
+6. **白名单负向验证（建议）**：在一台**不在白名单内**的主机上拉起 Agent，
+   确认它**不会**出现在管理界面、审计页出现 `ip_rejected` 记录、
+   服务端日志出现「拒绝白名单外上报」——证明接入管控真实生效。
 
 任一步失败，排查顺序：`docker logs`（kk-server 与 mosquitto 两容器）→
-Agent 日志（容器内 `/var/log/kk-agent.log`）→ §7.3 凭据是否配对。
+Agent 日志（容器内 `/var/log/kk-agent.log`）→ 该主机自报 IP 是否在
+`KK_AGENT_IPS` 白名单内（审计页查 `ip_rejected`，见 §7.4）。
 
 ## 9. 升级与扩容
 
@@ -369,7 +431,8 @@ git pull && docker compose -f docker-compose.prod.yml --env-file .env up -d --bu
 
 ### 9.2 Agent 自更新（零人工干预）
 
-Agent 内置版本监控：发现新版本后用自身 token 从服务端下载二进制，
+Agent 内置版本监控：发现新版本后凭源 IP 白名单从服务端下载二进制
+（下载接口按请求真实源 IP 校验 `KK_AGENT_IPS`），
 **强制校验 sha256** 一致后原子替换并 `execv` 自重启（监管脚本不会误杀）。
 
 发布新版本（管理员）：
@@ -394,14 +457,14 @@ kk-server 可水平扩容，唯一硬性要求：**每实例 `KK_MQTT_CLIENT_ID`
 
 ## 10. 生产检查清单
 
-- [ ] Broker 匿名已关、`passwordfile`/`aclfile` 生效且未入库
-- [ ] 每台主机独立 token；`KK_AGENT_TOKENS` 无 `dev-token`
+- [ ] `KK_AGENT_IPS` 白名单已配置（只覆盖被管理主机网段；`KK_ENV=production` 自检通过）
+- [ ] 已做过白名单负向验证：名单外主机上报被拒且审计留痕 `ip_rejected`（§8 第 6 步）
+- [ ] 1883 端口已用防火墙 / 安全组限制可达范围（匿名 Broker 下唯一不可伪造的边界）
 - [ ] `KK_ADMIN_PASS` 为强口令（`KK_ENV=production` 自检通过）
 - [ ] 管理界面经 HTTPS 反代暴露；8443 未直接暴露公网
 - [ ] 跨不可信网络的 MQTT 走 `mqtts://`
 - [ ] 多实例（如有）`KK_MQTT_CLIENT_ID` 逐实例唯一
 - [ ] `kk-data` 卷已纳入备份计划（SQLite 文件级备份）
-- [ ] Agent token 经 `-e` 或 Secret 运行时注入，未烧入镜像
 - [ ] 已按 §8 完成五步验证（健康/登录/上线/命令/离线）
 
 ## 11. 日常运维

@@ -8,7 +8,7 @@ Linux 主机（含 K8S 下 vscode-server 容器 IDE）的直连管理与指标�
 Agent (kk-agent, psutil 采集 + paho-mqtt 发布)
   │ hb QoS0 / result QoS1
   ▼
-Mosquitto 2.x（LWT 离线 · retain status · QoS1 cmd 离线队列 · pattern ACL）
+Mosquitto 2.x（匿名开放 · LWT 离线 · retain status · QoS1 cmd 离线队列）
   ▼
 kk-server (FastAPI + MqttBridge 无状态桥接 + SQLAlchemy async 三库)
   ▼
@@ -22,7 +22,7 @@ web/ Vue3 前端（REST 轮询 + ECharts，构建产物由 kk-server 托管）
 - `agent/src/kk_agent/` — 主机内客户端（**独立 UV 项目**）。**不再是纯标准库**：采集用 `psutil`（跨平台、8 个采集项），传输用 `paho-mqtt`（重连退避/保活/out-queue），可编译为单文件二进制嵌入镜像，常驻 RSS 口径 **25–35MB**。模块：`transport.py`（MQTT，替代已删的 `ws.py`+`conn.py`）、`collector.py`（psutil，含 `collect_items()` 按项采集）、`executor.py`、`updater.py`（自更新 sha256/HMAC）、`main.py`（事件循环）。
 - `server/src/kk_server/` — FastAPI 服务端，MVC 分层：`models/`（SQLAlchemy 2 Core + async engine，SQLite/PG/MySQL 三库通用）→ `services/`（`mqtt_bridge.py` 无状态桥接、命令黑名单 security）→ `controllers/`（REST `/api/*`）→ `web/`（Vue3 构建产物，随包打包、服务端直接托管）；`main.py` 的 `create_app` 只做装配。**没有 WS 入口**（`agent_ws.py`/`hub.py` 已删）。
 - `web/` — **独立 pnpm 工程**（Vue3 + TS + Element Plus + Vite + Pinia + ECharts，底座 pure-admin-thin v6.2.0）。`src/api/` 业务 API 层、`src/views/` 四个业务页（host/monitor 总览、host/detail 详情、command 命令中心、audit 审计）、`src/router/modules/kk.ts` 静态路由。`web/dist/` 被 .gitignore 忽略，产物需人工同步到 `server/src/kk_server/web/`。
-- `proto/messages.md` — 双端通信协议契约（**v2 = MQTT 主题布局**）。改协议必须同步：`agent/src/kk_agent/config.py` 的 `PROTO_VER`、`server/src/kk_server/__init__.py` 的 `PROTO_VER`、协议文档、双端测试。
+- `proto/messages.md` — 双端通信协议契约（**v3 = 去 token：匿名 Broker + 服务端 `KK_AGENT_IPS` 白名单，上行帧携带自报 `ip`**）。改协议必须同步：`agent/src/kk_agent/config.py` 的 `PROTO_VER`、`server/src/kk_server/__init__.py` 的 `PROTO_VER`、协议文档、双端测试。
 - `agent/tests/`、`server/tests/`、`scripts/build.sh`（把 agent 叠加进 vscode-server 镜像）。
 
 ## 常用命令
@@ -31,7 +31,7 @@ web/ Vue3 前端（REST 轮询 + ECharts，构建产物由 kk-server 托管）
 # 后端（仓库根目录；uv run 会去下载 Python 3.12 而失败，务必用 .venv 直调）
 .venv/Scripts/python.exe -m pytest agent/tests -q      # Agent 单测
 .venv/Scripts/python.exe -m pytest server/tests -q      # Server 单测 + 集成
-.venv/Scripts/python.exe -m pytest agent/tests server/tests -q   # 全量 194 条：Broker 可达时 194 passed；不可达时 191 passed + 3 skipped（集成用例）
+.venv/Scripts/python.exe -m pytest agent/tests server/tests -q   # 全量 201 条：Broker 可达时 201 passed；不可达时 197 passed + 4 skipped（集成用例）
 .venv/Scripts/python.exe -m kk_server                   # 起服务端（默认 admin/admin123）
 
 # 前端（web/ 目录）
@@ -55,11 +55,11 @@ pnpm build       # 产物输出到 web/dist/
 - Agent 上线（status）即可在 API 看到主机，但**指标要等首帧心跳**；集成测试的等待条件必须同时检查 `metrics.mem_mb` 非空。
 - 插件热加载按 mtime 比较，Windows 文件时间粒度粗：测试写文件后需显式 `os.utime` 递增时间戳。
 - 前端轮询定时器统一用 `setPoll()`/`clearPolls()` 管理，不要直接 `setInterval` 散落各处。菜单**完全静态**（`getAsyncRoutes()` 返回 `[]`，走 `router/modules/`），否则 prod 下 fake server 缺失会导致菜单空白。`pnpm build` 要求 `web/mock/` 目录存在（空目录即可）。
-- 安全红线：命令黑名单（`KK_CMD_BLACKLIST`）+ 审计（`store.add_audit`）不能绕过；`status` 帧带 token 供服务端校验未授权注册。
+- 安全红线：命令黑名单（`KK_CMD_BLACKLIST`）+ 审计（`store.add_audit`）不能绕过；Agent 接入管控靠上行帧自报 `ip` 按服务端 `KK_AGENT_IPS` 白名单校验（白名单校验收在 `MqttBridge._on_message` 一处入口，REST 自更新接口走 `deps.agent_ip_auth` 的真实源 IP），`KK_ENV=production` 未配白名单直接拒绝启动。
 
 ## 背景阅读
 
-改协议、Agent 资源策略或部署方式前先读 `docs/design.md`（总体设计）与 `proto/messages.md`（v2 MQTT 主题与帧格式）；执行路线图与缺陷账本在 `docs/completion-plan-mqtt.md`；生产部署流程在 `docs/deployment.md`，开发环境搭建在 `docs/development.md`。
+改协议、Agent 资源策略或部署方式前先读 `docs/design.md`（总体设计）与 `proto/messages.md`（v3 MQTT 主题与帧格式）；执行路线图与缺陷账本在 `docs/completion-plan-mqtt.md`；生产部署流程在 `docs/deployment.md`，开发环境搭建在 `docs/development.md`。
 
 ## 约定
 

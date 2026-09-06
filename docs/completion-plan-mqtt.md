@@ -3,6 +3,12 @@
 > 编写日期：2026-09-04（v3）  
 > 基线：`main` @ 96cd206（Agent MQTT 化与 server src-layout 归位已提交）  
 > 本文件是**执行路线图**，只描述方案，不在此改代码。执行时按阶段推进，每阶段完成即跑对应测试并提交。
+>
+> **⚠ 历史文档注意（2026-09-06 追记）**：本文中 G1 的「Mosquitto password_file + ACL 鉴权」
+> 方案已被**协议 v3 推翻**——现安全模型为 Broker 匿名开放 + 服务端 `KK_AGENT_IPS` 白名单
+> （上行帧自报 `ip` 校验），`KK_AGENT_TOKENS` / tokens 端点 / passwordfile / aclfile 均已删除。
+> 本文其余内容保留为执行历史记录，与现行代码冲突处以
+> [`proto/messages.md`](../proto/messages.md)（v3）与 [design.md](design.md) 为准。
 
 **v3 相对 v2 的改动（全部来自对已提交代码的逐行复审）**：
 

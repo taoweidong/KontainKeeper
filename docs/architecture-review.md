@@ -44,7 +44,7 @@
 | **R9** | Windows 无 killpg → 超时命令杀不掉 | ✅ 已修 | 分平台杀进程树（Windows 走 taskkill /T） |
 | **R10** | IPv6 broker 地址解析失败 | ✅ 已修 | 括号形态单独切分（阶段 0） |
 | **R11** | 坏时钟心跳让小时聚合循环几十万次 | ✅ 已修 | 聚合窗口夹在保留期内 + 帧 ts 越界回落 |
-| **R12** | 自更新 token 吊销校验在迁移中丢失 | ✅ 已修 | `agent_token_auth` 补 `is_token_revoked`（阶段 A） |
+| **R12** | 自更新 token 吊销校验在迁移中丢失 | ✅ 已修 | `agent_token_auth` 补 `is_token_revoked`（阶段 A；后注：token 体系已随协议 v3 整体移除，改为 `KK_AGENT_IPS` IP 白名单） |
 | **R13** | result 分块并发乱序丢块（E2E 实测 200KB 输出仅落库 2-4 块且无标记） | ✅ 已修 | `_on_result` 按 cmd id 加 `asyncio.Lock` 串行化，终态帧后回收锁（2026-09-06） |
 
 **剩余未闭环**：P2-14（Dockerfile uv 化，阶段 G）。

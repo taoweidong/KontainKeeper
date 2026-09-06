@@ -1,6 +1,8 @@
-# KontainKeeper 通信协议 v2（MQTT）
+# KontainKeeper 通信协议 v3（MQTT）
 
-> `proto_ver = 2`。v1 是自研 WebSocket 帧协议（`ws://.../ws/agent`），已随 MQTT 迁移整体删除；
+> `proto_ver = 3`。v1 是自研 WebSocket 帧协议（`ws://.../ws/agent`），已随 MQTT 迁移整体删除；
+> v2 引入 MQTT 主题布局但保留 token 接入认证；**v3 去掉 token：Broker 匿名开放，
+> 接入管控改为服务端 `KK_AGENT_IPS` 白名单（上行帧统一携带自报 `ip` 字段）**。
 > 历史内容见 git 记录。双端 `PROTO_VER` 必须一致：`agent/src/kk_agent/config.py` 与
 > `server/src/kk_server/__init__.py`。
 
@@ -46,42 +48,48 @@ kk/v1/{host}/cmd_ack   —— 仅登记主题位，未实现（见 §6）
 - 上线即发布 `status`（`online=true`）。服务端重启后靠 retained `status` 立刻恢复全量在线视图。
 - 多实例服务端：client_id 必须逐实例唯一（共用会被 Broker 互踢），见 §6 共享订阅说明。
 
-### 2.1 鉴权与连接返回码
+### 2.1 接入管控（IP 白名单）与连接返回码
 
-v1 的 WebSocket close code（`4400/4401/4402/4403/4404`）**已随 WS 删除**，改用 MQTT 标准连接返回码
-与 Broker 鉴权：
+v1 的 WebSocket close code（`4400/4401/4402/4403/4404`）**已随 WS 删除**。v3 的接入管控
+不依赖 MQTT 鉴权（Broker 匿名开放），而是服务端白名单：
 
 | 场景 | 语义 |
 |---|---|
-| MQTT CONNACK `rc != 0` | 连接被拒。常见：`4` 用户名密码错误、`5` 未授权（生产应告警，token 配置有误） |
-| `status` 帧 token 无效 | 服务端拒绝该主机注册并审计（`result_mismatch` 同类路径） |
+| MQTT CONNACK `rc != 0` | 连接被拒（网络/ Broker 不可达，生产应告警） |
+| 上行帧自报 `ip` 不在 `KK_AGENT_IPS` 白名单 | 服务端拒绝该帧（主机不注册 / 指标不入库）并审计 `ip_rejected` |
 | `status` 帧 `proto_ver` 不匹配 | 服务端拒收该帧并审计，需升级 Agent |
-| ACL 越权（发布到别人的主题） | Broker 直接拒绝（Mosquitto `pattern readwrite kk/v1/%u/#`） |
 
-生产 ACL 用 pattern 行按用户名展开（`%u` = 认证用户名 = 主机名），无需为 500 台写 500 段配置。
+白名单规则：
+
+- `KK_AGENT_IPS`：逗号分隔的 IP / CIDR 混合列表（如 `10.0.0.0/24,192.168.1.5`）；
+  单个 IP 自动按 /32（IPv6 按 /128）。**未配置（空）= 放行全部**，仅用于开发/测试；
+  `KK_ENV=production` 时未配置直接拒绝启动。
+- MQTT 经 Broker 中转拿不到发布者真实 TCP 源 IP，白名单基于 Agent **自报值**：
+  `KK_ADVERTISE_IP` 显式覆盖 > UDP connect 自动探测出口地址。适合内网可信环境；
+  需要更强边界时在网络层限制 1883 端口可达范围（匿名 Broker 下唯一不可伪造的隔离）。
 
 ## 3. Agent → Server
 
 ### 3.1 `kk/v1/{host}/status`（QoS1，retain，兼作 LWT）
 
 ```json
-{"online":true,"host":"web-01","token":"...","agent_ver":"0.1.0","proto_ver":2,
+{"online":true,"host":"web-01","ip":"10.0.0.5","agent_ver":"0.3.0","proto_ver":3,
  "image":"vscode-server:1.2","interval":60,"reason":"online","ts":1690000000}
 ```
 
 | 字段 | 说明 |
 |---|---|
 | `online` | 上线 `true`；LWT 或主动下线为 `false` |
-| `host` | 主机标识，必须与 Broker 认证用户名一致 |
-| `token` | 接入凭据，服务端校验未授权注册（配了 ACL 时是第二道防线） |
-| `proto_ver` | 必须为 `2` |
+| `host` | 主机标识 |
+| `ip` | 自报出口 IP（`KK_ADVERTISE_IP` 覆盖 > 自动探测），服务端按 `KK_AGENT_IPS` 白名单校验；探测失败为空串（将被拒） |
+| `proto_ver` | 必须为 `3` |
 | `reason` | 可读原因（`online` / `offline` / LWT 触发时为空） |
 | `ts` | Unix 秒 |
 
 ### 3.2 `kk/v1/{host}/hb`（QoS0，**不 retain**）
 
 ```json
-{"host":"web-01","ts":1690000000,"interval":60,"agent_ver":"0.1.0",
+{"host":"web-01","ip":"10.0.0.5","ts":1690000000,"interval":60,"agent_ver":"0.3.0",
  "metrics":{
    "cpu":3.2,
    "load":"0.12 0.34 0.56",
@@ -109,8 +117,8 @@ v1 的 WebSocket close code（`4400/4401/4402/4403/4404`）**已随 WS 删除**�
 ### 3.3 `kk/v1/{host}/result`（QoS1，分块）
 
 ```json
-{"id":"c-123","seq":0,"total":3,"out_b64":"...","done":false}
-{"id":"c-123","seq":2,"total":3,"out_b64":"","done":true,
+{"id":"c-123","seq":0,"total":3,"out_b64":"...","done":false,"ip":"10.0.0.5"}
+{"id":"c-123","seq":2,"total":3,"out_b64":"","done":true,"ip":"10.0.0.5",
  "rc":0,"timed_out":false,"elapsed_ms":152,"truncated":false}
 ```
 
@@ -119,6 +127,7 @@ v1 的 WebSocket close code（`4400/4401/4402/4403/4404`）**已随 WS 删除**�
 | `id` | 命令 ID，与 `cmd` 帧对应 |
 | `seq` / `total` | 分块序号与总块数（48KB/块，输出上限 4MB 后截断） |
 | `out_b64` | 该块输出的 base64（v1 的 `data_b64` 已改名） |
+| `ip` | v3 起所有上行帧统一携带的自报出口 IP，白名单校验与 status/hb 同一入口 |
 | `done` | 末块为 `true`，此时携带下方四个字段 |
 | `rc` | 进程退出码；超时被杀为 `-1`；spawn 失败 `126/127`；**`-3` 表示结果分块未能全部送达**（out-queue 溢出），服务端据此置 `failed` |
 | `timed_out` / `elapsed_ms` / `truncated` | 是否超时、耗时毫秒、输出是否被截断 |
@@ -164,18 +173,19 @@ cpu, mem, disk, disk_io, net, proc, user, sys
 
 ## 5. Agent 自更新 REST 接口
 
-与 MQTT 通道并行，走 HTTP（与 v1 相同，仍适用）：
+与 MQTT 通道并行，走 HTTP：
 
 | 方法 | 路径 | 鉴权 | 说明 |
 |---|---|---|---|
 | POST | `/api/system/agent` | 管理员会话 | 上传新版本二进制（multipart: `file` + `version`），服务端算 `sha256` 并记录为最新 |
-| GET | `/api/system/agent/latest?ver=<当前版本>` | Agent token | 返回 `{available, version, sha256, size, url}` |
-| GET | `/api/system/agent/download` | Agent token | 流式下发最新二进制 |
+| GET | `/api/system/agent/latest?ver=<当前版本>` | 请求源 IP ∈ `KK_AGENT_IPS` | 返回 `{available, version, sha256, size, url}` |
+| GET | `/api/system/agent/download` | 请求源 IP ∈ `KK_AGENT_IPS` | 流式下发最新二进制 |
 
-安全边界：下载/查询仅需 Agent token；替换前强制 `sha256` 校验，可选 HMAC
-（`KK_UPDATE_HMAC_KEY` + `KK_UPDATE_REQUIRE_SIG`）。**ed25519 签名决策不做**（需引入 pynacl，
-而服务端被攻陷时攻击者同样能篡改清单里的 sha256，边际收益有限）。
-`KK_UPDATE_INSECURE=1` 可关闭 TLS 校验（不推荐）。
+安全边界（v3）：下载/查询按**请求真实 TCP 源 IP**校验白名单（比 MQTT 侧的自报 ip 可靠；
+经反向代理时源 IP 会变成代理地址，自更新地址应配置为内网直连地址）；上传仍需管理员会话。
+替换前强制 `sha256` 校验，可选 HMAC（`KK_UPDATE_HMAC_KEY` + `KK_UPDATE_REQUIRE_SIG`）。
+**ed25519 签名决策不做**（需引入 pynacl，而服务端被攻陷时攻击者同样能篡改清单里的
+sha256，边际收益有限）。`KK_UPDATE_INSECURE=1` 可关闭 TLS 校验（不推荐）。
 
 ## 6. 已登记但未实现
 

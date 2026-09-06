@@ -24,7 +24,7 @@ Linux 主机（典型形态：K8S 下的 vscode-server 容器 IDE）的**直连�
 - 服务端 FastAPI 无状态桥接，支持 SQLite / PostgreSQL / MySQL
 - 前端 Vue3 + Element Plus + ECharts，构建产物由服务端直接托管
 
-完整设计见 [docs/design.md](docs/design.md)，协议定义见 [proto/messages.md](proto/messages.md)（v2 MQTT）。
+完整设计见 [docs/design.md](docs/design.md)，协议定义见 [proto/messages.md](proto/messages.md)（v3 MQTT）。
 
 ## 架构一览
 
@@ -68,7 +68,7 @@ rectangle "Linux 主机\n(vscode-server 容器 / 物理机)" as Host {
   [自定义采集插件\n*.py 热加载] as Plugin
 }
 
-queue "Mosquitto 2.x\nLWT · 离线队列 · pattern ACL" as Broker
+queue "Mosquitto 2.x\n匿名开放 · LWT · 离线队列" as Broker
 
 rectangle "kk-server (FastAPI, 无状态)" as Server {
   [MqttBridge\n桥接 / 命令下发] as Bridge
@@ -116,7 +116,7 @@ server/                  服务端（独立 UV 项目，FastAPI）
 web/                     Vue3 前端（独立 pnpm 工程，pure-admin-thin 底座）
   src/api/               业务 API 层（containers/commands/audit/system）
   src/views/             四个业务页（host/monitor、host/detail、command、audit）
-proto/                   双端通信协议契约（v2）
+proto/                   双端通信协议契约（v3：匿名 Broker + IP 白名单）
 scripts/                 构建与部署脚本
 deploy/                  Mosquitto 生产/开发配置 + Agent 容器叠加片段
 docs/                    deployment(生产部署) / development(开发搭建) / design / 评审与路线图
@@ -133,8 +133,8 @@ docs/                    deployment(生产部署) / development(开发搭建) / 
 | 总体设计与取舍 | [设计文档](docs/design.md) |
 | 缺陷清单与处置映射（P0/P1/P2 + R1–R13） | [架构评审](docs/architecture-review.md) |
 | 八阶段落地计划 | [实现路线图 v3](docs/completion-plan-mqtt.md) |
-| MQTT 主题布局、帧格式、QoS/retain 语义 | [通信协议 v2](proto/messages.md) |
-| Mosquitto 开发/生产双配置、按主机 ACL | [部署说明](deploy/mosquitto/README.md) |
+| MQTT 主题布局、帧格式、QoS/retain 语义、IP 白名单接入管控 | [通信协议 v3](proto/messages.md) |
+| Mosquitto 匿名配置与安全模型 | [部署说明](deploy/mosquitto/README.md) |
 
 > 所有协议与配置以代码为唯一真相源；文档若与代码冲突，以代码与 `git` 历史为准。
 
@@ -146,17 +146,17 @@ docs/                    deployment(生产部署) / development(开发搭建) / 
 ```bash
 uv sync --all-packages          # 安装服务端依赖 + dev 组
 
-# 0. 起一个 MQTT Broker（本地冒烟用开发配置，开匿名；生产见生产环境部署指南）
+# 0. 起一个 MQTT Broker（匿名开放；接入管控由服务端 KK_AGENT_IPS 白名单承担）
 docker run -d --name mosquitto -p 1883:1883 \
-  -v $PWD/deploy/mosquitto/mosquitto.dev.conf:/mosquitto/config/mosquitto.conf \
+  -v $PWD/deploy/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf \
   eclipse-mosquitto:2
 
 # 1. 启动服务端
 .venv/Scripts/python.exe -m kk_server      # 或 uv run kk-server
 #   浏览器打开 http://127.0.0.1:8443 → 登录管理界面（默认 admin/admin123）
 
-# 2. 启动一个 Agent（任意目录）
-KK_SERVER=mqtt://127.0.0.1:1883 KK_TOKEN=dev-token \
+# 2. 启动一个 Agent（任意目录；v3 零凭据，只需服务端地址）
+KK_SERVER=mqtt://127.0.0.1:1883 \
 KK_HOST_NAME=demo-host KK_INTERVAL=5 uv run kk-agent
 
 # 3. 管理界面：主机总览出现 demo-host → 详情页看曲线 → 命令中心下发命令 → 结果回传
@@ -170,23 +170,18 @@ KK_HOST_NAME=demo-host KK_INTERVAL=5 uv run kk-agent
 三步速览（完整步骤、环境变量参考与验证清单见[生产环境部署指南](docs/deployment.md)）：
 
 ```bash
-# 1. 生成 Broker 凭据（passwordfile 不入库；服务端账号 + 每台主机一个账号）
-cp deploy/mosquitto/passwordfile.example deploy/mosquitto/passwordfile
-docker compose -f docker-compose.prod.yml run --rm mosquitto \
-  mosquitto_passwd -b deploy/mosquitto/passwordfile kk-server <强密码>
-bash deploy/mosquitto/gen-credentials.sh <主机名> <该机token>
-
-# 2. 准备 .env（强口令；KK_ENV=production 会自检并拒绝默认口令/token）
+# 1. 准备 .env（强口令 + Agent 接入白名单；KK_ENV=production 未配白名单会拒绝启动）
 cp .env.example .env && vim .env
+#   KK_AGENT_IPS=10.0.0.0/24,192.168.1.5   ← 只有名单内 IP 的 Agent 能上报
 
-# 3. 起生产栈（关匿名 Broker + ACL + 服务端）
+# 2. 起生产栈（匿名 Broker + 服务端白名单）
 docker compose -f docker-compose.prod.yml --env-file .env up -d --build
 ```
 
 - **前端零部署**：构建产物已随包提交，由服务端 8443 端口直接托管；只有改过
   `web/` 前端代码才需重建同步（见部署指南 §5）。
 - **主机侧**：用 `scripts/build.sh` 把 Agent 叠加进 vscode-server 镜像，
-  token 运行时注入（见部署指南 §7）。
+  Agent 零凭据，无需注入任何令牌（见部署指南 §7）。
 - **TLS 硬约束**：管理界面必须前置 TLS 终结的反向代理，切勿让管理员令牌明文
   跨越不可信网络（见部署指南 §6）。
 
@@ -231,7 +226,7 @@ curl -H "Authorization: Bearer <ADMIN_TOKEN>" \
 uv sync --all-packages
 .venv/Scripts/python.exe -m pytest agent/tests -q     # Agent 单元测试
 .venv/Scripts/python.exe -m pytest server/tests -q    # Server 单测 + 端到端集成
-.venv/Scripts/python.exe -m pytest agent/tests server/tests -q   # 全量 194 条：Broker 可达时 194 passed；不可达时 191 passed + 3 skipped（集成用例）
+.venv/Scripts/python.exe -m pytest agent/tests server/tests -q   # 全量 201 条：Broker 可达时 201 passed；不可达时 197 passed + 4 skipped（集成用例）
 
 cd web && pnpm typecheck && pnpm build                # 前端类型检查与构建
 ```
@@ -246,12 +241,13 @@ cd web && pnpm typecheck && pnpm build                # 前端类型检查与构
 
 ## 安全说明
 
-- Agent ↔ Broker：MQTT 鉴权（用户名 = 主机名）+ pattern ACL `kk/v1/%u/#`，
-  一台主机只能读写自己的主题
-- 主机身份：Broker 已认证用户名 ↔ `status` 帧 `host` 一致，不一致即拒并审计
+- Agent ↔ Broker：匿名接入（零凭据，只需 Broker 地址）；接入管控由服务端
+  `KK_AGENT_IPS` 白名单承担——上行帧携带自报 `ip`，白名单外的上报全部拒绝并审计
+- 适用边界：内网可信环境（MQTT 经 Broker 中转拿不到发布者真实源 IP，白名单基于
+  Agent 自报值）；需要更强隔离时用防火墙限制 1883 端口可达范围
 - 管理端：会话 token（默认 12 小时过期），命令下发全量审计
 - 命令黑名单拦截危险操作；argv 数组直传 exec，不经 shell 拼接
-- 自更新二进制强制 `sha256` 校验（可选 HMAC）
+- 自更新二进制强制 `sha256` 校验（可选 HMAC）；下载/查询接口按请求源 IP 校验白名单
 
 ## 参与贡献
 
