@@ -209,7 +209,7 @@ KontainKeeper/
 |---|---|
 | Agent 接入 | Broker 匿名开放；上行帧（status/hb/result）统一携带自报 `ip`，服务端按 `KK_AGENT_IPS` 白名单（IP/CIDR）校验，名单外拒收并审计 `ip_rejected` |
 | 自更新下载 | REST 接口按请求**真实 TCP 源 IP** 校验同一白名单（比 MQTT 自报值可靠） |
-| 命令滥用 | 服务端黑名单（`KK_CMD_BLACKLIST`）在源头拦截 + argv 直传不经 shell + 全量审计 |
+| 命令滥用 | 服务端黑名单（`KK_CMD_BLACKLIST`）在源头拦截 + 全量审计；cmdline 经 sh -c（内网灵活优先），argv 直传不经 shell |
 | 自更新完整性 | sha256 强制校验（可选 HMAC），防损坏/篡改 |
 | 管理端 | 会话 token（12h 过期）；生产必须前置 TLS 终结 |
 | 网络边界 | 匿名 Broker 下唯一不可伪造的隔离：防火墙/安全组限制 1883 端口可达范围；`KK_ENV=production` 未配白名单拒绝启动 |

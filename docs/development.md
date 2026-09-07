@@ -233,7 +233,7 @@ cd agent && ./build/build_binary.sh     # 产出 agent/dist/kk-agent（Windows �
 | 心跳间隔下限 | `KK_INTERVAL` 下限 1s，别调回去——集成测试依赖数秒内积累多个序列点 |
 | 插件热加载失效 | Windows 文件时间粒度粗，测试写插件后需显式 `os.utime` 递增 mtime |
 | 三库方言 | 方言差异只允许收在 `Store._upsert` / `Store._ensure_schema`；新增列须登记 `tables._ADD_COLUMNS`；分批删按主键 `IN`，不要 `DELETE...LIMIT` |
-| 命令 argv | 命令下发优先 argv 数组；`cmdline` 走 shlex.split，Windows 含空格路径会拆坏 |
+| 命令 argv | 前端 cmdline 恒 `use_shell=true` 经 sh -c（内网灵活优先）；argv 数组直 exec 不经 shell。API 层 `use_shell=false` 的 cmdline 走 shlex.split，Windows 含空格路径会拆坏 |
 | 服务端入口 | 是工厂 `create_app`，没有模块级 `app`；运行 `python -m kk_server` |
 | 安全红线 | 命令黑名单（`KK_CMD_BLACKLIST`）+ 审计（`store.add_audit`）不能绕过 |
 | 配置来源 | 双端全部走 `KK_*` 环境变量，不引入配置文件 |

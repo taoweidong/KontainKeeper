@@ -49,7 +49,7 @@ pnpm build       # 产物输出到 web/dist/
 - **分批删按主键 `IN`，不要用 `LIMIT`**：PG 不支持 `DELETE...LIMIT`，MySQL 的是方言专属写法，SQLite 还要编译期开关。
 - **`create_all` 只建表不加列**：新增列必须登记 `tables._ADD_COLUMNS`，由 `setup()` 的 `_ensure_schema` 自动 ALTER（SQLite 查 `PRAGMA table_info`，其余查 `information_schema` 且 MySQL 要 `DATABASE()` 限定 schema）。
 - **Windows 开发机兼容**：采集基于 psutil（跨平台，不解析 /proc、不注入 fs_root），`agent/tests` 直接读真机/容器指标即可，无需伪造 /proc 树；命令执行的进程树回收按平台分路——POSIX 用 `os.killpg`、Windows 用 `taskkill /F /T`（`executor.py`）。注：`resource` 模块仅 Unix 有，Agent 已不依赖它。
-- **命令下发优先用 argv 数组**，`cmdline` 走 shlex.split，Windows 上含空格路径（如 `D:\Program Files\...`）会被拆坏。
+- **命令执行语义**：前端 cmdline 恒 `use_shell=true`（整条命令经 `sh -c`，内网灵活优先，管道/重定向/glob 全支持）；argv 数组直 exec 不经 shell。服务端 API 层对 `use_shell=false` 的 cmdline 仍走 shlex.split——Windows 上含空格路径（如 `D:\Program Files\...`）会被拆坏，调 API 时优先 argv 数组。
 - **服务端入口是工厂** `kk_server.main:create_app`，没有模块级 `app`；运行走 `python -m kk_server`。测试用 uvicorn.Server 线程 + `create_app(env)`，或用 `httpx.AsyncClient` + `ASGITransport`（`test_api.py` 的做法，不依赖真实端口）。
 - 心跳间隔下限 1s（`agent/src/kk_agent/config.load`），集成测试依赖它在数秒内积累多个序列点；别把下限调回去。
 - Agent 上线（status）即可在 API 看到主机，但**指标要等首帧心跳**；集成测试的等待条件必须同时检查 `metrics.mem_mb` 非空。
