@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import { useRoute } from "vue-router";
+import { useWindowSize } from "@vueuse/core";
 import { ElMessage } from "element-plus";
 import * as echarts from "echarts/core";
 import { LineChart } from "echarts/charts";
@@ -38,6 +39,10 @@ const net = computed(() => {
   const n = (detail.value?.metrics?.net || {}) as Record<string, any>;
   return Object.entries(n).map(([nic, v]) => ({ nic, ...(v as object) }));
 });
+
+/** 描述列表列数随窗口宽度收敛：≥1200px 四列，否则两列（el-descriptions 不支持断点） */
+const { width: winWidth } = useWindowSize();
+const descCols = computed(() => (winWidth.value >= 1200 ? 4 : 2));
 
 function renderChart(series: Array<{ ts: number; cpu: number | null; mem_mb: number | null }>) {
   if (!chartEl.value) return;
@@ -148,7 +153,7 @@ onBeforeUnmount(() => {
         </div>
       </template>
 
-      <el-descriptions :column="4" border class="kk-desc">
+      <el-descriptions :column="descCols" border class="kk-desc">
         <el-descriptions-item label="镜像">{{ detail.image || "-" }}</el-descriptions-item>
         <el-descriptions-item label="Agent 版本">{{ detail.agent_ver || "-" }}</el-descriptions-item>
         <el-descriptions-item label="上报间隔">{{ detail.hb_interval }} 秒</el-descriptions-item>
@@ -269,39 +274,4 @@ onBeforeUnmount(() => {
   </div>
 </template>
 
-<style scoped>
-.kk-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  align-items: center;
-  justify-content: space-between;
-}
-.kk-actions {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-}
-.kk-ml {
-  margin-left: 10px;
-}
-.kk-sub {
-  font-size: 12px;
-  color: #909399;
-}
-.kk-chart {
-  height: 300px;
-  margin: 16px 0;
-}
-.kk-desc {
-  margin-bottom: 8px;
-}
-.kk-h4 {
-  margin: 12px 0 8px;
-  font-size: 14px;
-  color: #303133;
-}
-.kk-mt {
-  margin-top: 8px;
-}
-</style>
+<!-- 通用类（kk-toolbar/kk-desc/kk-chart/kk-h4 等）统一在 style/kk.scss -->

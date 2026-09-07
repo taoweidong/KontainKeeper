@@ -38,7 +38,7 @@ export default [
     path: "/command",
     name: "CommandCenter",
     component: Layout,
-    redirect: "/command/index",
+    redirect: "/command/shell",
     meta: {
       icon: "ep/operation",
       title: "命令中心",
@@ -46,10 +46,18 @@ export default [
     },
     children: [
       {
-        path: "/command/index",
-        name: "CommandCenterIndex",
-        component: () => import("@/views/command/index.vue"),
-        meta: { title: "命令中心" }
+        path: "/command/shell",
+        name: "CommandShell",
+        component: () => import("@/views/command/shell/index.vue"),
+        // 旧单页路径（合并 tabs 时代）作为别名保留，旧书签可用
+        alias: "/command/index",
+        meta: { title: "命令面板" }
+      },
+      {
+        path: "/command/collect",
+        name: "CommandCollect",
+        component: () => import("@/views/command/collect/index.vue"),
+        meta: { title: "采集面板" }
       }
     ]
   },

@@ -18,6 +18,8 @@ const alerts = ref(0);
 const keyword = ref("");
 const onlyOnline = ref(false);
 const onlyAlert = ref(false);
+/** 最近一次加载成功的时间（秒级时间戳），0 = 尚未加载 */
+const lastLoadedAt = ref(0);
 /** 轮询间隔（秒），0 = 停。总览是唯一常驻轮询的页面，10s 足够且不给服务端放大压力 */
 const interval = ref(10);
 let timer: ReturnType<typeof setInterval> | null = null;
@@ -48,6 +50,7 @@ async function load() {
     rows.value = data.items;
     online.value = data.online;
     alerts.value = data.alerts;
+    lastLoadedAt.value = Math.floor(Date.now() / 1000);
   } catch (e: any) {
     ElMessage.error("加载主机列表失败：" + (e?.message ?? e));
   } finally {
@@ -93,7 +96,7 @@ async function submitCollect() {
     });
     ElMessage.success(`已下发 ${res.items.length} 条采集命令`);
     dialog.visible = false;
-    router.push({ name: "CommandCenter" });
+    router.push({ name: "CommandCollect" });
   } catch (e: any) {
     ElMessage.error("下发失败：" + (e?.response?.data?.detail ?? e?.message ?? e));
   } finally {
@@ -107,7 +110,7 @@ function openCommandCenter() {
     return;
   }
   router.push({
-    name: "CommandCenter",
+    name: "CommandShell",
     query: { pods: selection.value.map(r => r.pod).join(",") }
   });
 }
@@ -233,7 +236,7 @@ onBeforeUnmount(() => {
         <el-button :disabled="!selection.length" @click="openCommandCenter">
           批量执行命令
         </el-button>
-        <span class="kk-sub">最后加载：{{ tsText(Math.floor(Date.now() / 1000)) }}</span>
+        <span class="kk-sub">最后加载：{{ lastLoadedAt ? tsText(lastLoadedAt) : "-" }}</span>
       </div>
     </el-card>
 
@@ -254,51 +257,4 @@ onBeforeUnmount(() => {
   </div>
 </template>
 
-<style scoped>
-.kk-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  align-items: center;
-  justify-content: space-between;
-}
-.kk-stat span {
-  margin-right: 18px;
-  color: #606266;
-}
-.kk-stat b {
-  font-size: 16px;
-  color: #303133;
-}
-.kk-ok {
-  color: #67c23a !important;
-}
-.kk-bad {
-  color: #f56c6c !important;
-}
-.kk-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  align-items: center;
-}
-.kk-sub {
-  font-size: 12px;
-  color: #909399;
-  line-height: 1.6;
-}
-.kk-metric {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-.kk-metric .el-progress {
-  flex: 1;
-}
-.kk-batch {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  margin-top: 12px;
-}
-</style>
+<!-- 通用类（kk-toolbar/kk-stat/kk-metric/kk-batch 等）统一在 style/kk.scss -->

@@ -1,0 +1,124 @@
+/* KontainKeeper 业务页共用样式。
+ *
+ * 背景：5 个业务页（总览/详情/命令/审计/首页）曾各自在 scoped 里重复定义
+ * kk-toolbar / kk-actions / kk-sub 等工具类，数值漂移且 .kk-card 从未定义
+ * （命令中心上下两张卡片因此零间距紧贴）。统一收敛到这里，页面只保留
+ * 自己独有的样式。
+ */
+
+/* 卡片：同页相邻卡片垂直间距（el-card 默认无 margin） */
+.kk-card + .kk-card {
+  margin-top: 16px;
+}
+
+/* 卡片头工具行：左标题右操作，窄屏自动换行 */
+.kk-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.kk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+/* 次级说明文字 */
+.kk-sub {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--el-text-color-placeholder);
+}
+
+.kk-ml {
+  margin-left: 10px;
+}
+
+.kk-mt {
+  margin-top: 8px;
+}
+
+/* 详情页小节标题 */
+.kk-h4 {
+  margin: 12px 0 8px;
+  font-size: 14px;
+  color: var(--el-text-color-primary);
+}
+
+/* 详情页：描述列表与图表 */
+.kk-desc {
+  margin-bottom: 8px;
+}
+
+.kk-chart {
+  height: 300px;
+  margin: 16px 0;
+}
+
+/* 总览页：表头统计数字 */
+.kk-stat span {
+  margin-right: 18px;
+  color: var(--el-text-color-regular);
+}
+
+.kk-stat b {
+  font-size: 16px;
+  color: var(--el-text-color-primary);
+}
+
+.kk-ok {
+  color: var(--el-color-success) !important;
+}
+
+.kk-bad {
+  color: var(--el-color-danger) !important;
+}
+
+/* 总览页：行内 CPU 进度条 */
+.kk-metric {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.kk-metric .el-progress {
+  flex: 1;
+}
+
+/* 总览页：表底批量操作条 */
+.kk-batch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin-top: 12px;
+}
+
+.kk-batch .kk-sub:last-child {
+  margin-left: auto;
+}
+
+/* 命令中心：输出查看框 */
+.kk-out {
+  padding: 10px;
+  margin: 0;
+  font-family: Consolas, Monaco, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: var(--el-fill-color-light);
+  border-radius: 4px;
+}
+
+/* 审计页：明细键值对 */
+.kk-kv {
+  display: inline-block;
+  margin-right: 14px;
+  font-size: 12px;
+  color: var(--el-text-color-regular);
+}

@@ -96,25 +96,4 @@ onMounted(load);
   </el-card>
 </template>
 
-<style scoped>
-.kk-toolbar {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  justify-content: space-between;
-}
-.kk-actions {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-}
-.kk-kv {
-  display: inline-block;
-  margin-right: 14px;
-  font-size: 12px;
-  color: #606266;
-}
-.kk-sub {
-  color: #909399;
-}
-</style>
+<!-- 通用类（kk-toolbar/kk-actions/kk-kv/kk-sub）统一在 style/kk.scss -->

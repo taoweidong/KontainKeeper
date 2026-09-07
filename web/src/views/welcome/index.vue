@@ -143,7 +143,7 @@ onBeforeUnmount(() => {
         </el-card>
       </el-col>
       <el-col :xs="12" :sm="6">
-        <el-card shadow="hover" class="stat-card clickable" @click="go('/command/index')">
+        <el-card shadow="hover" class="stat-card clickable" @click="go('/command/shell')">
           <div class="stat-value">{{ cmdStats.reduce((s, i) => s + i.value, 0) }}</div>
           <div class="stat-label">命令总数</div>
           <div class="stat-sub">
@@ -174,7 +174,7 @@ onBeforeUnmount(() => {
           <template #header>
             <div class="panel-header">
               <span>最近命令</span>
-              <el-button link type="primary" @click="go('/command/index')">
+              <el-button link type="primary" @click="go('/command/shell')">
                 命令中心 →
               </el-button>
             </div>
@@ -184,7 +184,7 @@ onBeforeUnmount(() => {
             size="small"
             height="100%"
             class="cmd-table"
-            @row-click="(r: any) => go('/command/index')"
+            @row-click="(r: any) => go('/command/shell')"
           >
             <el-table-column prop="created_at" label="时间" width="170">
               <template #default="{ row }">{{ tsText(row.created_at) }}</template>
@@ -222,7 +222,7 @@ onBeforeUnmount(() => {
               <el-icon size="22"><component :is="useRenderIcon(MonitorIcon)" /></el-icon>
               <span>主机总览</span>
             </div>
-            <div class="quick-link" @click="go('/command/index')">
+            <div class="quick-link" @click="go('/command/shell')">
               <el-icon size="22"><component :is="useRenderIcon(CommandIcon)" /></el-icon>
               <span>命令中心</span>
             </div>
