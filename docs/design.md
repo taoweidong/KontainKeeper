@@ -168,9 +168,9 @@ kk_server/
 ### 4.2 前端
 
 `web/` 是独立 pnpm 工程（Vue3 + TS + Element Plus + Vite + Pinia + ECharts，
-底座 pure-admin-thin v6.2.0）。四个业务页：主机总览（10s 轮询 + 多选批量）、
-主机详情（ECharts 曲线 + 磁盘/网卡/进程/登录用户，30s）、命令中心（采集面板 + 命令面板，5s）、
-审计日志。
+底座 pure-admin-thin v6.2.0）。五个业务页：主机总览（10s 轮询 + 多选批量）、
+主机详情（ECharts 曲线 + 磁盘/网卡/进程/登录用户，30s）、命令中心
+（采集面板 + 命令面板，5s）、审计日志。
 
 构建产物同步到 `server/src/kk_server/web/`，`kk-server` 单端口托管全栈，
 也可独立 nginx 反代。菜单完全静态注册（`getAsyncRoutes()` 返回 `[]`），不依赖 mock/fake server。

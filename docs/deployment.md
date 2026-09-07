@@ -476,6 +476,17 @@ kk-server 可水平扩容，唯一硬性要求：**每实例 `KK_MQTT_CLIENT_ID`
   四组统计；`GET /api/health` 适合探活。
 - **审计**：登录、命令下发、黑名单拦截全量留痕，管理界面「审计日志」页可查。
 
+## 12. 离线部署（内网无网场景）
+
+内网目标机访问不到 Docker Hub / GHCR 的场景：用外网构建机把镜像打成 tar 包带入。
+镜像清单、外网打包、内网加载的完整流程见 [deploy/offline/README.md](../deploy/offline/README.md)。
+
+要点速览：
+- 最小集合 = `kk-server_latest.tar.gz` + `eclipse-mosquitto_2.tar.gz` + Agent 产物 tar；
+- 内网 compose 用 `docker-compose.offline.yml`（与 `docker-compose.prod.yml` 唯一差异：
+  kk-server 用本地 image 引用而非 build 段）；
+- `deploy/offline/manifest.txt` 是单一事实源，新增/删减镜像改这里 + `pack.sh`。
+
 ---
 
 - 部署相关问题先查 [deploy/mosquitto/README.md](../deploy/mosquitto/README.md)（Broker 专题）

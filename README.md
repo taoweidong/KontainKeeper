@@ -115,7 +115,7 @@ server/                  服务端（独立 UV 项目，FastAPI）
   Dockerfile             生产镜像
 web/                     Vue3 前端（独立 pnpm 工程，pure-admin-thin 底座）
   src/api/               业务 API 层（containers/commands/audit/system）
-  src/views/             四个业务页（host/monitor、host/detail、command、audit）
+  src/views/             五个业务页（host/monitor、host/detail、command/shell、command/collect、audit）
 proto/                   双端通信协议契约（v3：匿名 Broker + IP 白名单）
 scripts/                 构建与部署脚本
 deploy/                  Mosquitto 生产/开发配置 + Agent 容器叠加片段
@@ -135,6 +135,7 @@ docs/                    deployment(生产部署) / development(开发搭建) / 
 | 八阶段落地计划 | [实现路线图 v3](docs/completion-plan-mqtt.md) |
 | MQTT 主题布局、帧格式、QoS/retain 语义、IP 白名单接入管控 | [通信协议 v3](proto/messages.md) |
 | Mosquitto 匿名配置与安全模型 | [部署说明](deploy/mosquitto/README.md) |
+| 离线部署（内网无网场景的镜像打包与加载） | [离线部署说明](deploy/offline/README.md) |
 
 > 所有协议与配置以代码为唯一真相源；文档若与代码冲突，以代码与 `git` 历史为准。
 
@@ -182,6 +183,8 @@ docker compose -f docker-compose.prod.yml --env-file .env up -d --build
   `web/` 前端代码才需重建同步（见部署指南 §5）。
 - **主机侧**：用 `scripts/build.sh` 把 Agent 叠加进 vscode-server 镜像，
   Agent 零凭据，无需注入任何令牌（见部署指南 §7）。
+- **离线部署**：内网无网场景用 `deploy/offline/pack.sh` 打 tar 包，`docker-compose.offline.yml`
+  + `deploy/offline/load.sh` 导入本地镜像启动（见 `deploy/offline/README.md`）。
 - **TLS 硬约束**：管理界面必须前置 TLS 终结的反向代理，切勿让管理员令牌明文
   跨越不可信网络（见部署指南 §6）。
 
@@ -226,7 +229,7 @@ curl -H "Authorization: Bearer <ADMIN_TOKEN>" \
 uv sync --all-packages
 .venv/Scripts/python.exe -m pytest agent/tests -q     # Agent 单元测试
 .venv/Scripts/python.exe -m pytest server/tests -q    # Server 单测 + 端到端集成
-.venv/Scripts/python.exe -m pytest agent/tests server/tests -q   # 全量 201 条：Broker 可达时 201 passed；不可达时 197 passed + 4 skipped（集成用例）
+.venv/Scripts/python.exe -m pytest agent/tests server/tests -q   # 全量 202 条：Broker 可达时 202 passed；不可达时 198 passed + 4 skipped（集成用例）
 
 cd web && pnpm typecheck && pnpm build                # 前端类型检查与构建
 ```
