@@ -5,6 +5,8 @@ __pycache__/
 *.db-wal
 *.db-shm
 dist/
+# 本地运行数据目录（SQLite 运行库、自更新资产等），非源码
+data/
 # 仅忽略 Python 构建目录，web/build/ 是 pure-admin 前端的构建辅助源码，必须入库
 agent/build/
 *.egg-info/
