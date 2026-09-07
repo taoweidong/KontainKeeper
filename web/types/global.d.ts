@@ -70,6 +70,8 @@ declare global {
     VITE_CDN: boolean;
     VITE_HIDE_HOME: string;
     VITE_COMPRESSION: ViteCompression;
+    /** Vite dev server 代理目标（指向 kk-server），默认 http://127.0.0.1:8443 */
+    VITE_PROXY?: string;
   }
 
   /**

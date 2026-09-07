@@ -10,8 +10,9 @@ import {
 } from "./build/utils";
 
 export default ({ mode }: ConfigEnv): UserConfigExport => {
-  const { VITE_CDN, VITE_PORT, VITE_COMPRESSION, VITE_PUBLIC_PATH } =
+  const { VITE_CDN, VITE_PORT, VITE_COMPRESSION, VITE_PUBLIC_PATH, VITE_PROXY } =
     wrapperEnv(loadEnv(mode, root));
+  const proxyTarget = (VITE_PROXY || "http://127.0.0.1:8443").replace(/\/+$/, "");
   return {
     base: VITE_PUBLIC_PATH,
     root,
@@ -24,9 +25,10 @@ export default ({ mode }: ConfigEnv): UserConfigExport => {
       port: VITE_PORT,
       host: "0.0.0.0",
       // 本地跨域代理：/api/* 转发到 KontainKeeper 后端
+      // 目标地址由 VITE_PROXY 覆盖（默认 127.0.0.1:8443），便于联调时指向其它实例
       proxy: {
         "/api": {
-          target: "http://127.0.0.1:8443",
+          target: proxyTarget,
           changeOrigin: true
         }
       },
