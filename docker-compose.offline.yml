@@ -1,0 +1,42 @@
+# KontainKeeper 离线启动栈：仅使用 deploy/offline/load.sh 导入的本地镜像。
+#
+# 与 docker-compose.prod.yml 的唯一差异：kk-server 用 image 引用而非 build 段——
+# 内网执行 docker build 会在镜像内 uv sync 联网装依赖，必然失败。
+#
+# 用法：
+#   cp .env.example .env && 填真实值（KK_AGENT_IPS / KK_ADMIN_PASS 必填）
+#   docker compose -f docker-compose.offline.yml --env-file .env up -d
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./deploy/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data
+    restart: unless-stopped
+
+  kk-server:
+    image: kk-server:latest
+    environment:
+      KK_MQTT_URL: mqtt://mosquitto:1883
+      KK_TOPIC_PREFIX: ${KK_TOPIC_PREFIX:-kk/v1}
+      KK_AGENT_IPS: ${KK_AGENT_IPS:?请设置 KK_AGENT_IPS 接入白名单（逗号分隔 IP/CIDR）}
+      KK_DB_PATH: /data/kk-server.db
+      KK_PORT: "8443"
+      KK_HOST: 0.0.0.0
+      KK_ADMIN_USER: ${KK_ADMIN_USER:-admin}
+      KK_ADMIN_PASS: ${KK_ADMIN_PASS:?请设置强口令 KK_ADMIN_PASS}
+      KK_ENV: production
+    ports:
+      - "8443:8443"
+    volumes:
+      - kk-data:/data
+    depends_on:
+      - mosquitto
+    restart: unless-stopped
+
+volumes:
+  mosquitto-data:
+  kk-data:

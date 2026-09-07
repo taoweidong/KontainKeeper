@@ -1,0 +1,22 @@
+# KontainKeeper 离线镜像清单（pack.sh 的单一事实源，按行解析）
+# 格式：<镜像:tag>|<保存文件名>|<级别>
+# 级别：
+#   core  = 内网运行必需的镜像（产物 + Broker）
+#   build = 仅外网构建机需要的基础镜像（内网走产物 tar 时不需要；入库供内网重建兜底）
+#   opt   = 可选（仅「独立部署前端镜像」等非常规场景需要）
+#
+# 注意：tag 必须与引用处保持一致——
+#   eclipse-mosquitto:2 对应 docker-compose.prod.yml / docker-compose.offline.yml；
+#   python:3.12-slim、ghcr.io/astral-sh/uv:latest 对应 server/Dockerfile；
+#   node:20-alpine、nginx:stable-alpine 对应 web/Dockerfile（默认不走该文件，产物由服务端托管）。
+
+eclipse-mosquitto:2|eclipse-mosquitto_2.tar.gz|core
+kk-server:latest|kk-server_latest.tar.gz|core
+python:3.12-slim|python_3.12-slim.tar.gz|build
+ghcr.io/astral-sh/uv:latest|astral-sh_uv_latest.tar.gz|build
+node:20-alpine|node_20-alpine.tar.gz|opt
+nginx:stable-alpine|nginx_stable-alpine.tar.gz|opt
+
+# agent 叠加产物镜像（基础镜像为私有 vscode-server 镜像，无公共地址）：
+# 由 scripts/build.sh 在外网机构建，打包时用环境变量注入 tag，例如：
+#   KK_AGENT_IMAGE=kk-vscode-server:2026-09 ./deploy/offline/pack.sh
