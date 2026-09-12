@@ -113,3 +113,47 @@ async def test_status_pushes_upgrade(tmp_path):
     assert topic.endswith("/pod-upgrade/cmd")
     assert body["kind"] == "update" and body["version"] == "99.0.0"
     assert body["url"].endswith("/api/system/agent/download")
+
+
+# ---- A6.1：服务端下发绝对下载地址 ----
+
+async def test_agent_latest_returns_absolute_url_when_public_url_set(tmp_path):
+    """配了 KK_PUBLIC_URL → /agent/latest 给绝对地址，镜像侧零配置即可升级。"""
+    from kk_server.main import create_app
+
+    app = create_app({
+        "KK_DB_PATH": str(tmp_path / "pub.db"),
+        "KK_WEB_DIR": str(tmp_path / "noweb"),
+        "KK_PUBLIC_URL": "http://10.0.0.1:8443",
+    })
+    store = app.state.store
+    await store.setup()
+    await store.set_agent_latest({"version": "9.9.9", "sha256": "s" * 64, "size": 10})
+    import httpx
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                     base_url="http://test") as c:
+            body = (await c.get("/api/system/agent/latest", params={"ver": "0.3.0"})).json()
+        assert body["available"] is True
+        assert body["url"] == "http://10.0.0.1:8443/api/system/agent/download"
+    finally:
+        await store.close()
+
+
+async def test_agent_latest_relative_url_without_public_url(tmp_path):
+    """未配 KK_PUBLIC_URL 时行为不变（相对路径），不破坏既有部署。"""
+    from kk_server.main import create_app
+
+    app = create_app({"KK_DB_PATH": str(tmp_path / "nopub.db"),
+                      "KK_WEB_DIR": str(tmp_path / "noweb")})
+    store = app.state.store
+    await store.setup()
+    await store.set_agent_latest({"version": "9.9.9", "sha256": "s" * 64, "size": 10})
+    import httpx
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                     base_url="http://test") as c:
+            body = (await c.get("/api/system/agent/latest", params={"ver": "0.3.0"})).json()
+        assert body["url"] == "/api/system/agent/download"
+    finally:
+        await store.close()

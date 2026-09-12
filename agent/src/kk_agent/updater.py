@@ -77,8 +77,34 @@ def _api_base(cfg):
 
     旧实现会从 WebSocket 地址推导，改用 MQTT 后 broker 地址与 HTTP API 地址不再同源，
     推导只会产生错误的 URL，因此这里要求显式配置；未配置则跳过本次检查。
+
+    注意：基址只对**相对** url 才是必需的。服务端下发的清单若带绝对地址
+    （KK_PUBLIC_URL 配好时会这样），镜像侧零配置即可完成推送式更新——
+    这是 A6.1 修复「推送静默失效」的关键。
     """
     return (cfg.get("update_url") or "").strip().rstrip("/")
+
+
+def resolve_download_url(cfg, log, manifest):
+    """清单里的 url 转成可直接下载的地址；拿不到就返回空串。
+
+    绝对即用、相对才回落：服务端下发的 url 已是绝对地址时不再依赖
+    KK_UPDATE_URL（镜像构建脚本不烧入该键，旧实现因此必然静默跳过）。
+    """
+    log = _log(log)
+    url = str(manifest.get("url") or "").strip()
+    if url.startswith(("http://", "https://")):
+        return url
+    base = _api_base(cfg)
+    if not base:
+        # 静默失败正源于日志级别过低：这里必须让运维看见
+        log.warning("no download address: manifest carries no absolute url and "
+                    "KK_UPDATE_URL is unset; configure KK_UPDATE_URL or set "
+                    "KK_PUBLIC_URL on the server so it can send absolute urls")
+        return ""
+    if not url:
+        url = "%s/download" % UPDATE_PATH
+    return base + (url if url.startswith("/") else "/" + url)
 
 
 def _build_opener(insecure):
@@ -218,13 +244,9 @@ def apply_manifest(cfg, log, manifest):
         log.warning("refuse to self-update: target %r does not exist", target)
         return False
 
-    base = _api_base(cfg)
-    if not base:
-        log.info("KK_UPDATE_URL not configured, skip update")
+    url = resolve_download_url(cfg, log, manifest)
+    if not url:
         return False
-    url = manifest.get("url") or "%s/download" % UPDATE_PATH
-    if not url.startswith("http"):
-        url = base + (url if url.startswith("/") else "/" + url)
 
     log.info("agent update available: %s -> %s, downloading", kk_config.AGENT_VER, ver)
     with _update_lock:

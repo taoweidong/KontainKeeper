@@ -304,13 +304,19 @@ class MqttBridge:
             log.warning("命令入队失败 id=%s rc=%s（Broker 未连接或队列已满）", row["id"], info.rc)
         return ok
 
+    def _download_url(self):
+        """配了 KK_PUBLIC_URL 就下发绝对地址：镜像侧零配置也能升级（A6.1）。"""
+        base = getattr(self.s, "public_url", "") or ""
+        path = "/api/system/agent/download"
+        return base + path if base else path
+
     async def _maybe_push_upgrade(self, host, agent_ver):
         latest = await self.store.get_agent_latest()
         if not latest or not version_lt(agent_ver or "", latest.get("version", "")):
             return
         payload = {"id": "u-" + host, "kind": "update",
                    "version": latest["version"], "sha256": latest.get("sha256", ""),
-                   "size": latest.get("size", 0), "url": "/api/system/agent/download"}
+                   "size": latest.get("size", 0), "url": self._download_url()}
         try:
             self.cli.publish(self._cmd_topic(host), json.dumps(payload), qos=QOS_CMD)
             self.stats["upgrade_pushed"] += 1

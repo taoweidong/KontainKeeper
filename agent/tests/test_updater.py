@@ -294,3 +294,67 @@ def test_download_binary_enforces_size_cap():
             assert "too large" in str(e)
     finally:
         srv.shutdown()
+
+
+# ---- A6.1：下载 url 解析（绝对即用 / 相对才回落）----
+
+def test_update_absolute_url_used_directly(tmp_path, monkeypatch):
+    """清单带绝对 url 且未配 KK_UPDATE_URL → 仍发起下载。
+
+    原实现要求先有 base，而镜像构建脚本不烧入 KK_UPDATE_URL —— 推送式更新
+    因此必然静默跳过（只记一条 info 日志，双方都不知道）。
+    """
+    data = b"ELF-abs"
+    target = tmp_path / "kk-agent-abs"
+    target.write_bytes(b"old")
+    hit = {}
+
+    def fake_download(url, log, insecure=False, max_bytes=None):
+        hit["url"] = url
+        return data
+
+    monkeypatch.setattr(updater, "download_binary", fake_download)
+    monkeypatch.setattr(os, "execv", lambda *a: None)
+    cfg = {"token": "t", "update_url": "", "agent_bin": str(target),
+           "update_insecure": False}
+    manifest = {"version": "9.9.9", "sha256": hashlib.sha256(data).hexdigest(),
+                "size": len(data), "url": "http://10.0.0.1:8443/api/system/agent/download"}
+    assert updater.apply_manifest(cfg, None, manifest) is True
+    assert hit["url"] == "http://10.0.0.1:8443/api/system/agent/download"
+    assert target.read_bytes() == data
+
+
+def test_update_relative_url_falls_back_to_base(tmp_path, monkeypatch):
+    """相对 url + 配了 KK_UPDATE_URL → 拼成绝对地址（向后兼容）。"""
+    data = b"ELF-rel"
+    target = tmp_path / "kk-agent-rel"
+    target.write_bytes(b"old")
+    hit = {}
+    monkeypatch.setattr(updater, "download_binary",
+                        lambda url, log, insecure=False, max_bytes=None:
+                        (hit.setdefault("url", url), data)[1])
+    monkeypatch.setattr(os, "execv", lambda *a: None)
+    cfg = {"token": "t", "update_url": "http://srv:8443", "agent_bin": str(target),
+           "update_insecure": False}
+    manifest = {"version": "9.9.9", "sha256": hashlib.sha256(data).hexdigest(),
+                "size": len(data), "url": "/api/system/agent/download"}
+    assert updater.apply_manifest(cfg, None, manifest) is True
+    assert hit["url"] == "http://srv:8443/api/system/agent/download"
+
+
+def test_update_relative_url_needs_base_warns(tmp_path, caplog):
+    """相对 url + 无 base → WARNING、返回 False、不落盘（不再静默失效）。"""
+    import logging
+
+    target = tmp_path / "kk-agent-nobase"
+    before = b"old"
+    target.write_bytes(before)
+    cfg = {"token": "t", "update_url": "", "agent_bin": str(target),
+           "update_insecure": False}
+    manifest = {"version": "9.9.9", "sha256": "x", "size": 1, "url": "/download"}
+    # 必须传真实 logger：log=None 时 updater 走 _Null() 占位，caplog 捕不到任何记录
+    real_log = logging.getLogger("kk-test-updater")
+    with caplog.at_level(logging.WARNING):
+        assert updater.apply_manifest(cfg, real_log, manifest) is False
+    assert target.read_bytes() == before, "拿不到地址时不得落盘"
+    assert any("KK_UPDATE_URL" in r.getMessage() for r in caplog.records), caplog.text

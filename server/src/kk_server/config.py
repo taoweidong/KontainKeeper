@@ -35,6 +35,9 @@ class Settings:
     mqtt_tls_ca: str = ""
     mqtt_tls_insecure: bool = False
     db_url: str = ""      # 放在末尾：不破坏既有按位置构造 Settings 的调用方
+    # 服务端对外访问基址（如 http://10.0.0.1:8443）。配了它，下发给 Agent 的
+    # 自更新 url 就是绝对地址，镜像侧零配置即可升级（A6.1）
+    public_url: str = ""
 
 
 def _env_int(env, key, default):
@@ -119,4 +122,5 @@ def load_settings(env=None) -> Settings:
                     mqtt_username=env.get("KK_MQTT_USERNAME", "").strip(),
                     mqtt_password=env.get("KK_MQTT_PASSWORD", "").strip(),
                     mqtt_tls_ca=env.get("KK_MQTT_TLS_CA", "").strip(),
-                    mqtt_tls_insecure=_env_bool(env, "KK_MQTT_TLS_INSECURE"))
+                    mqtt_tls_insecure=_env_bool(env, "KK_MQTT_TLS_INSECURE"),
+                    public_url=env.get("KK_PUBLIC_URL", "").strip().rstrip("/"))

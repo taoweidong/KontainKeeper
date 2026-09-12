@@ -75,6 +75,18 @@ async def upload_agent(request: Request, file: UploadFile = File(...), version: 
     return {"ok": True, **info}
 
 
+def _download_url(request: Request) -> str:
+    """下发给 Agent 的下载地址：配了 KK_PUBLIC_URL 就给绝对地址（A6.1）。
+
+    MQTT 化之后 Agent 无法从 broker 地址推导 HTTP API 地址，而镜像构建脚本不烧入
+    KK_UPDATE_URL —— 相对地址会让推送式更新静默失效（Agent 侧只记一条 info 日志）。
+    绝对地址让镜像侧零配置即可升级。
+    """
+    base = getattr(request.app.state.settings, "public_url", "") or ""
+    path = "/api/system/agent/download"
+    return base + path if base else path
+
+
 @router.get("/agent/latest")
 async def agent_latest(request: Request, ver: str = ""):
     await agent_ip_auth(request)
@@ -88,7 +100,7 @@ async def agent_latest(request: Request, ver: str = ""):
         "version": latest["version"],
         "sha256": latest.get("sha256", ""),
         "size": latest.get("size", 0),
-        "url": "/api/system/agent/download",
+        "url": _download_url(request),
     }
 
 
