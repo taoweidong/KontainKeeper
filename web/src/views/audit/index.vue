@@ -160,7 +160,6 @@ onMounted(load);
       />
     </div>
   </el-card>
-  </div>
 </template>
 
 <style scoped>
