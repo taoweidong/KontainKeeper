@@ -13,10 +13,13 @@
 # 环境变量：
 #   KK_AGENT_BIN   Agent 二进制路径（默认 /opt/kk-agent/kk-agent）
 #   KK_LOG         日志路径（默认 /var/log/kk-agent.log，>1MB 自动轮转一份）
+#   KK_NICE        Agent 的 CPU 调度优先级（默认 19 = 最低）。Agent 是旁路进程，
+#                  CPU 争抢时必须主动让位给用户的 IDE；置 0 等价关闭降权。
 set -u
 
 KK_BIN="${KK_AGENT_BIN:-/opt/kk-agent/kk-agent}"
 KK_LOG="${KK_LOG:-/var/log/kk-agent.log}"
+KK_NICE="${KK_NICE:-19}"
 MAX_LOG=$((1024 * 1024))
 
 mkdir -p "$(dirname "$KK_LOG")"
@@ -39,7 +42,19 @@ supervise() {
   trap 'kill -TERM "$AGENT_PID" 2>/dev/null; exit 0' TERM INT
   while true; do
     rotate_log
-    "$KK_BIN" >>"$KK_LOG" 2>&1 &
+    # nice 降权（P2-1）：Agent 与用户 IDE 在同一容器里抢 CPU，代码级封顶只能
+    # 限制自己采集多少，限制不了「什么时候能让出 CPU」。nice 只改调度优先级、
+    # 不改变功能，探测失败时原样启动（不阻断）。
+    # ionice 属 util-linux，镜像不保证存在，因此只做探测式可选。
+    if command -v nice >/dev/null 2>&1 && [ "$KK_NICE" != "0" ]; then
+      if command -v ionice >/dev/null 2>&1; then
+        ionice -c3 nice -n "$KK_NICE" "$KK_BIN" >>"$KK_LOG" 2>&1 &
+      else
+        nice -n "$KK_NICE" "$KK_BIN" >>"$KK_LOG" 2>&1 &
+      fi
+    else
+      "$KK_BIN" >>"$KK_LOG" 2>&1 &
+    fi
     AGENT_PID=$!
     wait "$AGENT_PID"          # execv 自更新会复用该 PID，此处不会提前返回
     echo "$(date) kk-agent exited ($?), restart in 5s" >>"$KK_LOG"

@@ -393,6 +393,7 @@ KK_ADVERTISE_IP=10.0.0.15 /opt/kk-agent mqtt://broker.ops.example.com:1883
 | `KK_UPDATE_INTERVAL` | 版本轮询间隔（秒，≥30） | `300` |
 | `KK_UPDATE_DISABLED` | 设 `1/true` 关闭自更新 | 关闭 |
 | `KK_AGENT_BIN` | 自更新替换目标路径（build.sh 已烧入） | 自动 |
+| `KK_NICE` | Agent 进程 CPU 调度优先级（**由镜像 entrypoint wrapper 读取**，非 Agent 自身）；`19` = 最低，与用户 IDE 争抢 CPU 时主动让位；置 `0` 等价关闭降权 | `19` |
 
 ## 8. 验证部署（第一次上线照做）
 
