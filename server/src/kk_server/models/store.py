@@ -499,8 +499,15 @@ class Store:
             detail=json.dumps(detail, ensure_ascii=False) if detail else "",
             ts=int(time.time())))
 
-    async def list_audit(self, limit=200):
-        return await self._all(select(audit).order_by(audit.c.id.desc()).limit(limit))
+    async def list_audit(self, limit=200, offset=None):
+        stmt = select(audit).order_by(audit.c.id.desc()).limit(limit)
+        if offset:
+            stmt = stmt.offset(int(offset))
+        return await self._all(stmt)
+
+    async def count_audit(self):
+        row = await self._one(select(func.count().label("n")).select_from(audit))
+        return row["n"] if row else 0
 
     # ---- 管理员与会话 ----
     async def ensure_admin(self, username, password, force=False):

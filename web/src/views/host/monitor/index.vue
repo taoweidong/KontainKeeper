@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 
@@ -7,6 +7,7 @@ import { listHosts, type HostSummary } from "@/api/containers";
 import { createCommand, listCollectItems } from "@/api/commands";
 import { exportHosts } from "@/api/exporting";
 import { ageText, downloadBlob, fileStamp, mbText, numText, tsText } from "@/utils/kk";
+import { setPoll, usePolls } from "@/utils/kkPoll";
 
 defineOptions({ name: "HostMonitor" });
 
@@ -60,12 +61,11 @@ async function load() {
 }
 
 function restartTimer() {
-  if (timer) clearInterval(timer);
-  timer = null;
-  if (interval.value > 0) {
-    timer = setInterval(load, interval.value * 1000);
-  }
+  // 0 = 不自动刷新；setPoll 对同名 key 是覆盖，不会叠加定时器
+  setPoll("host-monitor", load, interval.value * 1000);
 }
+
+watch(interval, restartTimer);
 
 function onSelectionChange(val: HostSummary[]) {
   selection.value = val;
@@ -134,14 +134,21 @@ function gotoDetail(pod: string) {
   router.push({ name: "HostDetail", params: { pod } });
 }
 
+/** 整行可点进详情（原只能点主机名链接，命中区域太小）。
+ *  必须跳过 selection 列，否则勾选会被误判为进详情。 */
+function onRowClick(row: HostSummary, column: any) {
+  if (column?.type === "selection") return;
+  gotoDetail(row.pod);
+}
+
+/** 告警行整行浅红底：扫描时不必逐格看磁盘列 */
+function rowClass({ row }: { row: HostSummary }): string {
+  return row.disk_alert ? "kk-row-alert" : "";
+}
+
 onMounted(async () => {
   await load();
   restartTimer();
-});
-
-onBeforeUnmount(() => {
-  if (timer) clearInterval(timer);
-  timer = null;
 });
 </script>
 
@@ -181,8 +188,10 @@ onBeforeUnmount(() => {
       <el-table
         v-loading="loading"
         :data="filtered"
-        height="calc(100vh - 320px)"
+        :row-class-name="rowClass"
+        class="kk-fill-table"
         @selection-change="onSelectionChange"
+        @row-click="onRowClick"
       >
         <el-table-column type="selection" width="46" />
         <el-table-column label="主机" min-width="200">
@@ -246,13 +255,16 @@ onBeforeUnmount(() => {
         </template>
       </el-table>
 
-      <div class="kk-batch">
+      <div class="kk-batch kk-sticky-bar">
         <span class="kk-sub">已选 {{ selection.length }} 台</span>
         <el-button type="primary" :disabled="!selection.length" @click="openCollect">
           批量采集
         </el-button>
         <el-button :disabled="!selection.length" @click="openCommandCenter">
           批量执行命令
+        </el-button>
+        <el-button :disabled="!selection.length" :loading="exporting" @click="onExport">
+          导出选中清单
         </el-button>
         <span class="kk-sub">最后加载：{{ lastLoadedAt ? tsText(lastLoadedAt) : "-" }}</span>
       </div>

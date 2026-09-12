@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 
 import { listAudit, parseDetail, type AuditRow } from "@/api/audit";
@@ -10,9 +10,12 @@ defineOptions({ name: "AuditLog" });
 
 const loading = ref(false);
 const rows = ref<AuditRow[]>([]);
+const total = ref(0);
 const keyword = ref("");
 const limit = ref(200);
+const offset = ref(0);
 
+/** 关键字仍走前端过滤：审计单页 1000 条上限，且后端未做该维度索引 */
 const filtered = computed(() => {
   const kw = keyword.value.trim().toLowerCase();
   if (!kw) return rows.value;
@@ -24,16 +27,41 @@ const filtered = computed(() => {
   );
 });
 
+const pageNo = computed({
+  get: () => Math.floor(offset.value / limit.value) + 1,
+  set: (v: number) => {
+    offset.value = (v - 1) * limit.value;
+  }
+});
+
 async function load() {
   loading.value = true;
   try {
-    rows.value = (await listAudit(limit.value)).items;
+    const data = await listAudit({ limit: limit.value, offset: offset.value });
+    rows.value = data.items;
+    total.value = data.total;
   } catch (e: any) {
     ElMessage.error("加载审计日志失败：" + (e?.message ?? e));
   } finally {
     loading.value = false;
   }
 }
+
+function onPageChange(p: number) {
+  offset.value = (p - 1) * limit.value;
+  load();
+}
+
+function onSizeChange(s: number) {
+  limit.value = s;
+  offset.value = 0;
+  load();
+}
+
+watch(limit, () => {
+  offset.value = 0;
+  load();
+});
 
 const exporting = ref(false);
 
@@ -88,7 +116,8 @@ onMounted(load);
       </div>
     </template>
 
-    <el-table v-loading="loading" :data="filtered" size="small" height="calc(100vh - 240px)">
+    <div class="kk-page__body">
+      <el-table v-loading="loading" :data="filtered" size="small" class="kk-fill-table">
       <el-table-column prop="id" label="#" width="80" />
       <el-table-column label="时间" width="170">
         <template #default="{ row }">{{ tsText(row.ts) }}</template>
@@ -111,11 +140,35 @@ onMounted(load);
           <span v-if="!row.detail" class="kk-sub">-</span>
         </template>
       </el-table-column>
-      <template #empty>
-        <el-empty description="暂无审计记录" />
-      </template>
-    </el-table>
+        <template #empty>
+          <el-empty description="暂无审计记录" />
+        </template>
+      </el-table>
+    </div>
+
+    <div class="kk-pager">
+      <el-pagination
+        v-model:current-page="pageNo"
+        :page-size="limit"
+        :total="total"
+        :page-sizes="[100, 200, 500]"
+        layout="total, sizes, prev, pager, next, jumper"
+        background
+        small
+        @size-change="onSizeChange"
+        @current-change="onPageChange"
+      />
+    </div>
   </el-card>
+  </div>
 </template>
+
+<style scoped>
+.kk-pager {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 10px;
+}
+</style>
 
 <!-- 通用类（kk-toolbar/kk-actions/kk-kv/kk-sub）统一在 style/kk.scss -->

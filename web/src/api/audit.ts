@@ -9,8 +9,15 @@ export type AuditRow = {
   ts: number;
 };
 
-export const listAudit = (limit = 200) => {
-  return http.request<{ items: AuditRow[] }>("get", "/api/audit", { params: { limit } });
+export type AuditListResult = {
+  items: AuditRow[];
+  total: number;
+  offset: number;
+  limit: number;
+};
+
+export const listAudit = (params?: { limit?: number; offset?: number }) => {
+  return http.request<AuditListResult>("get", "/api/audit", { params });
 };
 
 export const parseDetail = (raw?: string): Record<string, any> => {

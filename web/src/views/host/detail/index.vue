@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { useWindowSize } from "@vueuse/core";
 import { ElMessage } from "element-plus";
 import * as echarts from "echarts/core";
@@ -24,13 +24,16 @@ import {
   statusType,
   tsText
 } from "@/utils/kk";
+import { setPoll, usePolls } from "@/utils/kkPoll";
 
 defineOptions({ name: "HostDetail" });
 
 echarts.use([LineChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer]);
 
 const route = useRoute();
+const router = useRouter();
 const pod = computed(() => String(route.params.pod || ""));
+usePolls();
 
 const loading = ref(false);
 const detail = ref<HostDetail | null>(null);
@@ -135,15 +138,19 @@ async function onExportMetrics() {
 
 watch(hours, () => loadMetrics());
 
+/** 在此主机执行命令：复用既有的 ?pods= 契约，不再从别处绕 */
+function gotoCommand() {
+  router.push({ name: "CommandShell", query: { pods: pod.value } });
+}
+
 onMounted(async () => {
   await load();
-  timer = setInterval(load, 30000); // 详情与图表 30s：曲线不需要秒级新鲜度
+  // 详情与图表 30s：曲线不需要秒级新鲜度
+  setPoll("host-detail", load, 30000);
   window.addEventListener("resize", onResize);
 });
 
 onBeforeUnmount(() => {
-  if (timer) clearInterval(timer);
-  timer = null;
   window.removeEventListener("resize", onResize);
   chart.value?.dispose();
   chart.value = undefined;
@@ -176,6 +183,7 @@ onBeforeUnmount(() => {
               <el-option label="近 7 天" :value="168" />
             </el-select>
             <el-button @click="load">刷新</el-button>
+            <el-button @click="gotoCommand">在此主机执行命令</el-button>
             <el-button type="primary" :loading="exporting" @click="onExportMetrics">
               导出指标
             </el-button>
