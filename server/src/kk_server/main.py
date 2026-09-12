@@ -33,7 +33,7 @@ def create_app(env=None):
     # 建库放 lifespan：Store 全异步，装配函数保持同步给 uvicorn/测试用
     store = Store(normalize_url(settings.db_url, settings.db_path))
 
-    # 未配 Broker 时允许只做只读管理（老库查看、审计导出），不拦启动
+    # 未配 Broker 时允许只做只读管理（老库查看、数据导出），不拦启动
     bridge = (MqttBridge(store, settings, settings.agent_ips, proto_ver=PROTO_VER)
               if settings.mqtt_url else None)
     if bridge is None:

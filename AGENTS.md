@@ -35,7 +35,9 @@ web/ Vue3 前端（REST 轮询 + ECharts，构建产物由 kk-server 托管）
 # 后端（仓库根目录；uv run 会去下载 Python 3.12 而失败，务必用 .venv 直调）
 .venv/Scripts/python.exe -m pytest agent/tests -q      # Agent 单测
 .venv/Scripts/python.exe -m pytest server/tests -q      # Server 单测 + 集成
-.venv/Scripts/python.exe -m pytest agent/tests server/tests -q   # 全量 202 条：Broker 可达时 202 passed；不可达时 198 passed + 4 skipped（集成用例）
+.venv/Scripts/python.exe -m pytest agent/tests server/tests -q   # 全量 236 条：Broker 可达时 236 passed；不可达时 232 passed + 4 skipped（集成用例）
+# 汇总别用 `| tail -3`：失败行在进度条之前，会被截掉（曾因此漏看红灯两轮）。
+# 要看清结果用 --junitxml 再解析 tests/failures/errors/skipped 计数。
 .venv/Scripts/python.exe -m kk_server                   # 起服务端（默认 admin/admin123）
 
 # 前端（web/ 目录）
@@ -50,7 +52,7 @@ pnpm build       # 产物输出到 web/dist/
 # CI/CD（定义在根 Jenkinsfile，节点要求与凭据见 docs/ci-jenkins.md）
 docker run -d --name kk-ci-broker -p 127.0.0.1:18830:1883 \
   -v "$PWD/deploy/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" eclipse-mosquitto:2
-KK_IT_MQTT_URL=mqtt://127.0.0.1:18830 .venv/Scripts/python.exe -m pytest agent/tests server/tests -q  # 有 Broker 才是 202 passed
+KK_IT_MQTT_URL=mqtt://127.0.0.1:18830 .venv/Scripts/python.exe -m pytest agent/tests server/tests -q  # 有 Broker 才是 236 passed
 KK_MQTT_URL=mqtt://127.0.0.1:18830 .venv/Scripts/python.exe scripts/mqtt_e2e.py                      # Broker 语义冒烟（LWT/离线队列）
 docker build -f server/Dockerfile -t kontainkeeper-server:local .                                    # 上下文必须是仓库根
 bash scripts/ci_smoke.sh kontainkeeper-server:local agent/dist/kk-agent                              # 镜像级部署冒烟
@@ -71,7 +73,7 @@ bash scripts/ci_smoke.sh kontainkeeper-server:local agent/dist/kk-agent         
 - 心跳间隔下限 1s（`agent/src/kk_agent/config.load`），集成测试依赖它在数秒内积累多个序列点；别把下限调回去。
 - Agent 上线（status）即可在 API 看到主机，但**指标要等首帧心跳**；集成测试的等待条件必须同时检查 `metrics.mem_mb` 非空。
 - 插件热加载按 mtime 比较，Windows 文件时间粒度粗：测试写文件后需显式 `os.utime` 递增时间戳。
-- 前端轮询定时器统一用 `setPoll()`/`clearPolls()` 管理，不要直接 `setInterval` 散落各处。菜单**完全静态**（`getAsyncRoutes()` 返回 `[]`，走 `router/modules/`），否则 prod 下 fake server 缺失会导致菜单空白。`pnpm build` 要求 `web/mock/` 目录存在（空目录即可）。
+- 前端**轮询**定时器统一走 `web/src/utils/kkPoll.ts` 的 `usePolls()` + `setPoll(key, fn, ms)`（按 key 覆盖、卸载自动 `clearPolls()`），不要直接 `setInterval` 散落各处；长按等**交互计时器**不在此列（`directives/longpress`），别顺手套上去。菜单**完全静态**（`getAsyncRoutes()` 返回 `[]`，走 `router/modules/`），否则 prod 下 fake server 缺失会导致菜单空白。`pnpm build` 要求 `web/mock/` 目录存在（空目录即可）。
 - 安全红线：命令黑名单（`KK_CMD_BLACKLIST`）+ 审计（`store.add_audit`）不能绕过；Agent 接入管控靠上行帧自报 `ip` 按服务端 `KK_AGENT_IPS` 白名单校验（白名单校验收在 `MqttBridge._on_message` 一处入口，REST 自更新接口走 `deps.agent_ip_auth` 的真实源 IP），`KK_ENV=production` 未配白名单直接拒绝启动。
 
 ## 背景阅读

@@ -40,7 +40,6 @@ const detail = ref<HostDetail | null>(null);
 const hours = ref(24);
 const chartEl = ref<HTMLDivElement>();
 const chart = shallowRef<echarts.ECharts>();
-let timer: ReturnType<typeof setInterval> | null = null;
 
 const disks = computed(() => {
   const d = (detail.value?.metrics?.disks || {}) as Record<string, any>;

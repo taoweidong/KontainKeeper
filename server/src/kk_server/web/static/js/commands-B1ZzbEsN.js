@@ -1,0 +1,1 @@
+import{ay as s}from"./index-DSr1HXEd.js";const a=()=>s.request("get","/api/collect/items"),r=t=>s.request("post","/api/commands",{data:t}),m=t=>s.request("get","/api/commands",{params:t}),o=(t=20)=>s.request("get","/api/commands/batches",{params:{limit:t}}),n=t=>s.request("get",`/api/commands/${t}/out`,{params:{format:"text"}});export{a,o as b,r as c,n as g,m as l};

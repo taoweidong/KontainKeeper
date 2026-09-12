@@ -24,7 +24,6 @@ const onlyAlert = ref(false);
 const lastLoadedAt = ref(0);
 /** 轮询间隔（秒），0 = 停。总览是唯一常驻轮询的页面，10s 足够且不给服务端放大压力 */
 const interval = ref(10);
-let timer: ReturnType<typeof setInterval> | null = null;
 
 const collectItems = ref<string[]>([]);
 const dialog = reactive({

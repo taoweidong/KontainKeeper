@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 
@@ -7,6 +7,7 @@ import { listHosts, type HostSummary } from "@/api/containers";
 import { getHealth, getStats, type HealthResult, type StatsResult } from "@/api/system";
 import { listCommands, type CommandRow } from "@/api/commands";
 import { ageText, durText, statusLabel, statusType, tsText } from "@/utils/kk";
+import { setPoll, usePolls } from "@/utils/kkPoll";
 import { useRenderIcon } from "@/components/ReIcon/src/hooks";
 import MonitorIcon from "~icons/ri/dashboard-2-line";
 import CommandIcon from "~icons/ri/terminal-box-line";
@@ -23,8 +24,8 @@ const alerts = ref(0);
 const stats = ref<StatsResult | null>(null);
 const health = ref<HealthResult | null>(null);
 const recentCmds = ref<CommandRow[]>([]);
-/** 汇总页 10s 轮询：给个「页面活着」的信号即可，不必更密 */
-let timer: ReturnType<typeof setInterval> | null = null;
+// 卸载时统一清轮询（漏一处就是「切页后仍在刷接口」）
+usePolls();
 
 const offline = computed(() => hosts.value.length - online.value);
 
@@ -106,12 +107,8 @@ function goHost(pod: string) {
 
 onMounted(() => {
   load();
-  timer = setInterval(load, 10 * 1000);
-});
-
-onBeforeUnmount(() => {
-  if (timer) clearInterval(timer);
-  timer = null;
+  // 汇总页 10s 轮询：给个「页面活着」的信号即可，不必更密
+  setPoll("welcome", load, 10 * 1000);
 });
 </script>
 
