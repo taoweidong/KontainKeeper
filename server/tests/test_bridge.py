@@ -489,3 +489,89 @@ async def test_interval_check_disabled_when_unset(tmp_path):
     assert not [a for a in await store.list_audit(limit=10)
                 if a["action"] == "interval_violation"]
     await store.close()
+
+
+# ---- A6.2：自更新台账与结果回执 ----
+
+import base64 as _b64
+
+
+def _result_frame(cid, done=True, rc=0, out=b""):
+    return {"id": cid, "seq": 0, "total": 1, "done": done, "rc": rc,
+            "out_b64": _b64.b64encode(out).decode()}
+
+
+async def test_update_receipt_marks_ledger_done(bridge):
+    """Agent 回执 rc=0 → 台账置 done，不再停在 pending。"""
+    await bridge._on_status("up-1", status_frame("up-1", ver="0.1.0"))
+    await bridge.store.set_agent_latest({"version": "9.9.9", "sha256": "s", "size": 1})
+    await bridge._maybe_push_upgrade("up-1", "0.1.0")
+
+    rows = await bridge.store.list_updates()
+    assert len(rows) == 1 and rows[0]["status"] == "pending"
+    uid = rows[0]["id"]
+    assert uid.startswith("up-")
+    # 帧 id 必须与台账主键一致，否则回执无处可落
+    assert json.loads(bridge.cli.msgs[-1]["payload"])["id"] == uid
+
+    await bridge._on_result("up-1", _result_frame(uid, rc=0))
+    row = await bridge.store.get_update(uid)
+    assert row["status"] == "done" and row["finished_at"]
+
+
+async def test_result_frame_for_update_not_rejected(bridge):
+    """up- 前缀结果帧不落入 result_unknown_cmd 审计，而是更新台账。"""
+    await bridge._on_status("up-2", status_frame("up-2", ver="0.1.0"))
+    uid = "up-up-2-1"
+    await bridge.store.create_update(uid, "up-2", "0.1.0", "9.9.9")
+    await bridge._on_result("up-2", _result_frame(uid, rc=1, out=b"sha256_mismatch"))
+
+    row = await bridge.store.get_update(uid)
+    assert row["status"] == "failed" and row["reason"] == "sha256_mismatch"
+    audit = await bridge.store.list_audit(limit=20)
+    assert not [a for a in audit if a["action"] == "result_unknown_cmd"], audit
+    assert [a for a in audit if a["action"] == "agent_update_failed"]
+
+
+async def test_updates_ledger_done_by_status_evidence(bridge):
+    """回执帧可能来不及发出：主机上报新 agent_ver 时台账补成 done。"""
+    uid = "up-up-3-1"
+    await bridge.store.upsert_container("up-3", "img", "0.1.0", 60)
+    await bridge.store.create_update(uid, "up-3", "0.1.0", "0.3.0")
+    await bridge._on_status("up-3", status_frame("up-3", ver="0.3.0"))
+    assert (await bridge.store.get_update(uid))["status"] == "done"
+
+    # 仍然落后的主机不得被误判为已升级
+    uid2 = "up-up-3-2"
+    await bridge.store.create_update(uid2, "up-3", "0.1.0", "0.9.0")
+    await bridge._on_status("up-3", status_frame("up-3", ver="0.3.0"))
+    assert (await bridge.store.get_update(uid2))["status"] == "pending"
+
+
+async def test_updates_ledger_swept_timeout(bridge):
+    """在途超过 30min 未终结 → timeout（可见的降级，不是静默卡住）。"""
+    uid = "up-up-4-1"
+    await bridge.store.create_update(uid, "up-4", "0.1.0", "9.9.9")
+    await bridge.store.exec_sql("UPDATE kk_updates SET created_at=:t WHERE id=:i",
+                                {"t": int(time.time()) - 3600, "i": uid})
+    n = await bridge.store.sweep_update_timeouts()
+    assert n == 1
+    assert (await bridge.store.get_update(uid))["status"] == "timeout"
+
+
+async def test_queued_upgrade_not_swept_by_pending_ttl(bridge):
+    """queued（离线排队）行受 7d 阈值约束，不被 30min 的 pending 阈值误伤。"""
+    uid = "up-up-5-1"
+    await bridge.store.create_update(uid, "up-5", "0.1.0", "9.9.9", status="queued")
+    await bridge.store.exec_sql("UPDATE kk_updates SET created_at=:t WHERE id=:i",
+                                {"t": int(time.time()) - 3600, "i": uid})
+    assert await bridge.store.sweep_update_timeouts() == 0
+    assert (await bridge.store.get_update(uid))["status"] == "queued"
+
+
+async def test_in_flight_update_dedupe(bridge):
+    """有未终结台账 → in_flight_update 能查到（D2.3 去重的依据）。"""
+    await bridge.store.create_update("up-up-6-1", "up-6", "0.1.0", "9.9.9")
+    row = await bridge.store.in_flight_update("up-6")
+    assert row and row["id"] == "up-up-6-1"
+    assert await bridge.store.in_flight_update("up-404") is None

@@ -28,11 +28,19 @@ async def stats(request: Request):
         "last_msg_age_sec": (int(time.time()) - bridge.stats["last_msg_ts"]
                              if bridge and bridge.stats["last_msg_ts"] else None),
     }
+    # 升级在途/失败计数：500 台的升级结果必须先有个总量口径，再去看台账明细
+    updates = await store.updates_summary()
     return {
         "ok": True,
         "uptime_sec": int(time.time() - _started),
         "hosts": counts["hosts"],
         "commands": counts["commands"],
         "storage": counts["storage"],
+        "updates": {
+            "in_flight": updates.get("pending", 0) + updates.get("queued", 0),
+            "done": updates.get("done", 0),
+            "failed": updates.get("failed", 0),
+            "timeout": updates.get("timeout", 0),
+        },
         "broker": broker,
     }

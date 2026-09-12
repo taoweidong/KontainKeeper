@@ -91,6 +91,26 @@ commands = Table(
     Index("idx_cmd_pod", "pod", "created_at"),
 )
 
+# 自更新台账（A6.2）：升级是「一主机一次、长周期（下载 + 重启）」的操作，
+# 生命周期与命令不同——塞进 kk_commands 会污染命令历史页（用户看到的「命令」里
+# 混着升级记录），并让 sweep_command_timeouts 的超时语义混淆。
+#
+# status: pending（已下发、在途） / queued（下发时离线，Broker 排队中，D2.2） /
+#         done / failed / timeout
+# reason: 失败原因码，与 Agent updater 的原因码一一对应
+updates = Table(
+    "kk_updates", MD,
+    Column("id", String(48), primary_key=True),          # up-<host>-<ts>
+    Column("pod", String(120), nullable=False),
+    Column("from_version", String(40), nullable=False, server_default=""),
+    Column("to_version", String(40), nullable=False, server_default=""),
+    Column("status", String(12), nullable=False, server_default="pending"),
+    Column("reason", String(40), nullable=False, server_default=""),
+    Column("created_at", BigInteger, nullable=False),
+    Column("finished_at", BigInteger),
+    Index("idx_upd_pod", "pod", "created_at"),
+)
+
 audit = Table(
     "kk_audit", MD,
     Column("id", Integer, primary_key=True, autoincrement=True),

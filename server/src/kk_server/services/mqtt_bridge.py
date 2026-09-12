@@ -19,6 +19,7 @@ KK_AGENT_IPS 白名单统一校验（ipaddress 网段匹配）。MQTT 经 Broker
 并保证每个实例 client_id 唯一——共用 client_id 会被 Broker 判为重复会话而互相踢下线。
 """
 import asyncio
+import base64
 import json
 import logging
 import ssl
@@ -29,6 +30,14 @@ import paho.mqtt.client as mqtt
 
 from ..config import ip_in_whitelist
 from ..models.version import version_lt
+
+
+def _b64_text(raw):
+    """结果帧里的输出是 base64：更新失败原因要走它回传。"""
+    try:
+        return base64.b64decode(raw or "", validate=False).decode("utf-8", "replace")
+    except Exception:
+        return ""
 
 log = logging.getLogger("kk.bridge")
 
@@ -64,6 +73,7 @@ class MqttBridge:
         self.stats = {"status": 0, "hb": 0, "result": 0, "rejected": 0,
                       "cmd_published": 0, "cmd_failed": 0, "upgrade_pushed": 0,
                       "sweeps": 0, "swept_timeouts": 0, "swept_offline": 0,
+                      "upgrade_done": 0, "upgrade_failed": 0,
                       # 上报间隔低于 KK_INTERVAL_MIN 的心跳数：500 台规模下这是
                       # 发现「某批机器被误配成 1s 上报」的唯一手段
                       "interval_violation": 0,
@@ -200,12 +210,16 @@ class MqttBridge:
                         host, body.get("proto_ver"), self.proto_ver)
             return
         online = bool(body.get("online"))
+        agent_ver = str(body.get("agent_ver") or "")
         await self.store.set_online(host, online, ts=body.get("ts"),
                                     image=str(body.get("image") or ""),
-                                    agent_ver=str(body.get("agent_ver") or ""))
+                                    agent_ver=agent_ver)
         self.stats["status"] += 1
         if online:
-            await self._maybe_push_upgrade(host, str(body.get("agent_ver") or ""))
+            # 状态帧是升级成功与否的**权威佐证**：execv 前的回执帧可能来不及发出，
+            # 主机重启后上报的新 agent_ver 才作数（A6.2 时序约定）
+            await self.store.finish_updates_reaching(host, agent_ver)
+            await self._maybe_push_upgrade(host, agent_ver)
 
     async def _on_hb(self, host, body):
         if not await self.store.get_container(host):
@@ -242,6 +256,12 @@ class MqttBridge:
         cid = body.get("id")
         if not cid:
             return
+        # 自更新回执：id 是台账主键（up- 前缀），不是 commands 表的行。
+        # 不特判就会被当成未知命令写 result_unknown_cmd 审计 —— 正是 A6.2 要修的
+        # 「更新结果是全平台唯一没有回执的操作」
+        if str(cid).startswith("up-"):
+            await self._on_update_result(host, str(cid), body)
+            return
         lock = self._result_locks.get(cid)
         if lock is None:
             lock = self._result_locks[cid] = asyncio.Lock()
@@ -264,6 +284,37 @@ class MqttBridge:
             # 水位去重挡掉，单帧处理也不再有并发交错
             if body.get("done"):
                 self._result_locks.pop(cid, None)
+
+    async def _on_update_result(self, host, cid, body):
+        """自更新回执（A6.2）：更新台账，失败另写审计。
+
+        只认终态帧（done=1）——中间块不带 rc，不能据此判定。
+        """
+        if not body.get("done"):
+            return
+        row = await self.store.get_update(cid)
+        if not row:
+            return
+        if row["pod"] != host:
+            self.stats["rejected"] += 1
+            await self.store.add_audit("mqtt", "update_result_mismatch",
+                                       {"expect": row["pod"], "got": host, "id": cid})
+            return
+        rc = body.get("rc")
+        if rc in (None, 0):
+            await self.store.finish_update(cid, "done")
+            self.stats["upgrade_done"] = self.stats.get("upgrade_done", 0) + 1
+            log.info("agent upgrade done host=%s -> %s", host, row["to_version"])
+            return
+        reason = _b64_text(body.get("out_b64"))[:40] or "agent_reported_failure"
+        await self.store.finish_update(cid, "failed", reason)
+        self.stats["upgrade_failed"] = self.stats.get("upgrade_failed", 0) + 1
+        await self.store.add_audit("mqtt", "agent_update_failed",
+                                   {"host": host, "id": cid,
+                                    "to_version": row["to_version"], "reason": reason,
+                                    "rc": rc})
+        log.warning("agent upgrade failed host=%s to=%s reason=%s",
+                    host, row["to_version"], reason)
 
     # ---- 下行 ----
     def _cmd_topic(self, host):
@@ -314,7 +365,11 @@ class MqttBridge:
         latest = await self.store.get_agent_latest()
         if not latest or not version_lt(agent_ver or "", latest.get("version", "")):
             return
-        payload = {"id": "u-" + host, "kind": "update",
+        # 先写台账再用台账主键作为 cmd 帧的 id：回执才有地方落（A6.2）。
+        # 旧实现用 "u-<host>"，即使 Agent 回传也会被判为未知命令拒收。
+        uid = "up-%s-%d" % (host, int(time.time()))
+        await self.store.create_update(uid, host, agent_ver or "", latest["version"])
+        payload = {"id": uid, "kind": "update",
                    "version": latest["version"], "sha256": latest.get("sha256", ""),
                    "size": latest.get("size", 0), "url": self._download_url()}
         try:
@@ -323,6 +378,7 @@ class MqttBridge:
             log.info("pushed upgrade %s -> %s to %s", agent_ver, latest["version"], host)
         except Exception:
             # 推失败意味着该主机停在旧版本；静默吞掉就再也发现不了
+            await self.store.finish_update(uid, "failed", "publish_failed")
             log.warning("push upgrade failed host=%s", host, exc_info=True)
 
     # ---- 周期任务 ----

@@ -102,6 +102,31 @@ def _run_plugin_reload(cfg, log):
     return {"rc": 0, "out": body.encode("utf-8"), "timed_out": False, "elapsed_ms": 0}
 
 
+def _run_update(tr, cid, cmd, cfg, log):
+    """推送式自更新（A6.2）：成功/失败都回传一帧极简结果。
+
+    此前 kind=update 是唯一不回传 result 的 kind，服务端无从知道 500 台里
+    升了多少、失败多少、卡在哪一步。
+
+    成功回执由 apply_manifest_receipt 在 execv 之前发出（进程被替换后来不及发帧）；
+    失败回执在这里发，out 里带原因码。
+    """
+
+    def before_restart():
+        # B6.1：让服务端能把「正在自更新」与「容器停了」区分开
+        try:
+            tr.publish_status(False, "updating")
+        except Exception:
+            pass
+
+    ok, reason = kk_updater.apply_manifest_receipt(cfg, log, cmd,
+                                                   on_before_restart=before_restart)
+    res = {"rc": 0 if ok else 1, "out": (reason or "").encode("utf-8", "replace"),
+           "timed_out": False, "elapsed_ms": 0}
+    send_result(tr, cid, res)
+    return res
+
+
 def make_dispatcher(tr, runner, cfg, log, state_box):
     """构造 MQTT 命令回调。运行在 paho 网络线程，必须快速返回。"""
 
@@ -117,8 +142,9 @@ def make_dispatcher(tr, runner, cfg, log, state_box):
         elif kind == "plugin_reload":
             runner.submit_fn(cid, lambda: _run_plugin_reload(cfg, log))
         elif kind == "update":
-            # 服务端推送式自更新：命令载荷即版本清单，形态校验在 updater 内做
-            kk_updater.spawn_apply(cfg, log, cmd)
+            # 服务端推送式自更新：命令载荷即版本清单，形态校验在 updater 内做。
+            # 走 runner 而不是裸线程：更新要回执（A6.2），失败原因必须能送到服务端
+            runner.submit_fn(cid, lambda: _run_update(tr, cid, cmd, cfg, log))
         else:
             send_result(tr, cid, {"rc": 127, "out": b"unknown command kind: " + kind.encode(),
                                   "timed_out": False, "elapsed_ms": 0})

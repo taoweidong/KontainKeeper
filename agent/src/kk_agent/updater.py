@@ -221,42 +221,75 @@ def verify_and_replace(data, target):
     return True
 
 
-def apply_manifest(cfg, log, manifest):
+def apply_manifest(cfg, log, manifest, on_before_restart=None):
     """按服务端清单下载、校验、替换并自重启。
 
     铁律：形态校验全部通过后才允许下载与落盘。任一步不满足即返回 False，
     且不产生任何副作用。
+
+    on_before_restart：execv 之前的钩子（B6.1 用它发 reason=updating 的状态帧）。
+    钩子失败只记日志，不影响更新主流程。
+    """
+    ok, _ = apply_manifest_receipt(cfg, log, manifest, on_before_restart)
+    return ok
+
+
+def apply_manifest_receipt(cfg, log, manifest, on_before_restart=None):
+    """同 apply_manifest，但额外返回失败原因码（A6.2）。
+
+    升级是全平台唯一没有回执的操作——服务端不知道自己推的更新有没有生效，
+    500 台里失败多少台无从得知。原因码进台账，让失败可查。
     """
     log = _log(log)
     ver = manifest.get("version")
     if not ver or not version_lt(kk_config.AGENT_VER, ver):
-        return False
+        return False, "not_newer"
 
     target = cfg.get("agent_bin") or _default_target()
     if not target:
         log.info("agent %s available, but no self-replace target configured "
                  "(source-mode run); set KK_AGENT_BIN to enable self-update", ver)
-        return False
+        return False, "no_target"
     if not _is_binary_target(target):
         log.warning("refuse to self-update: target %r is not a standalone binary", target)
-        return False
+        return False, "bad_target"
     if not os.path.exists(target):
         log.warning("refuse to self-update: target %r does not exist", target)
-        return False
+        return False, "bad_target"
 
     url = resolve_download_url(cfg, log, manifest)
     if not url:
-        return False
+        return False, "no_url"
 
     log.info("agent update available: %s -> %s, downloading", kk_config.AGENT_VER, ver)
     with _update_lock:
-        data = download_binary(url, log, cfg.get("update_insecure"))
+        try:
+            data = download_binary(url, log, cfg.get("update_insecure"))
+        except Exception as e:
+            log.warning("download failed: %s", e)
+            return False, "http_error"
+        expected = str(manifest.get("sha256") or "")
+        if expected and hashlib.sha256(data).hexdigest().lower() != expected.lower():
+            log.warning("sha256 mismatch, refuse to replace")
+            return False, "sha256_mismatch"
         if not _verify_signature(data, manifest, cfg, log):
-            return False
-        verify_and_replace(data, target)
+            # sha256 已在上面单独判过，走到这里只剩签名问题
+            return False, "hmac_mismatch"
+        try:
+            verify_and_replace(data, target)
+        except Exception as e:
+            log.warning("replace failed: %s", e)
+            return False, "disk_error"
         log.info("agent binary replaced (%d bytes); restarting", len(data))
+        # 成功回执必须在 execv **之前** 发出：进程被替换后来不及发帧。
+        # 此刻 os.replace 已返回，判定成功是准确的。
+        if on_before_restart:
+            try:
+                on_before_restart()
+            except Exception as e:
+                log.warning("on_before_restart hook failed: %s", e)
         os.execv(target, [target] + sys.argv[1:])
-    return True
+    return True, ""
 
 
 def check_update(cfg, log):

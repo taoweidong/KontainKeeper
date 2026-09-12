@@ -87,6 +87,20 @@ def _download_url(request: Request) -> str:
     return base + path if base else path
 
 
+@router.get("/updates")
+async def list_updates(request: Request, limit: int = 50):
+    """自更新台账（A6.2）：回答「这次上传的新版本，500 台升了多少、失败多少」。
+
+    各状态计数 + 最近明细（含失败原因），逐台可核验。
+    """
+    await current_user(request)
+    store = request.app.state.store
+    limit = min(max(int(limit or 50), 1), 500)
+    items, summary = await asyncio.gather(
+        store.list_updates(limit=limit), store.updates_summary())
+    return {"items": items, "summary": summary, "limit": limit}
+
+
 @router.get("/agent/latest")
 async def agent_latest(request: Request, ver: str = ""):
     await agent_ip_auth(request)

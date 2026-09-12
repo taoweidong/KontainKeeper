@@ -19,9 +19,10 @@ from sqlalchemy.pool import StaticPool
 
 from .tables import (MD, ONLINE_GRACE, _ADD_COLUMNS, _CMD_COLS, _SUMMARY_COLS,
                      admins, audit, commands, containers, heartbeats, hourly, kv,
-                     sessions)
+                     sessions, updates)
 from .helpers import (_PWDF_ITERS_LEGACY, _b64_tail, _num, _pwdf,
                        mask_url, normalize_url)
+from .version import version_lt as _version_lt
 
 log = logging.getLogger("kk.store")
 
@@ -492,6 +493,83 @@ class Store:
             .where(oldest + commands.c.timeout + slack < now)
             .values(status="timeout", finished_at=now))
 
+    # ---- 自更新台账（A6.2）----
+    async def create_update(self, uid, pod, from_version, to_version, status="pending"):
+        await self._run(insert(updates).values(
+            id=uid, pod=pod, from_version=from_version or "", to_version=to_version or "",
+            status=status, reason="", created_at=int(time.time()), finished_at=None))
+        return uid
+
+    async def get_update(self, uid):
+        return await self._one(select(updates).where(updates.c.id == uid))
+
+    async def finish_update(self, uid, status, reason=""):
+        """终结一条台账；已是终态的行不再改写（避免迟到回执覆盖 done）。"""
+        return await self._run(
+            update(updates).where(updates.c.id == uid)
+            .where(updates.c.status.in_(("pending", "queued")))
+            .values(status=status, reason=str(reason or "")[:40],
+                    finished_at=int(time.time())))
+
+    async def list_updates(self, limit=50):
+        rows = await self._all(select(updates).order_by(updates.c.created_at.desc())
+                               .limit(limit))
+        return rows
+
+    async def updates_summary(self):
+        """面板用：各状态计数（500 台升级后先回答「升了多少、失败多少」）。"""
+        rows = await self._all(select(updates.c.status.label("status"),
+                                      func.count().label("n"))
+                               .group_by(updates.c.status))
+        return {r["status"]: r["n"] for r in rows}
+
+    async def in_flight_update(self, pod):
+        """该主机是否有未终结的升级：D2.3 的 in_flight 去重靠它。
+
+        没有台账就只能靠版本比较猜，必然重复下发与重复下载（8–12MB/台）。
+        """
+        return await self._one(
+            select(updates.c.id, updates.c.to_version)
+            .where(updates.c.pod == pod)
+            .where(updates.c.status.in_(("pending", "queued")))
+            .order_by(updates.c.created_at.desc()).limit(1))
+
+    async def finish_updates_reaching(self, pod, agent_ver):
+        """状态帧佐证：主机已上报某版本 → 目标不高于它的在途台账收敛为 done。
+
+        回执帧只是辅助信号（execv 前可能来不及发），**状态帧才是权威**——
+        以主机实际上报的 agent_ver 作数。
+        """
+        rows = await self._all(
+            select(updates.c.id, updates.c.to_version)
+            .where(updates.c.pod == pod)
+            .where(updates.c.status.in_(("pending", "queued"))))
+        done = []
+        for r in rows:
+            if not r["to_version"] or not _version_lt(agent_ver or "", r["to_version"]):
+                done.append(r["id"])
+        for uid in done:
+            await self.finish_update(uid, "done")
+        return len(done)
+
+    async def sweep_update_timeouts(self, now=None, pending_ttl=1800, queued_ttl=7 * 86400):
+        """在途升级收敛为 timeout。
+
+        两档阈值是刻意的：pending 是「已下发、在线」，30min 足够下载 + 重启；
+        queued 是「下发时离线，消息还在 Broker 排着」，主机可能几小时后才上线，
+        30min 一到就记 timeout 会把「正常排队」误报成失败。
+        """
+        now = int(now or time.time())
+        n = await self._run(
+            update(updates).where(updates.c.status == "pending")
+            .where(updates.c.created_at < now - pending_ttl)
+            .values(status="timeout", reason="no_receipt", finished_at=now))
+        n += await self._run(
+            update(updates).where(updates.c.status == "queued")
+            .where(updates.c.created_at < now - queued_ttl)
+            .values(status="timeout", reason="queue_expired", finished_at=now))
+        return n
+
     # ---- 审计 ----
     async def add_audit(self, actor, action, detail=None):
         await self._run(insert(audit).values(
@@ -625,7 +703,8 @@ class Store:
         await self.kv_set("agg_hour", now_hour - 1)
         return n
 
-    async def cleanup(self, now=None, raw_days=2, cmd_days=30, hourly_days=90, out_days=7):
+    async def cleanup(self, now=None, raw_days=2, cmd_days=30, hourly_days=90, out_days=7,
+                      update_days=90):
         """存储回收：只增不减的表在这里收敛（修 P1-6）。
 
         两条不同的保留长度是刻意的：命令状态行要留 30 天（审计可追溯），
@@ -645,6 +724,9 @@ class Store:
         stats["outputs_purged"] = await self._purge_outputs(now, out_days)
         stats["sessions_deleted"] = await self._run(
             delete(sessions).where(sessions.c.expires < now))
+        # 台账与命令同型只增不减；升级是低频操作，行数远小于心跳，保留 90 天
+        stats["updates_deleted"] = await self._delete_batched(
+            updates, updates.c.created_at < now - update_days * 86400, updates.c.id)
         # sweeper 漏掉的僵死命令盖成 lost 并补 finished_at：不补时间戳的 lost 行
         # 永远落在上面那条 DELETE 的窗口之外，正是 P1-6。
         stats["commands_lost"] = await self._run(
