@@ -429,3 +429,63 @@ def test_production_requires_whitelist():
                        "KK_ADMIN_PASS": "x" * 20,
                        "KK_WEB_DIR": "/tmp/noweb"})
     assert len(s.agent_ips) == 1
+
+
+# ---- A4：上报间隔下限检测（P1-4）----
+
+def hb_frame(host, interval, ip=GOOD_IP):
+    return {"host": host, "ip": ip, "proto_ver": 3, "agent_ver": "0.3.0",
+            "interval": interval, "ts": int(time.time()),
+            "metrics": {"cpu": 1.0, "mem_mb": 10.0}}
+
+
+async def _mk_bridge(tmp_path, env_extra=None):
+    store = Store(str(tmp_path / "iv.db"))
+    await store.setup()
+    env = {
+        "KK_DB_PATH": str(tmp_path / "iv.db"),
+        "KK_MQTT_URL": "mqtt://broker:1883",
+        "KK_WEB_DIR": str(tmp_path / "noweb"),
+    }
+    env.update(env_extra or {})
+    settings = load_settings(env)
+    b = MqttBridge(store, settings, settings.agent_ips, loop=None, proto_ver=3)
+    b.cli = FakePublish()
+    return b, store
+
+
+async def test_interval_violation_audited(tmp_path):
+    """低于下限 → 审计 + stats 计数，但**照常落库**（检测不阻断，避免丢指标）。"""
+    b, store = await _mk_bridge(tmp_path, {"KK_INTERVAL_MIN": "10"})
+    await b._on_status("web-01", status_frame("web-01"))
+    await b._on_hb("web-01", hb_frame("web-01", 1))
+
+    rows = await store.metrics_series("web-01", hours=24)
+    assert len(rows[0]) == 1, "违规心跳也必须落库"
+    audit = await store.list_audit(limit=10)
+    hit = [a for a in audit if a["action"] == "interval_violation"]
+    assert hit and hit[0]["detail"]
+    assert b.stats["interval_violation"] == 1
+
+
+async def test_interval_within_limit_no_audit(tmp_path):
+    """等于或高于下限不告警：阈值边界不能差一。"""
+    b, store = await _mk_bridge(tmp_path, {"KK_INTERVAL_MIN": "10"})
+    await b._on_status("web-02", status_frame("web-02"))
+    await b._on_hb("web-02", hb_frame("web-02", 10))
+    await b._on_hb("web-02", hb_frame("web-02", 60))
+    assert b.stats["interval_violation"] == 0
+    assert not [a for a in await store.list_audit(limit=10)
+                if a["action"] == "interval_violation"]
+
+
+async def test_interval_check_disabled_when_unset(tmp_path):
+    """KK_INTERVAL_MIN 未配 = 不检查（原死配置的默认行为保持不变）。"""
+    b, store = await _mk_bridge(tmp_path)
+    assert b.s.interval_min is None
+    await b._on_status("web-03", status_frame("web-03"))
+    await b._on_hb("web-03", hb_frame("web-03", 1))
+    assert b.stats["interval_violation"] == 0
+    assert not [a for a in await store.list_audit(limit=10)
+                if a["action"] == "interval_violation"]
+    await store.close()

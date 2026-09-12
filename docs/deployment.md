@@ -195,7 +195,7 @@ uv run kk-server                            # 监听 0.0.0.0:8443
 | `KK_HOST` / `KK_PORT` | 监听地址 / 端口 | `0.0.0.0` / `8443` |
 | `KK_ENV` | 设 `production` 启用启动安全自检 | 空 |
 | `KK_WEB_DIR` | 前端静态目录 | 包内 `web/` |
-| `KK_ENFORCED_INTERVAL` | 强制 Agent 心跳间隔（秒，可选） | 不强制 |
+| `KK_INTERVAL_MIN` | 允许的最小上报间隔（秒）。低于此值的心跳**照常落库**，但会写审计 `interval_violation` 并在 `/api/system/stats` 的 `broker.stats.interval_violation` 计数——用于发现误配机器。留空 = 不检查 | `""` |
 
 ### 4.6 数据库选型
 

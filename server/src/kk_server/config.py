@@ -17,7 +17,9 @@ class Settings:
     admin_user: str
     admin_pass: str
     cmd_blacklist: list
-    enforced_interval: int | None
+    # 允许的最小上报间隔（秒），0/空 = 不检查。语义是「检测」而非「强制」：
+    # 心跳是唯一指标源，低于阈值也照常落库，只审计 + 计数，让人去修镜像配置。
+    interval_min: int | None
     agent_bin_dir: str
     web_dir: str | None
     # Agent 接入白名单（v3：替代原 token 认证）。ipaddress.ip_network 对象列表，
@@ -85,8 +87,10 @@ def load_settings(env=None) -> Settings:
     admin_user = env.get("KK_ADMIN_USER", "admin")
     admin_pass = env.get("KK_ADMIN_PASS", "admin123")
     cmd_blacklist = [p.strip().lower() for p in env.get("KK_CMD_BLACKLIST", DEFAULT_BLACKLIST).split(",") if p.strip()]
-    enforced_raw = env.get("KK_ENFORCED_INTERVAL", "").strip()
-    enforced_interval = int(enforced_raw) if enforced_raw.isdigit() else None
+    # 原名 KK_ENFORCED_INTERVAL 全仓零消费点，且 "enforced" 暗示强制与实现的
+    # 「检测」语义不符，留着会再次误导 → 改名（旧名无兼容负担）
+    interval_raw = env.get("KK_INTERVAL_MIN", "").strip()
+    interval_min = int(interval_raw) if interval_raw.isdigit() else None
     agent_bin_dir = env.get("KK_AGENT_BIN_DIR", "agent_assets")
     web_dir = env.get("KK_WEB_DIR") or None
     # Agent 接入白名单（v3：替代原 KK_AGENT_TOKENS token 池）
@@ -103,7 +107,7 @@ def load_settings(env=None) -> Settings:
             "KK_ENV=production 但 KK_AGENT_IPS 未配置（白名单为空 = 放行所有上报）；"
             "请设置 KK_AGENT_IPS（逗号分隔 IP/CIDR，如 10.0.0.0/24,192.168.1.5）再启动")
     return Settings(db_path, admin_user, admin_pass, cmd_blacklist,
-                    enforced_interval, agent_bin_dir, web_dir, agent_ips,
+                    interval_min, agent_bin_dir, web_dir, agent_ips,
                     db_url=db_url,
                     mqtt_url=env.get("KK_MQTT_URL", "").strip(),
                     # 与 Agent 的 KK_TOPIC_PREFIX 同名，双端配一个键不容易写错

@@ -64,6 +64,9 @@ class MqttBridge:
         self.stats = {"status": 0, "hb": 0, "result": 0, "rejected": 0,
                       "cmd_published": 0, "cmd_failed": 0, "upgrade_pushed": 0,
                       "sweeps": 0, "swept_timeouts": 0, "swept_offline": 0,
+                      # 上报间隔低于 KK_INTERVAL_MIN 的心跳数：500 台规模下这是
+                      # 发现「某批机器被误配成 1s 上报」的唯一手段
+                      "interval_violation": 0,
                       "last_msg_ts": 0, "started_at": int(time.time())}
 
         self.cli = mqtt.Client(
@@ -212,6 +215,28 @@ class MqttBridge:
             return
         await self.store.record_hb(host, body)
         self.stats["hb"] += 1
+        await self._check_interval(host, body)
+
+    async def _check_interval(self, host, body):
+        """上报间隔下限检测（P1-4）：只审计 + 计数，**照常落库**。
+
+        为什么检测而不阻断：心跳是唯一指标源，掐掉数据流等于丢指标。
+        治理目标是「发现并让人去修镜像/环境变量」，不是服务端替人背锅。
+        """
+        floor = getattr(self.s, "interval_min", None)
+        if not floor:
+            return
+        try:
+            interval = int(body.get("interval") or 0)
+        except (TypeError, ValueError):
+            return
+        if interval and interval < floor:
+            self.stats["interval_violation"] += 1
+            await self.store.add_audit("mqtt", "interval_violation",
+                                       {"host": host, "interval": interval,
+                                        "min": floor})
+            log.warning("上报间隔低于下限 host=%s interval=%ss min=%ss",
+                        host, interval, floor)
 
     async def _on_result(self, host, body):
         cid = body.get("id")

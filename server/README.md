@@ -87,7 +87,7 @@ uv sync --all-packages                 # 仓库根执行，统一安装全部成
 | `KK_AGENT_IPS` | Agent 接入白名单（逗号分隔 IP / CIDR；空 = 放行全部，**生产必配**） | `""` |
 | `KK_ADMIN_USER` / `KK_ADMIN_PASS` | 管理员账号 | `admin`/`admin123` |
 | `KK_CMD_BLACKLIST` | 命令黑名单（逗号分隔，命中拒绝并审计） | `rm -rf /,mkfs,reboot,...` |
-| `KK_ENFORCED_INTERVAL` | 强制心跳间隔（秒），留空不强制 | `""` |
+| `KK_INTERVAL_MIN` | 最小上报间隔（秒），留空不检查。低于阈值只审计 + 计数，不阻断上报 | `""` |
 | `KK_AGENT_BIN_DIR` | Agent 二进制存储目录 | `agent_assets` |
 | `KK_WEB_DIR` | 前端静态目录（缺省用包内 `web/`） | `<包>/web` |
 | `KK_LOG_LEVEL` | 日志级别 | `info` |
