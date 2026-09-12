@@ -1,12 +1,19 @@
 <script setup lang="ts">
-/** 采集面板：按项勾选指标下发 collect 命令，下发后历史卡片立即刷新。 */
-import { onMounted, reactive, ref } from "vue";
+/** 采集面板：按项勾选指标下发 collect 命令。
+
+与命令面板共用 CommandWorkbench 双栏骨架（A5.3）：左栏换成采集项勾选，
+右栏是同一个执行历史（含分页 / 批次 / 导出）。
+*/
+import { computed, onMounted, reactive, ref } from "vue";
 import { useRoute } from "vue-router";
 import { ElMessage } from "element-plus";
 
 import { createCommand, listCollectItems } from "@/api/commands";
 import { listHosts, type HostSummary } from "@/api/containers";
+import { confirmDispatch } from "@/utils/kkConfirm";
 import CommandHistory from "../components/CommandHistory.vue";
+import CommandWorkbench from "../components/CommandWorkbench.vue";
+import HostPicker from "../components/HostPicker.vue";
 
 defineOptions({ name: "CommandCollect" });
 
@@ -17,7 +24,12 @@ const items = ref<string[]>([]);
 const submitting = ref(false);
 const history = ref<InstanceType<typeof CommandHistory>>();
 
-const collectForm = reactive({ pods: [] as string[], items: ["cpu", "mem", "disk"] as string[] });
+const collectForm = reactive({
+  pods: [] as string[],
+  items: ["cpu", "mem", "disk"] as string[]
+});
+
+const picked = computed(() => hosts.value.filter(h => collectForm.pods.includes(h.pod)));
 
 async function loadHosts() {
   try {
@@ -42,6 +54,7 @@ function errText(e: any): string {
 async function submitCollect() {
   if (!collectForm.pods.length) return ElMessage.warning("请选择主机");
   if (!collectForm.items.length) return ElMessage.warning("请勾选采集项");
+  if (!(await confirmDispatch(picked.value, "下发采集"))) return;
   submitting.value = true;
   try {
     const res = await createCommand({
@@ -50,7 +63,7 @@ async function submitCollect() {
       items: collectForm.items
     });
     ElMessage.success(`已下发 ${res.items.length} 条采集命令`);
-    history.value?.reload();
+    history.value?.focusBatch(res.batch_id, res.items.map(i => i.id));
   } catch (e: any) {
     ElMessage.error("下发失败：" + errText(e));
   } finally {
@@ -59,7 +72,7 @@ async function submitCollect() {
 }
 
 onMounted(async () => {
-  // 总览页「批量采集」跳来时带上预选主机
+  // 总览页「批量采集」跳来时带上预选主机（?pods= 契约不变）
   const preset = String(route.query.pods || "");
   if (preset) collectForm.pods = preset.split(",").filter(Boolean);
   await Promise.all([loadHosts(), loadItems()]);
@@ -67,26 +80,11 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div>
-    <el-card shadow="never" class="kk-card">
+  <CommandWorkbench>
+    <template #form>
       <el-form label-width="90px">
         <el-form-item label="目标主机">
-          <el-select
-            v-model="collectForm.pods"
-            multiple
-            filterable
-            collapse-tags
-            collapse-tags-tooltip
-            placeholder="选择主机（可多选）"
-            style="width: 100%"
-          >
-            <el-option
-              v-for="h in hosts"
-              :key="h.pod"
-              :label="h.online ? h.pod : h.pod + '（离线）'"
-              :value="h.pod"
-            />
-          </el-select>
+          <HostPicker v-model:pods="collectForm.pods" />
         </el-form-item>
         <el-form-item label="采集项">
           <el-checkbox-group v-model="collectForm.items">
@@ -101,8 +99,10 @@ onMounted(async () => {
           </el-button>
         </el-form-item>
       </el-form>
-    </el-card>
+    </template>
 
-    <CommandHistory ref="history" />
-  </div>
+    <template #result>
+      <CommandHistory ref="history" />
+    </template>
+  </CommandWorkbench>
 </template>
