@@ -3,7 +3,7 @@
 > 编写日期：2026-09-12　基线：`main` @ 31768a4（工作区干净）
 > 依据：[`docs/quality-assessment-2026-09-12.md`](quality-assessment-2026-09-12.md)
 > 性质：**方案文档，评审通过后再动代码**。分两阶段，阶段一交付核心能力，阶段二加固。
-> 约定：不引入新第三方依赖（导出用标准库 `csv` + `io`），不改表名与列名，不改协议（阶段一零协议变更）。
+> 约定：不引入新第三方依赖（导出用标准库 `csv` + `io`；前端只用 Element Plus + 现有 `kk-*` 工具类），不改表名与列名，不改协议（阶段一零协议变更）。
 
 ---
 
@@ -15,6 +15,7 @@
 | **一** | A2 批量发布回路去 N+1 | 补 P1-1：500 台点击零 DB 回查 | `commands.py` 1 处循环重写 | 无 |
 | **一** | A3 结果分页 + 批次聚合 | 补 P1-2/P1-3：能看全、能按批次核验 | 1 列登记 + store 2 方法 + 控制器 + 前端页 | A1 复用筛选参数 |
 | **一** | A4 上报间隔治理 | 补 P1-4：消除死配置 | `config.py` + `mqtt_bridge._on_hb` + stats | 无 |
+| **一** | A5 **Web 前端易用性与布局改造** | 命令快速下发 / 结果查询 / 导出入口 / 消除布局 magic number | 新增 4 个组件 + `kk.scss` 布局基建 + 5 个页面改造 | 复用 A1 导出、A3 分页；与 A1/A3 同批交付体验最佳 |
 | **二** | B1 客户端 nice 降权 | 补 P2-1：零代码级隔离 → 优先级隔离 | `entrypoint-wrapper.sh` | 无 |
 | **二** | B2 自更新回滚接口 | 补 P2-7：`.prev` 有文件无入口 | 1 端点 + 前端 1 按钮 | 无 |
 | **二** | B3 登录限流补 IP 维度 | 补 P2-3 | `auth.py` | 无 |
@@ -22,7 +23,7 @@
 | **二** | B5 CI 落地（真库 + Broker + nightly 压测） | 补 P2-5/P2-6 | 新增 `.github/workflows/ci.yml` | 需要仓库启用 Actions |
 | 不做 | C1 ed25519 签名、C2 协议压缩、C3 共享订阅 | 既有决策（`architecture-review` §0 已关闭），本次不翻案 | — | — |
 
-**阶段一完成后的验收口径**：500 台一次批量下发 → 历史页可翻页看全 → 可按批次筛选 → 一键导出 CSV 核验成功/失败分布 → 发布动作零 DB 回查。
+**阶段一完成后的验收口径**：在命令中心**一屏之内**完成「选 500 台 → 下发 → 看到该批次进度 → 翻页/按批次筛选看全结果 → 一键导出 CSV 核验成功/失败分布」，且发布动作零 DB 回查、业务页无布局硬编码、无新增 UI 依赖。
 
 ---
 
@@ -166,7 +167,9 @@ async def count_commands(self, pod=None, batch=None, status=None, kind=None) -> 
 
 #### A3.3 前端
 
-`CommandHistory.vue`：
+> **前端细节统一收在 A5.6**（执行历史表增强），此处只列后端契约对应的交互要点，避免两处描述漂移。
+
+`CommandHistory.vue` 需消费的新契约：
 
 | 改动 | 说明 |
 |---|---|
@@ -214,6 +217,212 @@ async def count_commands(self, pod=None, batch=None, status=None, kind=None) -> 
 **为什么检测不阻断**：心跳是唯一指标源，阻断等于丢数据。治理目标应是「发现并让人去修镜像/环境变量」，而不是在服务端把数据流掐掉。
 
 **测试**：`test_interval_violation_audited` —— 造 `interval=1` 且 `KK_INTERVAL_MIN=10` 的心跳，断言落库成功 **且** 审计表出现 `interval_violation`；`test_interval_within_limit_no_audit` 反例。
+
+---
+
+### A5 Web 前端易用性与布局改造
+
+**目标**：让「快速下发 → 看结果 → 导出」这条主链路在一个屏幕内完成，不再靠滚动和翻页找结果；同时消除布局层的 magic number。
+
+**硬约束（保持与项目一致）**：只用 Element Plus + 现有 `kk-*` 工具类，**不引入任何新 UI 依赖**；新增样式一律进 `web/src/style/kk.scss`（页面不留重复定义，延续 2026-09-06 的收敛约定）；颜色全部走 `var(--el-*)`，不写死色值。
+
+#### A5.1 现状痛点（逐条可验证）
+
+| # | 页面 | 痛点 | 证据 |
+|---|---|---|---|
+| 1 | 命令面板 | 表单卡片 + 历史表**垂直堆叠**，下发后要看结果必须向下滚动；批量 500 台时历史表很高，来回滚动成本大 | `command/shell/index.vue:86-147`（卡片上下排列） |
+| 2 | 命令面板 | 历史表高度是 `calc(100vh - 560px)` —— 560 是为了扣掉上方表单卡片高度**算出来的**，表单增删一项就失效 | `CommandHistory.vue:116` |
+| 3 | 主机选择 | `el-select multiple` 全量平铺，500 台时下拉列表极长；无「仅在线」筛选、无全选/反选 | `shell/index.vue:91-106`、`collect/index.vue:74-89` |
+| 4 | 下发动作 | 无二次确认，500 台一把梭；**离线主机的命令会由 Broker 排队补投**这个关键行为用户看不到 | `submitShell()` 直接调 `createCommand` |
+| 5 | 结果查看 | 输出用 `el-dialog` 居中弹窗，**完全遮挡列表**，无法连续对比多条；无「下载此条输出」 | `CommandHistory.vue:156-160` |
+| 6 | 历史表 | 无分页（A3 补）、无关键字搜索、无批次列、状态筛选是**纯前端过滤**、看不到「本次下发」的新结果 | `CommandHistory.vue:27-29,101-109` |
+| 7 | 历史表 | 固定 5s 轮询，无 running 时也在空转 | `CommandHistory.vue:45` |
+| 8 | 总览页 | 批量操作栏在表格**下方非 sticky**，长列表要拉到底才能点 | `monitor/index.vue:228-240` |
+| 9 | 总览页 | 进详情只能点主机名链接（命中区域小）；告警行无整行视觉区分 | `monitor/index.vue:180-183` |
+| 10 | 详情页 | 无「在此主机执行命令」入口，要从别处绕；指标曲线无导出 | `host/detail/index.vue` |
+| 11 | 全局 | 页面状态不落 URL（仅 `pods` 通过 query 传一次），刷新即丢；`setInterval` 散落 5 处 | `AGENTS.md` 与实际不符（见 B4） |
+
+#### A5.2 布局基建：高度锚点收敛到一处，页面内部全 flex
+
+**先确认约束（已核源码，这一条决定技术路线）**：
+
+| 事实 | 出处 | 含义 |
+|---|---|---|
+| `.app-main { height: 100vh; overflow-x: hidden }` | `layout/components/lay-content/index.vue:196-201` | 固定视口高；滚动发生在内部 `el-scrollbar__wrap`（`:135` 的 `el-backtop target` 可证） |
+| 内容链 `.app-main → el-scrollbar → .el-scrollbar__view → .grow → .main-content` | 同上 `:117-160` | 中间 `.el-scrollbar__view` 的高度由内容撑开，**页面根拿不到确定的 `height: 100%`** |
+| `fixedHeader` 可开关，关闭时换 `.app-main-nofixed-header`（auto 高度、window 滚动） | 同上 `:110,203-208` | 两种模式滚动容器不同，不能依赖单一高度来源 |
+
+> **结论：不能简单用 `height: 100%`** —— 这正是现有代码写 `calc(100vh - Npx)` 的原因。
+> 但问题不在用了 `calc`，而在于**同一页面里嵌套了两层 calc，内层的 N 是手算的**：
+> `CommandHistory.vue:116` 的 `calc(100vh - 560px)` 必须扣掉上方命令表单的高度，**表单增删一项就失效**。
+
+**做法**：高度只在**页面根算一次**，且走 CSS 变量集中维护；页面内部全部 flex，不再出现第二个 calc。
+
+```scss
+/* 新增到 style/kk.scss */
+:root {
+  /* 页面高度锚点：navbar + tabs + 内容区 padding + 页脚 的合计占用。
+     实施第一步用 DevTools 实测确定（.app-main 为 100vh，该值约 150px 量级），
+     只在此处维护；业务页不得再写 calc(100vh - N)。 */
+  --kk-page-h: 152px;
+}
+
+.kk-page {                       /* 页面根容器：全站唯一的高度锚点 */
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - var(--kk-page-h));
+  min-height: 0;
+}
+
+.kk-page__body {                 /* 卡片/内容区：占满剩余高度 */
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.kk-fill-table {                 /* 表格填满卡片剩余空间（替代 height="calc(...)"） */
+  flex: 1;
+  min-height: 0;
+}
+
+.kk-sticky-bar {                 /* 表底批量操作条：吸底常驻 */
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  padding: 10px 12px;
+  background: var(--el-bg-color);
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+
+.kk-side {                       /* 命令中心左右栏容器 */
+  display: flex;
+  gap: 16px;
+  align-items: stretch;
+}
+
+@media (max-width: 1200px) {     /* 1366×768 运维笔记本常见，窄屏折叠为上下 */
+  .kk-side { flex-direction: column; }
+}
+```
+
+**sticky 可行性（已核）**：滚动容器是 `.el-scrollbar__wrap`，`.kk-sticky-bar` 位于其内部，`position: sticky` 生效；但 `.app-main` 的 `overflow-x: hidden` 按 CSS 规范会把 `overflow-y` 的计算值变成 `auto`，存在形成「双层滚动容器」的风险。**实施时必须先在 DevTools 里实测**；若吸底不生效，兜底改用 `el-affix`（Element Plus 自带，不引新依赖），而不是堆 `!important` 硬抗。
+
+**收益**：`CommandHistory:116`(560) / `monitor:174`(320) / `audit:69`(240) 三处硬编码收敛为「根级一次 + CSS 变量」；**内层 calc 归零**，以后增删工具栏不再需要重算高度。
+
+> **`fixedHeader=false` 场景**：该模式下主区改为 window 滚动，`calc(100vh - var(--kk-page-h))` 会略偏小（navbar 被重复扣除）。本期以默认的 `fixedHeader=true` 作为验收场景；若实际部署关闭了 fixedHeader，只需把 `--kk-page-h` 调小 —— 仍是**一处维护**。
+
+#### A5.3 命令中心：从「上下堆叠」改为「左执行 / 右结果」工作台
+
+新增 `views/command/components/CommandWorkbench.vue`，`shell` / `collect` 两个页面共用同一骨架（左侧 slot 放各自的表单）：
+
+```
+┌────────────── kk-toolbar（标题 + 刷新 + 导出）──────────────┐
+├──────────────────┬────────────────────────────────────────┤
+│ 左栏 lg=9        │ 右栏 lg=15                             │
+│ ┌──────────────┐ │ ┌────────────────────────────────────┐ │
+│ │ 目标主机      │ │ │ 本次下发 · 批次 b-a1b2c3           │ │
+│ │ [HostPicker] │ │ │ 进度 ▓▓▓▓▓░░░  12/20  完成9 失败1  │ │
+│ ├──────────────┤ │ ├────────────────────────────────────┤ │
+│ │ 执行内容      │ │ │ 执行历史（分页 / 搜索 / 批次 /    │ │
+│ │ 模式 / 命令   │ │ │   状态筛选 / 导出 CSV）            │ │
+│ │ 超时 / 下发   │ │ │ ─────────────────────────────────  │ │
+│ ├──────────────┤ │ │ （表格，点击行 → 右侧抽屉看输出）   │ │
+│ │ 最近命令      │ │ │                                    │ │
+│ │ （点击复用）  │ │ │ ─── 分页 ───                       │ │
+│ └──────────────┘ │ └────────────────────────────────────┘ │
+└──────────────────┴────────────────────────────────────────┘
+```
+
+| 子项 | 设计 |
+|---|---|
+| 双栏骨架 | `CommandWorkbench.vue` 提供 `#form` / `#result` 两个 slot，页面只写自己那半边；用 `.kk-side` 控制窄屏折叠 |
+| 下发即定位 | 下发成功后**不再滚动**——右栏顶部直接出现该批次的「进度卡」，实时刷新 done/failed/timeout 分布（A3 的批次能力前端化） |
+| 结果可对比 | 输出查看改 `el-drawer`（右侧 42%），列表保持可见，可连续点多条对比；抽屉底部放「下载此条输出」（复用 A1 的 `downloadBlob`） |
+
+#### A5.4 主机选择：`HostPicker.vue` 抽屉式多选
+
+| 项 | 设计 |
+|---|---|
+| 触发区 | 显示「已选 N 台」+ 前若干主机标签（超过 5 个折叠为 `+M`），不再把 500 个选项塞进下拉 |
+| 选择面板 | `el-drawer` 内：搜索框（主机名/镜像）+「仅在线」开关 + `el-table` 多选 + 全选/反选/清空 |
+| 排序 | 默认在线优先（离线项灰显 + 标「离线」），避免误选离线机后困惑「为什么没结果」 |
+| 对外契约 | `v-model:pods`（字符串数组），保持与 `monitor` 跳转的 `?pods=a,b,c` 完全兼容，**页面改造不破坏现有链路** |
+| 复用 | 数据源仍是 `listHosts("summary")`，不新增接口 |
+
+#### A5.5 下发确认与「离线排队」可见化
+
+批量下发前弹 `ElMessageBox.confirm`（**单台不弹**，避免打断高频操作）：
+
+```
+确认向 20 台主机下发命令？
+在线 18 台 · 离线 2 台（web-07、web-13）
+离线主机的命令将由 Broker 排队，重连后自动补投，结果会稍后出现。
+
+[取消]  [确认下发]
+```
+
+**这条提示的价值**：MQTT 离线队列是本项目的核心设计亮点（`design.md` 第一条卖点），但目前用户完全感知不到——离线主机的命令「先没反应、过一会儿突然出现结果」会被误判为系统异常。把它显式说清楚，是零成本的易用性提升。
+
+#### A5.6 执行历史表增强（依赖 A3 后端）
+
+| 改动 | 说明 |
+|---|---|
+| 分页 | 接 `el-pagination`（`total` 来自 A3 新增字段），尺寸 50/100/200 |
+| 搜索 | 新增关键字输入，**下推到后端**（A3 加 `keyword` 参数，匹配 `pod` / `argv` / `id`）——必须下推，否则导出结果与所见不一致 |
+| 状态筛选 | 从下拉改为**点击状态 tag 即筛选**（保留下拉作为备选），减少两次点击 |
+| 批次列 | 显示 `batch_id` 前 8 位（tooltip 全值），点击按该批次筛选并显示汇总 |
+| 本次下发高亮 | 下发后把新命令 ID 存入组件内 `Set`，轮询刷新时给这些行加左侧色条 + 淡入过渡，一眼找到刚才发的 |
+| 自适应轮询 | 存在 `pending`/`sent`/`running` 时 3s，否则 10s；不再无条件 5s 空转 |
+| 导出按钮 | 工具栏「导出 CSV」，把当前全部筛选条件传给 A1 的 `/api/export/commands` |
+
+#### A5.7 总览页与详情页
+
+| 页面 | 改动 |
+|---|---|
+| 总览 | `kk-batch` 加 `.kk-sticky-bar` 吸底常驻；批量操作增加「导出选中清单」 |
+| 总览 | 整行可点进详情（`@row-click`），但需跳过 selection 列（`column.type === "selection"` 时 return），避免勾选被误判为进详情 |
+| 总览 | 告警行整行浅红底（`row-class-name` 返回 `kk-row-alert`），扫描时不需要逐格看磁盘列 |
+| 详情 | 顶部操作区加「在此主机执行命令」→ 跳 `/command/shell?pods=<pod>`（复用现有 query 契约） |
+| 详情 | 指标曲线区加「导出指标 CSV」（A1 的 `/api/export/metrics`） |
+
+#### A5.8 交互一致性与效率
+
+| 项 | 设计 |
+|---|---|
+| URL 状态保持 | 命令面板把 `pods` / `mode` / `cmdline` / `timeout` 同步到 query（`router.replace`，不污染历史栈），刷新与分享不丢输入 |
+| 快捷键 | `Ctrl/Cmd + Enter` 下发；历史表 `↑`/`↓` 移动、`Enter` 打开输出（进阶项，可后置） |
+| 轮询统一管理 | 新增 `web/src/utils/kkPoll.ts` 提供 `setPoll/clearPolls`，改造 5 处散落的 `setInterval`（同时兑现 B4 的文档一致性） |
+| 空态与加载 | 延续既有 `el-empty` 文案风格，为「无主机」「无命令」「筛选无结果」分别给出**可操作**的空态文案（如「筛选无结果，清除筛选条件」） |
+
+#### A5.9 组件与文件清单
+
+| 文件 | 类型 | 说明 |
+|---|---|---|
+| `views/command/components/CommandWorkbench.vue` | 新增 | 双栏骨架 + slot |
+| `views/command/components/HostPicker.vue` | 新增 | 抽屉式主机多选 |
+| `views/command/components/CommandResultPanel.vue` | 新增 | 本次下发进度卡 + 历史表容器 |
+| `views/command/components/CommandOutputDrawer.vue` | 新增 | 输出抽屉（替代 dialog） |
+| `views/command/shell/index.vue` | 改造 | 接入 Workbench + HostPicker + 确认弹窗 |
+| `views/command/collect/index.vue` | 改造 | 同上（左侧换成采集项勾选） |
+| `views/command/components/CommandHistory.vue` | 改造 | 分页 / 搜索 / 批次 / 高亮 / 自适应轮询 / 导出 |
+| `views/host/monitor/index.vue` | 改造 | 吸底批量栏 / 整行点击 / 告警行色 / 导出 |
+| `views/host/detail/index.vue` | 改造 | 执行入口 / 指标导出 |
+| `views/audit/index.vue` | 改造 | 导出 + 分页 |
+| `utils/kkPoll.ts` | 新增 | 轮询统一管理 |
+| `utils/kk.ts` | 改造 | 加 `downloadBlob` |
+| `style/kk.scss` | 改造 | 加 `--kk-page-h` 变量与 `.kk-page` / `.kk-page__body` / `.kk-fill-table` / `.kk-sticky-bar` / `.kk-side` / `.kk-row-alert` |
+
+#### A5.10 验收（可视化清单）
+
+| 项 | 标准 |
+|---|---|
+| 一屏完成主链路 | 1920×1080 下：选主机 → 输命令 → 下发 → 看到进度与结果，**全程无需滚动** |
+| 窄屏可用 | 1366×768 下双栏折叠为上下，**无横向滚动条、无双纵向滚动条** |
+| 无 magic number | 全仓 `grep "calc(100vh"` 在业务页为 0 命中 |
+| 一致性 | 新组件只用 `el-*` + `kk-*`；`pnpm typecheck` 与 `pnpm build` 零错误；无新增依赖（`package.json` diff 为空） |
+| 回归 | 总览「批量执行命令/批量采集」跳转后主机预选仍然生效；`?pods=` 契约不变 |
+| 导出闭环 | 命令面板导出按钮产出的 CSV 与页面筛选条件一致（行数、状态、批次） |
 
 ---
 
@@ -289,18 +498,23 @@ fi
 | # | 提交 | 覆盖 |
 |---|---|---|
 | 1 | `feat(server): 数据导出接口（命令/审计/主机/指标 CSV）` | A1 后端 + 测试 |
-| 2 | `feat(web): 四个业务页加导出入口` | A1 前端 + `pnpm typecheck` |
-| 3 | `perf(server): 批量下发发布回路去掉 N+1 回查` | A2 + `mark_sent_batch` |
-| 4 | `feat(server): 命令批次号与结果分页查询` | A3 后端（含 `_ADD_COLUMNS` 登记）+ 测试 |
-| 5 | `feat(web): 执行历史分页、批次筛选与汇总` | A3 前端 |
-| 6 | `feat(server): 上报间隔下限检测与审计` | A4 + 测试 |
-| 7 | `chore(agent): Agent 启动 nice 降权` | B1 |
-| 8 | `feat(server): Agent 自更新回滚接口` | B2 |
-| 9 | `fix(server): 登录限流补客户端 IP 维度` | B3 |
-| 10 | `docs: 修正文档与代码失配项` | B4 |
-| 11 | `chore(ci): 落地测试/真库/nightly 压测流水线` | B5 |
+| 2 | `refactor(web): 布局基建与工具收敛（kk-page/kkPoll/downloadBlob）` | A5.2 / A5.8 基建**先行**——后续页面改造都建立在它之上，单独提交便于回滚 |
+| 3 | `feat(web): 四个业务页加导出入口` | A1 前端 + `pnpm typecheck` |
+| 4 | `perf(server): 批量下发发布回路去掉 N+1 回查` | A2 + `mark_sent_batch` |
+| 5 | `feat(server): 命令批次号与结果分页查询` | A3 后端（含 `_ADD_COLUMNS` 登记）+ 测试 |
+| 6 | `feat(web): 命令中心双栏工作台与主机选择抽屉` | A5.3 / A5.4 / A5.5 |
+| 7 | `feat(web): 执行历史分页、批次筛选、搜索与输出抽屉` | A3 前端 + A5.6 |
+| 8 | `feat(web): 总览吸底批量栏、整行点击与详情页执行入口` | A5.7 |
+| 9 | `feat(server): 上报间隔下限检测与审计` | A4 + 测试 |
+| 10 | `chore(agent): Agent 启动 nice 降权` | B1 |
+| 11 | `feat(server): Agent 自更新回滚接口` | B2 |
+| 12 | `fix(server): 登录限流补客户端 IP 维度` | B3 |
+| 13 | `docs: 修正文档与代码失配项` | B4 |
+| 14 | `chore(ci): 落地测试/真库/nightly 压测流水线` | B5 |
 
 每个提交前跑：`.venv/Scripts/python.exe -m pytest agent/tests server/tests -q`；涉及前端时加 `pnpm typecheck`；涉及前端产物时 `pnpm build` 并同步到 `server/src/kk_server/web/`。
+
+> **提交 2 为何独立**：布局基建（`.kk-page` / `.kkPoll` / `downloadBlob`）是提交 3/6/7/8 的共同依赖。独立提交让「布局回归」这类问题可以单点回滚，而不必牵连业务页改动。
 
 ---
 
@@ -314,6 +528,13 @@ fi
 | 批次可核验 | 批量下发 3 台，点批次号 | 工具栏显示 done/failed/timeout/pending 分布 |
 | 发布无回查 | `pytest -k dispatch_without_lookup` | `get_command` 调用次数为 0 |
 | 间隔治理 | 造 `interval=1` 心跳 + `KK_INTERVAL_MIN=10` | 指标落库正常，审计出现 `interval_violation`，stats 计数 +1 |
+| **一屏主链路** | 1920×1080 下操作命令中心 | 选主机 → 输命令 → 下发 → 看到批次进度与结果，**全程无需滚动** |
+| **窄屏无溢出** | 1366×768 下打开命令中心与总览 | 双栏折叠为上下；无横向滚动条、无双纵向滚动条 |
+| **高度锚点唯一** | `grep -rn "calc(100vh" web/src/views` | 每页至多命中页面根一处，且为 `var(--kk-page-h)` 而非字面量；**内层零命中**（表格走 `.kk-fill-table`） |
+| **无新 UI 依赖** | `git diff web/package.json` | 空 diff |
+| **跳转契约不破** | 总览点「批量执行命令」/「批量采集」 | 命令面板主机预选仍生效（`?pods=` 契约不变） |
+| **离线排队可见** | 批量选入含离线主机 | 确认框显示「在线 X 台 · 离线 Y 台」及补投说明 |
+| **导出与筛选一致** | 命令面板设筛选后点导出 | CSV 行数与页面筛选结果一致 |
 | 全量回归 | `pytest agent/tests server/tests -q` | 全绿（用例数随新增上升，无 failed） |
 | 前端质量 | `pnpm typecheck && pnpm build` | 零错误 |
 
@@ -328,6 +549,9 @@ fi
 | `batch_id` 索引 | 命令表上万级 |
 | 导出任务异步化（大范围导出走后台任务 + 结果落 KV） | 单次导出超过 20000 行的需求出现 |
 | `out_tail` 从列表响应移出（点开再取） | 500 台 × 5s 轮询的响应体成为压力时 |
+| 命令模板 / 收藏（服务端存储，团队共享） | 出现「常用命令需要多人共用」需求时；本期只做 localStorage 单机最近 10 条 |
+| 结果表格虚拟滚动 | 单页超过 200 行且实测卡顿时（Element Plus 表格默认全量渲染） |
+| 暗色主题逐一核验 | 业务样式已全部走 `var(--el-*)`，理论上自动适配；出现暗色使用反馈时再逐页核验 |
 | Redis / 共享订阅 / 协议压缩 / ed25519 | 既有决策（`architecture-review` §0），非规模触发不翻案 |
 
 ---
@@ -342,5 +566,9 @@ fi
 | 导出请求走 10s 默认超时 | 大范围导出失败 | API 层显式 `timeout: 0` |
 | CI 真库 job 首次运行暴露 PG/MySQL 真实缺陷 | 工期不可控 | 该 job 与「测试 job」解耦，**先合并主流程、真库 job 单独迭代至绿**，不阻塞阶段一交付 |
 | nice 降权导致命令执行变慢 | 命令耗时上升 | 仅影响 CPU 争抢场景；`KK_NICE` 可配，置 0 等价关闭 |
+| **前端改造触碰共用组件** | `CommandHistory.vue` 被命令面板与采集面板**同时引用**，一处改坏两页全坏 | 提交 6/7 分离；两页手工回归；`pnpm typecheck` + `pnpm build` 双门禁 |
+| **双栏折叠断点选择不当** | 1366×768 运维笔记本上出现双滚动条 | 断点取 1200px；把两种分辨率写进 A5.10 验收清单，不靠感觉 |
+| **URL query 同步污染后退栈** | 用户点后退退不回上一页（一直在同一页换 query） | 用 `router.replace` 而非 `push` |
+| **sticky 吸底栏失效或形成双层滚动** | 批量栏不吸底，问题回到原点 | 已核：`.app-main` 带 `overflow-x: hidden`，按规范会连带把 `overflow-y` 算成 `auto`。实施前必须在 DevTools 实测吸底效果；不生效即换 `el-affix`，不堆 `!important` |
 
 **回滚**：阶段一每项互相独立、按提交分离，任一项出问题可单独 revert；`batch_id` 列只增不改不删，回滚代码后遗留列无害（`server_default=''`）。
