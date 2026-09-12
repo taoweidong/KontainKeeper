@@ -1,9 +1,9 @@
 # KontainKeeper 优化方案（基于 2026-09-12 质量分析）
 
-> 编写日期：2026-09-12　基线：`main` @ 31768a4（工作区干净）
+> 编写日期：2026-09-12　基线：`main` @ `31768a4`（D 组追加时已至 `2f4598d`，工作区干净）
 > 依据：[`docs/quality-assessment-2026-09-12.md`](quality-assessment-2026-09-12.md)
-> 性质：**方案文档，评审通过后再动代码**。分两阶段，阶段一交付核心能力，阶段二加固。
-> 约定：不引入新第三方依赖（导出用标准库 `csv` + `io`；前端只用 Element Plus + 现有 `kk-*` 工具类），不改表名与列名，不改协议（阶段一零协议变更）。
+> 性质：**方案文档，评审通过后再动代码**。分两阶段，阶段一交付核心能力，阶段二加固，另有 §1.5 的 D 组新需求。
+> 约定：不引入新第三方依赖（导出用标准库 `csv` + `io`；前端只用 Element Plus + 现有 `kk-*` 工具类），不改表名与列名，**不改 MQTT 帧格式**（D1.4 只是把既有字段补进文档，不新增字段，`proto_ver` 保持 3）。
 
 ---
 
@@ -18,6 +18,8 @@
 | **一** | A5 **Web 前端易用性与布局改造** | 命令快速下发 / 结果查询 / 导出入口 / 消除布局 magic number | 新增 4 个组件 + `kk.scss` 布局基建 + 5 个页面改造 | 复用 A1 导出、A3 分页；与 A1/A3 同批交付体验最佳 |
 | **一** | A6 **自更新可观测性**（审视新增） | 补自更新缺口：**推送式更新当前静默失效** + 更新结果无回执 | `updater.py` URL 解析 + `updates` 表 + 1 个回执分支 | 无 |
 | **一** | A7 **日志体系重构**（新增） | 引 `loguru` 换掉原生 `logging`；顺带修 Agent 日志**双写入 + 双轮转**缺陷；三套格式归一 | Agent 重写 `logutil.py` + 服务端新增 `logsetup.py`（含 stdlib 拦截）；**两侧调用点零改动** | `loguru`（唯一新增依赖） |
+| **一** | **D1 版本信息硬化**（新需求①） | 版本**单一真源**（现 `AGENT_VER=0.3.0` 与 `__version__=0.2.0` 互相矛盾）+ 落后判定由服务端算 + 「最新版本」对运维可见 | `agent/__init__.py` 1 行 + `containers.py` 计算字段 + 1 个新端点 + 协议补字段说明 | 无 |
+| **一** | **D2 受控批量升级**（新需求②） | 补空白：**选机器 → 升级到最新**。引入 `KK_UPDATE_MODE`（默认 `manual`）收归升级决策权；复用 A6.2 台账做 `in_flight` 去重与离线 `queued` 补投 | 1 个新端点 + `updates` 表加 `queued` 状态 + 前端复用既有表格多选 + 新增「版本与更新」页 | **强依赖 A6.1 / A6.2**；同族 B2（回滚） |
 | **二** | B1 客户端 nice 降权 | 补 P2-1：零代码级隔离 → 优先级隔离 | `entrypoint-wrapper.sh` | 无 |
 | **二** | B2 自更新回滚接口 | 补 P2-7：`.prev` 有文件无入口 | 1 端点 + 前端 1 按钮 | 无 |
 | **二** | B3 登录限流补 IP 维度 | 补 P2-3 | `auth.py` | 无 |
@@ -25,7 +27,7 @@
 | **二** | B5 CI 落地（**Jenkins**：主流水线已落地 / 真库 + nightly 待做） | 补 P2-5/P2-6 | 新增 `Jenkinsfile` + `scripts/ci_smoke.sh` + `docs/ci-jenkins.md` | 需要 Jenkins 节点与凭据 |
 | 不做 | C1 ed25519 签名、C2 协议压缩、C3 共享订阅 | 既有决策（`architecture-review` §0 已关闭），本次不翻案 | — | — |
 
-**阶段一完成后的验收口径**：在命令中心**一屏之内**完成「选 500 台 → 下发 → 看到该批次进度 → 翻页/按批次筛选看全结果 → 一键导出 CSV 核验成功/失败分布」，且发布动作零 DB 回查、业务页无布局硬编码、无新增 UI 依赖；**推送式自更新在镜像零配置下可用，且每次升级的结果与失败原因可查**；**双端日志收敛为同一套格式、各自唯一写入者，可轮转可保留，且同一记录不再重复出现**。
+**阶段一完成后的验收口径**：在命令中心**一屏之内**完成「选 500 台 → 下发 → 看到该批次进度 → 翻页/按批次筛选看全结果 → 一键导出 CSV 核验成功/失败分布」，且发布动作零 DB 回查、业务页无布局硬编码、无新增 UI 依赖；**推送式自更新在镜像零配置下可用，且每次升级的结果与失败原因可查**；**双端日志收敛为同一套格式、各自唯一写入者，可轮转可保留，且同一记录不再重复出现**；**在主机总览勾选任意机器即可把它们升级到服务端当前最新版本，在线者立即生效、离线者重连自动补投，全程可在「版本与更新」页逐台核验**。
 
 ---
 
@@ -680,6 +682,189 @@ kk_plugins.collect_all(cfg["plugin_dir"], log=log.bind(component="plugin"))
 
 ---
 
+## 1.5 新需求 · 客户端版本治理与受控升级（D 组，2026-09-12 追加）
+
+> **需求原文（两条）**：
+> ① 支持自动采集客户端工具的版本信息，作为默认上报数据；
+> ② 支持选择机器，快速更新指定服务器上的客户端工具，升级版本到最新版本。
+
+### D0 需求逐条对齐现状（先纠一个认知差）
+
+**结论先给：第 ① 条基本已在做，只差三处硬化；第 ② 条是真空白。** 工作量分布约 **D1 占 1/5、D2 占 4/5**。
+
+| 需求点 | 现状证据 | 判定 |
+|---|---|---|
+| 自动采集版本 | `transport.py:174-175` 状态帧带 `agent_ver` + `proto_ver`；`:244` 心跳帧带 `agent_ver` | ✅ 已在做 |
+| 采集「客户端工具」运行环境 | `collector.sys_metrics()`（`:189`）已采 `os`(`platform.platform`) / `kernel` / `arch`，且 `sys` 属默认 8 项（`HB_DEFAULT_ITEMS`, `collector.py:273`） | ✅ 已在做 |
+| 作为**默认**上报数据 | 版本在两帧里是**无条件字段**，不受 `KK_HB_ITEMS` 影响；`sys` 项也在默认清单内 | ✅ 已在做 |
+| 版本入库 | `containers.agent_ver String(40)`（`tables.py:30`），`upsert_container` / `set_online` 均写入（`store.py:141,150`） | ✅ 已在做 |
+| 版本展示 | 主机总览列「Agent」（`host/monitor/index.vue:205`）+ 详情页「Agent 版本」（`host/detail/index.vue:158`） | ✅ 已在做 |
+| **选择机器升级** | 前端**零**升级入口；`POST /api/system/agent` 上传只能靠 curl；服务端 `_maybe_push_upgrade` 是**无差别自动推**，根本选不了 | ❌ **空白** |
+
+---
+
+### D1 版本信息硬化（小改动，但三处都是真问题）
+
+#### D1.1 版本号有两个真源且在互相矛盾（真缺陷）
+
+| 位置 | 值 | 是否被消费 |
+|---|---|---|
+| `agent/src/kk_agent/config.py:6` `AGENT_VER` | `"0.3.0"` | ✅ 实际上行值（`transport.py:174,244`、`main.py:201`） |
+| `agent/src/kk_agent/__init__.py:13` `__version__` | `"0.2.0"` | ❌ 全仓零消费 |
+
+**影响**：任何按 Python 惯例读 `kk_agent.__version__` 的脚本或打包元数据会拿到 `0.2.0`，与真实上报值 `0.3.0` 矛盾；`proto/messages.md:147` 的 `update` 示例也写着 `"version":"0.2.0"`，进一步混淆。**这是需求①「版本信息准确」的前置条件** —— 版本治理先把版本号本身理顺。
+
+**修法（单一真源，改动面最小）**：以 `config.AGENT_VER` 为唯一真源（它已被 transport 消费），`__init__.py` 改为
+
+```python
+from .config import AGENT_VER as __version__
+```
+
+加测试 `test_version_single_source` 断言 `kk_agent.__version__ == kk_agent.config.AGENT_VER`。
+
+> 为什么不反过来让 `config.py` 从 `__init__` 取：`config.py` 保持零 import 依赖更利于 PyInstaller 冻结与冷启动，`__init__` 是天然的上层聚合点。
+
+#### D1.2 「最新版本是什么」对运维不可见
+
+`GET /api/system/agent/latest`（`agent_update.py:78`）有两个限制：走 `agent_ip_auth`（**只有 Agent 的源 IP 能查**）、响应体是 `{available: bool}`（**只回答「这个版本要不要升」，不告诉你最新是什么**）。
+
+**后果**：需求②里「升级到**最新**版本」在 UI 上无从表达 —— 运维不知道最新是什么版本，也无从判断哪些机器落后。
+
+**修法**：新增管理员可读端点（与 Agent 用的 `/latest` 刻意分离，不复用同一端点以免混淆两种鉴权语义）：
+
+| 端点 / 字段 | 内容 |
+|---|---|
+| `GET /api/system/agent/current` | 管理员会话；返回 `{version, sha256, size, uploaded_at, hosts_total, hosts_outdated}`；无上传记录时 `version` 为空串 |
+| `GET /api/system/stats` | 加 `agent_latest_ver` 与 `agents_outdated` 两个计数，供总览页卡片直接渲染 |
+
+#### D1.3 「是否落后」必须由服务端算，不能让前端算
+
+服务端版本比较在 `models/version.py:version_lt`（`parse_version` 支持多段数字），**前端没有任何等价实现**。若让前端自己比，就是两套语义各自演化，`1.10.0` vs `1.9.0` 这类多段比较最先出错。
+
+**修法**：`containers.py` 的 summary / detail 响应增加两个**计算字段**（是字段，不是列，不入库）：
+
+| 字段 | 说明 |
+|---|---|
+| `latest_agent_ver` | 从 KV 读**一次**，整个列表共用 —— **不要每行查一次 KV**（500 台 = 500 次读，与 P1-1 同型的 N+1） |
+| `agent_outdated` | `bool`，服务端用 `version_lt(agent_ver, latest_agent_ver)` 算好下发 |
+
+前端只负责渲染，不做任何版本比较。
+
+#### D1.4 把「版本是必带字段」写进协议
+
+`proto/messages.md` §3 的字段表目前只在 status 帧列出 `agent_ver`，**hb 帧的字段说明没提**（实现里有，文档没写）。补一句，并加测试 `test_hb_frame_always_carries_agent_ver`，把「默认上报」从实现细节**提升为契约** —— 否则将来有人优化帧体积时，最容易先砍的就是它。
+
+---
+
+### D2 受控批量升级（本组主体）
+
+#### D2.0 先看清现状：当前的真实升级路径是「Agent 自己轮询」，而它选不了机器
+
+两条升级路径并存，**且都不是「选机器立即升」**：
+
+| 路径 | 触发点 | 现状问题 |
+|---|---|---|
+| 服务端推送 | `_maybe_push_upgrade`，**只在 `_on_status` 里被调用**（`mqtt_bridge.py:205`） | status 帧**只在 Agent 连接时发一次**（`transport.py:266`，在 `start()` 内）→ **上传新版本后，已在线的主机收不到推送**，必须等容器重启或重连。且无差别推送，选不了 |
+| Agent 轮询 | `main.py:214-216` 每 `KK_UPDATE_INTERVAL`（默认 **300s**）拉 `/agent/latest`，有新版即自升（`updater.check_update`） | 时机由 Agent 决定，**服务端无法让某台「立刻升」**；且 A6.1 修复前因缺 `KK_UPDATE_URL` 静默失效 |
+
+**结论**：需求②要的是**服务端发起 + 人工选机 + 立即生效**，现有两条路径都给不了。因此 **D2 = 把升级决策权显式收归服务端，并新增人工触发面**。
+
+#### D2.1 新增升级模式开关 `KK_UPDATE_MODE`，默认 `manual`
+
+**为什么必须引入模式开关**：自动全网推与人工选机**不能同时成立** —— 你选了 3 台，剩下 497 台下次重连仍会自己升，「选择」就没有意义。默认取 `manual` 是对需求②的直接落地。
+
+| 模式 | 行为 |
+|---|---|
+| `manual`（**新默认**） | 服务端不在 `_on_status` 自动推；Agent 轮询路径**也**被策略关闭（见下） |
+| `auto` | 完全保留现状（自动推 + 轮询），供给「想维持用户无感知」的部署选择 |
+
+**关键取舍：关闭 Agent 轮询不需要改 Agent 一行代码** —— 在 `manual` 模式下让 `/api/system/agent/latest` 返回 `{"available": false, "policy": "manual"}`。
+
+- 这**不是撒谎**：该端点的语义就是「**现在**该不该升级」，策略是人工时，正确答案本来就是「否」。加 `policy` 字段让它自描述，排障时一眼看出是策略所致而非故障。
+- 收益：**老版本 Agent 无需升级即可服从新策略** —— 服务端单侧改动就建立起一个全网点，避免了「要改行为，先得升级全网」的鸡生蛋困境。对已有 500 台在跑的存量部署，这一点是关键。
+
+#### D2.2 新增批量升级端点
+
+```
+POST /api/system/agent/upgrade          （管理员会话）
+body: {"hosts": ["web-01","web-02"], "version": ""}   # version 省略/空 = 用当前最新
+resp: {"ok": true, "batch_id": "ug-<ts>-<n>",
+       "accepted": [{"host","from_version","to_version","ledger_id"}],
+       "skipped":  [{"host","reason"}]}
+```
+
+| `skipped.reason` | 触发条件 | 处置 |
+|---|---|---|
+| `not_found` | hosts 里含未知主机 | 改正后再调 |
+| `no_binary` | 服务端尚未上传任何版本（KV 空） | 先上传 |
+| `bad_version` | 指定 `version` 在服务端不存在 | 传对版本 |
+| `already_latest` | `version_lt` 判为不落后 | — |
+| `in_flight` | 该主机台账已有未终结行（见 D2.3） | 等其收敛 |
+
+**每台主机在 `updates` 台账写一行**（`id = up-<host>-<ts>`，**复用 A6.2 已设计的表，不新增结构**），再用**台账主键**作为 `cmd` 帧的 `id` 下发 `kind=update` —— 这正是 A6.2「为什么升级要独立台账」的落地场景。
+
+**离线主机照常受理（这是本项目既有卖点的复用）**：Agent 用 `clean_session=False` + 稳定 `client_id`（`transport.py:127-131`），Broker 会为离线订阅者排队 QoS1 消息。所以选中一台离线机器**不是失败**，而是「已排队，重连即升」—— 台账标 `queued`，UI 如实说明。
+
+> **由此引出一个必须修正的细节**：A6.2 定的「`created_at + 30min` 未终结即收敛 `timeout`」对**下发时主机离线**的行会误判 —— Broker 里排着队，Agent 可能几小时后才上线，30min 一到就被记成 `timeout`，把「正常排队」报成「失败」。修法：台账增加 `queued` 状态，仅**在线下发**的行受 30min 超时约束；`queued` 行改由「重连补投」（下条）驱动，超时阈值放宽到 `KK_UPDATE_QUEUE_TTL`（默认 7d，与 Broker 离线队列保留期对齐）。
+
+#### D2.3 重连补投与防重复
+
+| 场景 | 处理 |
+|---|---|
+| 离线时被选中 → 主机重连 | `_on_status` 收到 `online=true` 时，扫该主机台账中 `queued` 且 `to_version` 仍为最新的行，补投一次 `kind=update`（此时才转 `pending`，接续 A6.2 的判定链） |
+| 主机已有未终结升级 → 又被选中 | 直接 `skipped: in_flight`。**没有台账就只能靠 `version_lt` 猜，必然重复下发与重复下载**（8–12MB/台）—— A6.2 与 D2.3 在此互相成全 |
+| 同一批里重复传同一 host | 按 host 去重后处理，不产生两行台账 |
+| 升级在途，运维又上传了更新的版本 | 不打断在途升级（`in_flight`）；该主机完成后若上报的 `agent_ver` 仍落后，由 D2.2 再次人工触发（`auto` 模式下则自动） |
+
+#### D2.4 前端
+
+**「选择机器」这一步无需新建组件**：主机总览表**已有** `type="selection"` 多选 + `selection` ref + `onSelectionChange`（`host/monitor/index.vue:169,33,70`），当前服务于「批量执行命令」「批量采集」。D2.4 直接**复用同一套选择状态**，只加按钮。
+
+| 改动 | 位置 | 内容 |
+|---|---|---|
+| 版本列升级为 tag | `host/monitor/index.vue:205` | `最新`=success、落后=warning 且显示 `0.2.0 → 0.3.0`；数据源用 D1.3 的 `agent_outdated`（**前端不做版本比较**） |
+| 吸底批量栏加按钮 | 复用 A5.7 的 `.kk-sticky-bar` | 「升级到 vX.Y.Z」：在线/离线台数分别计数；`latest` 为空时按钮 `disabled` 并提示「请先上传新版本」 |
+| 二次确认 | 沿用 A5.5 风格 | 明确列出「在线 X 台（立即升级）· 离线 Y 台（重连后自动补投）」，与既有「离线排队」话术一致，避免被误判为异常 |
+| 详情页入口 | `host/detail/index.vue` | 单机「升级」按钮（仅 `agent_outdated` 时显示） |
+| **新增「版本与更新」页** | `views/host/update/index.vue`（新） | ① 上传新版本二进制（`POST /api/system/agent` **当前完全无 UI**，只能 curl）；② 台账列表（复用 A6.2 的 `GET /api/system/updates`），逐台展示状态与失败原因 |
+| 总览页卡片 | `views/welcome` | 「Agent 版本 vX.Y.Z · 落后 N 台」 |
+
+> 上传入口是需求②的**必要前置**：没有上传面，「升级到最新版本」只能在服务器上敲 curl，与「快速」二字相悖。
+
+#### D2.5 依赖与既有项的关系
+
+| 关系 | 说明 |
+|---|---|
+| **强依赖 A6.1** | 远端 Agent 拿不到下载地址时，**手动升级同样失败**。D2 必须在 A6.1 之后做 |
+| **强依赖 A6.2** | `updates` 台账是升级状态的唯一载体；`in_flight` 去重、`queued` 补投、失败原因全落在它上面。D2 只是给它加了「人工触发」入口 + `queued` 状态 |
+| 与 B2（回滚接口）同族 | `版本治理 = A6.2 台账 + D2 升级 + B2 回滚`，三者共用一个台账，建议同批验收 |
+| 与 §5「灰度 / 分批更新」 | D2 **不做**自动分批，但提供了灰度的**手动形态**：选 3 台先升 → 观察台账 → 再选其余。这让「灰度」从待建功能降为操作规范（§5 该行已补注） |
+| 与 B6.2（更新轮询抖动） | `manual` 模式下轮询已关闭 → B6.2 只对 `auto` 模式有意义，**不因 D2 作废**，但优先级可下调 |
+
+---
+
+### D3 测试
+
+| 用例 | 断言 |
+|---|---|
+| `test_version_single_source` | `kk_agent.__version__ == config.AGENT_VER` |
+| `test_hb_frame_always_carries_agent_ver` | 心跳帧 `agent_ver` 非空且等于 `AGENT_VER`（锁死「默认上报」契约） |
+| `test_hosts_summary_carries_outdated_flag` | 造「最新=0.3.0、主机=0.2.0」→ `agent_outdated=True`；且 KV **只读一次**（计数替身断言，防 N+1 回归） |
+| `test_agent_current_requires_admin` | 未登录访问 `/agent/current` → 401/403；登录 → 返回最新版本 |
+| `test_update_mode_manual_disables_auto_push` | `manual` + 落后主机上报 status → **不发布** `kind=update`（对照组 `auto` 必须发布） |
+| `test_update_mode_manual_hides_poll_path` | `manual` 下 `/agent/latest` 返回 `available=False` 且 `policy=manual`（**老 Agent 无需改动即服从**） |
+| `test_upgrade_endpoint_accepts_and_writes_ledger` | 选 2 台 → `accepted` 2 条，台账 2 行 `pending`，`cmd` 帧 `id` 等于台账主键 |
+| `test_upgrade_skips_already_latest` | 主机已最新 → `skipped.reason == already_latest`，**不产生台账行** |
+| `test_upgrade_skips_in_flight` | 台账已有未终结行 → `skipped.reason == in_flight` |
+| `test_upgrade_offline_host_marked_queued` | 下发时主机离线 → 台账 `queued`（**非** `failed`），且不参与 30min 超时收敛 |
+| `test_queued_upgrade_flushed_on_reconnect` | `queued` 行 + 主机上报 `online=true` → 重新投递一次并转 `pending` |
+| `test_upgrade_no_binary_returns_skipped` | KV 无版本 → 全量 `skipped.reason == no_binary`，不抛异常 |
+| `test_upgrade_endpoint_requires_admin` | 未登录 → 401/403（与既有审计/上传接口同门禁） |
+| `test_proto_doc_example_version_in_sync` | `proto/messages.md` 中 `update` 示例的 `version` 与 `AGENT_VER` 同族（防文档漂移） |
+| 前端 | `pnpm typecheck` + `pnpm build`：版本 tag、批量栏按钮、上传页、落后计数卡片 |
+
+---
+
 ## 2. 阶段二 · 加固
 
 ### B1 客户端 nice 降权（P2-1）
@@ -856,6 +1041,13 @@ A6 修的是「看不见」，B6 修的是「规模化下的健壮性」。六�
 | 16 | `chore(ci): 落地真库验证与 nightly 压测 job` | B5 剩余部分（主流水线已随 `chore(ci): Jenkins 流水线` 单独提交） |
 | 17 | `perf(agent): 更新轮询抖动、失败退避与 size 校验` | B6.2 / B6.3 / B6.4 |
 | 18 | `fix(server): 自更新上传加锁与更新期离线标记` | B6.5 / B6.1 |
+| 19 | `refactor(agent): 日志体系换 loguru（薄适配层保 %s 语义）` | A7.1 / A7.2 / A7.5 |
+| 20 | `refactor(server): 服务端日志归一与 KK_LOG 归属拆分` | A7.3 / A7.4 / A7.6（含顺带修掉的 D1 缺陷） |
+| 21 | `fix(agent): 版本号统一为单一真源` | **D1.1** —— 独立提交：`AGENT_VER` / `__version__` 矛盾是需求①的直接前提，一行改动、独立回滚点 |
+| 22 | `feat(server): 主机版本落后判定与最新版本端点` | D1.2 / D1.3 / D1.4（含 KV 只读一次的防 N+1 断言） |
+| 23 | `feat(server): 升级模式开关与受控批量升级接口` | D2.1 / D2.2 / D2.3 —— **依赖提交 10/11**（A6.1 绝对 URL + A6.2 台账） |
+| 24 | `feat(web): 版本与更新页、版本 tag 与批量升级入口` | D2.4（复用主机表既有 `type="selection"`；含上传面） |
+| 25 | `test(server): 受控升级与版本治理用例` | D3（含离线 `queued` 补投与 `in_flight` 去重） |
 
 每个提交前跑：`.venv/Scripts/python.exe -m pytest agent/tests server/tests -q`；涉及前端时加 `pnpm typecheck`；涉及前端产物时 `pnpm build` 并同步到 `server/src/kk_server/web/`。
 
@@ -866,6 +1058,10 @@ A6 修的是「看不见」，B6 修的是「规模化下的健壮性」。六�
 > **提交 19/20（A7）为何排在最后**：A7 是**横切改造**——它会全局改变运行时与测试的日志输出形态。若早做，A1~A6 每一项的验证都会多一层无关噪音（「这条日志格式变了」与「这个功能坏了」混在一起）。排到最后，前面的验证按现状进行，A7 一次切换、一次回归。
 >
 > **D1（`KK_LOG` 双写入）与功能项完全正交**：若当下就想修，提交 19 可先只做 A7.4 的最小版（wrapper 不再重定向 + 删除 `rotate_log()`，约 6 行 shell），不必等 loguru 落地。但两者同批做更划算——因为 A7.4 让文件写入者唯一之后，正好由 loguru 的文件 sink 接手。
+>
+> **提交 21~25（D 组）为何排在 A7 之后**：D2 的硬前提是提交 10/11（A6.1 绝对 URL + A6.2 台账）—— 没有下载地址则手动升级同样失败，没有台账则无法去重与补投。而 A7 是横切改造，放在功能项之后能保证 D 组的验证不被日志格式噪音干扰。**若要提前**，提交 21（D1.1 版本单一真源）可以提到最前面，它是一行改动且与其他项零耦合，是需求①成本最低的落点。
+>
+> **D 组是既有项的「收口」而非新起炉灶**：D1 复用 A6.2 已定的 `version_lt` 与 KV；D2 复用 A6.2 的 `updates` 台账、A5.7 的 `.kk-sticky-bar`、主机表既有的 `type="selection"` 多选。**净新增只有 1 个端点 + 1 个页面 + 1 个模式开关 + 台账的 `queued` 状态**。
 
 ---
 
@@ -890,6 +1086,17 @@ A6 修的是「看不见」，B6 修的是「规模化下的健壮性」。六�
 | **更新结果可见** | ① 正常升级 ② 故意改坏 sha256 后升级 | `GET /api/system/updates` 分别显示 `done` / `failed` + 具体原因；失败另有审计 `agent_update_failed` |
 | **更新期离线可辨** | 升级过程中看主机列表 | 离线记录的 `reason` 为 `updating`，而非空白 |
 | **更新不拥塞** | 500 台同批部署后观察 Agent 日志 | 各机检查更新的时刻呈散布（抖动生效），非同一秒集中下载 |
+| **版本单一真源** | `python -c "import kk_agent; print(kk_agent.__version__, kk_agent.config.AGENT_VER)"` | 两个值**相同**（当前是 `0.2.0` / `0.3.0`，矛盾） |
+| **版本默认上报** | 抓一帧 hb 与一帧 status | 两帧都带非空 `agent_ver`，且等于 `AGENT_VER`（不依赖 `KK_HB_ITEMS` 配置） |
+| **最新版本可见** | 管理员登录后看总览页 | 显示「Agent 版本 vX.Y.Z · 落后 N 台」；未上传过版本时显示「未上传」而非报错 |
+| **落后判定单一实现** | 断点/替身统计 hosts 接口内的 KV 读次数 | 500 台列表**只读 1 次** KV；前端源码 `grep -rn "version_lt\|parse_version" web/src` **零命中** |
+| **手动模式不自动推** | `KK_UPDATE_MODE=manual`，连一台落后主机 | 该主机上报 status 后，Agent 日志**无**下载动作；`agent/latest` 返回 `available=false, policy=manual` |
+| **手动模式老 Agent 也服从** | 用**未改动的旧版** Agent 二进制 + manual 模式 | 旧 Agent 同样不自升（服务端单侧即可建立全网点） |
+| **选机器立即升** | 总览勾选 2 台在线落后主机 → 点「升级到 vX.Y.Z」 | 返回 `accepted` 2 条；数秒内在 Agent 日志看到下载与替换；主机随后上报新 `agent_ver` |
+| **离线机器不被误判** | 勾选 1 台离线 + 1 台在线 | 离线记 `queued`（**非** `failed`）；该机重连后自动完成升级并转 `done` |
+| **重复升级被拦住** | 对同一台再点一次升级 | `skipped.reason == in_flight`，Agent 侧**不产生第二次下载** |
+| **升级结果可逐台核验** | 「版本与更新」页 | 每台主机显示状态与失败原因（`sha256_mismatch` 等），失败另有审计 `agent_update_failed` |
+| **上传面可用** | 在「版本与更新」页上传一个二进制 | 无需 curl 即完成；上传后总览页最新版本随之变化 |
 | 全量回归 | `pytest agent/tests server/tests -q` | 全绿（用例数随新增上升，无 failed） |
 | 前端质量 | `pnpm typecheck && pnpm build` | 零错误 |
 
@@ -907,7 +1114,9 @@ A6 修的是「看不见」，B6 修的是「规模化下的健壮性」。六�
 | 命令模板 / 收藏（服务端存储，团队共享） | 出现「常用命令需要多人共用」需求时；本期只做 localStorage 单机最近 10 条 |
 | 结果表格虚拟滚动 | 单页超过 200 行且实测卡顿时（Element Plus 表格默认全量渲染） |
 | 暗色主题逐一核验 | 业务样式已全部走 `var(--el-*)`，理论上自动适配；出现暗色使用反馈时再逐页核验 |
-| **灰度 / 分批更新**（按 pod 哈希分 N 批 + 观测窗口 + 暂停开关） | 出现「一次全量更新的风险不可接受」时。当前 500 台靠 A6 台账 + B6.2 抖动已可观测可控；`architecture-review` §0 的「B4 灰度」决策关闭指的就是本项 |
+| **灰度 / 分批更新**（按 pod 哈希分 N 批 + 观测窗口 + 暂停开关） | 出现「一次全量更新的风险不可接受」时。当前 500 台靠 A6 台账 + B6.2 抖动已可观测可控；`architecture-review` §0 的「B4 灰度」决策关闭指的就是本项。**（2026-09-12 补：D2 落地后本项的「功能」价值大幅下降 —— 选 3 台先升、看台账、再选其余，就是灰度的手动形态；此处只剩「自动分批 + 定时窗口」仍有价值，等出现无人值守的固定发布窗口需求时再翻）** |
+| **多架构 Agent 二进制**（按 `os/arch` 分槽存储与分发） | `agent_update.py:10` 明确「二进制按平台单槽位（`kk-agent`），多架构需另行扩展」。当前 500 台若架构同构则无问题；**一旦混入 arm64，D2 推错二进制会导致该机 Agent 无法启动**（`_is_binary_target` 只验「是不是单文件二进制」，不验架构）。出现异构机型时必修，届时要同时改服务端存储分槽 + `/latest` 按 `sys.arch` 返回匹配槽 + 台账记录投递的架构 |
+| **升级窗口与限速**（同批最多 N 台在途、夜间窗口） | D2 已有人工选机与抖动兜底；出现「一次升 500 台仍觉风险高」时，先在 D2 上叠加「在途并发上限」即可，不必重建调度 |
 | **`KK_UPDATE_ALLOW_DOWNGRADE=1` 逃生开关** | 确需真降级而非「升版本号退代码」时，见 B6.6 |
 | Redis / 共享订阅 / 协议压缩 / ed25519 | 既有决策（`architecture-review` §0），非规模触发不翻案 |
 
@@ -936,6 +1145,11 @@ A6 修的是「看不见」，B6 修的是「规模化下的健壮性」。六�
 | **改用 loguru 后 `KK_LOG_LEVEL` 大小写/取值失配** | 级别解析异常或静默回落到默认 | 适配层对未知级别回落到 INFO 并 `catch`，不抛异常；两侧保持 `getattr`-style 容错 |
 | **`log_config=None` 漏配** | uvicorn 覆盖格式，「格式统一」静默失败 | 列入 A7.3 显式清单；`test_stdlib_logs_intercepted` 兜底 |
 | **`KK_LOG` 语义变更影响既有运维脚本** | 按旧语义（wrapper 采集）读日志的脚本看不到新内容 | ENV 名与路径均不变，只改写入者；`agent/README.md` / `scripts/build.sh` / `Dockerfile.snippet` 三处同步 + 显式提示 |
-| **`diagnose=True` 误开启致敏感信息入日志** | 局部变量（含口令/环境变量）写进日志 | 默认 `diagnose=False`，在 A7.2 表格中标注为生产红线 |
+| **`diagnose=True` 误开启致敏感信息入日志** | 局部变量（含口令/环境变量）写入日志 | 默认 `diagnose=False`，在 A7.2 表格中标注为生产红线 |
+| **`KK_UPDATE_MODE` 默认改 `manual` 是行为变更** | 存量部署升级到该版本后，原本「自动全网升」的路径停止工作，运维会以为自更新坏了 | 这是需求②的**有意为之**（自动全网推与人工选机不能共存）。缓解：① 启动时若为 `manual` 则 `log.warning` 明示「自动升级已关闭，请在版本与更新页手动触发」；② 文档 `deployment.md` 单独一段说明；③ 需要旧行为可显式设 `KK_UPDATE_MODE=auto` |
+| **`manual` 模式下 `/agent/latest` 返回 `available=false` 被误读为故障** | 排障时以为端点坏了 | 响应体固定带 `policy` 字段自描述；`docs/deployment.md` 注明；测试 `test_update_mode_manual_hides_poll_path` 锁死该契约 |
+| **升级台账 `queued` 行长期堆积** | 离线主机一直不回来 → 台账只增不减 | `queued` 行受 `KK_UPDATE_QUEUE_TTL`（默认 7d）约束，与 Broker 离线队列保留期对齐；`cleanup()` 一并回收（复用既有分批删） |
+| **B6.1 的「更新期离线」与 D2 的 `queued` 易混淆** | 两个都叫「更新时的离线」，但语义相反：B6.1 是**正在升级**的主机自报 `reason=updating`；D2 的 `queued` 是**还没开始升级**（消息在 Broker 排队） | 命名上区分：主机 `reason` 用 `updating`，台账状态用 `queued`；D3 两条用例分别覆盖，文档明确对照 |
+| **台账 `reason` 与主机 `agent_ver` 短暂不一致** | Agent 已替换二进制但 status 帧未到，UI 仍显示旧版本 | 与 A6.2 同源：以**状态帧为权威**（真实上报的 `agent_ver` 才作数），台账 `done` 是辅助。UI 展示以主机实际上报版本为准，不缓存台账推断值 |
 
-**回滚**：阶段一每项互相独立、按提交分离，任一项出问题可单独 revert；`batch_id` 列只增不改不删，回滚代码后遗留列无害（`server_default=''`）。
+**回滚**：阶段一每项互相独立、按提交分离，任一项出问题可单独 revert；`batch_id` 列只增不改不删，回滚代码后遗留列无害（`server_default=''`）。D 组同理：`updates` 表新增的 `queued` 属**状态枚举取值**而非新列（`status` 本就是 `String`），回滚代码后遗留 `queued` 行只影响展示，不影响收敛（`auto` 模式下照常被超时机制收走）；`KK_UPDATE_MODE` 回滚即设回 `auto`，**无需重建镜像**。
