@@ -17,6 +17,7 @@
 | **一** | A4 上报间隔治理 | 补 P1-4：消除死配置 | `config.py` + `mqtt_bridge._on_hb` + stats | 无 |
 | **一** | A5 **Web 前端易用性与布局改造** | 命令快速下发 / 结果查询 / 导出入口 / 消除布局 magic number | 新增 4 个组件 + `kk.scss` 布局基建 + 5 个页面改造 | 复用 A1 导出、A3 分页；与 A1/A3 同批交付体验最佳 |
 | **一** | A6 **自更新可观测性**（审视新增） | 补自更新缺口：**推送式更新当前静默失效** + 更新结果无回执 | `updater.py` URL 解析 + `updates` 表 + 1 个回执分支 | 无 |
+| **一** | A7 **日志体系重构**（新增） | 引 `loguru` 换掉原生 `logging`；顺带修 Agent 日志**双写入 + 双轮转**缺陷；三套格式归一 | Agent 重写 `logutil.py` + 服务端新增 `logsetup.py`（含 stdlib 拦截）；**两侧调用点零改动** | `loguru`（唯一新增依赖） |
 | **二** | B1 客户端 nice 降权 | 补 P2-1：零代码级隔离 → 优先级隔离 | `entrypoint-wrapper.sh` | 无 |
 | **二** | B2 自更新回滚接口 | 补 P2-7：`.prev` 有文件无入口 | 1 端点 + 前端 1 按钮 | 无 |
 | **二** | B3 登录限流补 IP 维度 | 补 P2-3 | `auth.py` | 无 |
@@ -24,7 +25,7 @@
 | **二** | B5 CI 落地（真库 + Broker + nightly 压测） | 补 P2-5/P2-6 | 新增 `.github/workflows/ci.yml` | 需要仓库启用 Actions |
 | 不做 | C1 ed25519 签名、C2 协议压缩、C3 共享订阅 | 既有决策（`architecture-review` §0 已关闭），本次不翻案 | — | — |
 
-**阶段一完成后的验收口径**：在命令中心**一屏之内**完成「选 500 台 → 下发 → 看到该批次进度 → 翻页/按批次筛选看全结果 → 一键导出 CSV 核验成功/失败分布」，且发布动作零 DB 回查、业务页无布局硬编码、无新增 UI 依赖；**推送式自更新在镜像零配置下可用，且每次升级的结果与失败原因可查**。
+**阶段一完成后的验收口径**：在命令中心**一屏之内**完成「选 500 台 → 下发 → 看到该批次进度 → 翻页/按批次筛选看全结果 → 一键导出 CSV 核验成功/失败分布」，且发布动作零 DB 回查、业务页无布局硬编码、无新增 UI 依赖；**推送式自更新在镜像零配置下可用，且每次升级的结果与失败原因可查**；**双端日志收敛为同一套格式、各自唯一写入者，可轮转可保留，且同一记录不再重复出现**。
 
 ---
 
@@ -512,6 +513,173 @@ async def count_commands(self, pod=None, batch=None, status=None, kind=None) -> 
 
 ---
 
+### A7 日志体系重构：引入 `loguru` 替换原生 `logging`
+
+#### A7.0 现状盘点（含一个顺带修掉的真实缺陷）
+
+**Agent 现状**
+
+| 事实 | 证据 |
+|---|---|
+| 全模块**唯一**的 `logging` 引用点就是 `logutil.py` | `agent/src/kk_agent/logutil.py:2,5,11` |
+| `get_logger(path, level, name)` 手工挂两个 handler：`StreamHandler(stderr)` + `RotatingFileHandler(1 MB, backupCount=1)` | `logutil.py:16-27` |
+| logger 走**依赖注入**，不检索全局 | `transport.py:110`（`self.log`）、`executor.py:155,179`（`self._log`）、`updater.py:101,137,198,240`（`log` 形参）+ `_Null()` 空实现占位（`updater.py:42-52`）、`plugin_loader.py:41`（`log=None`） |
+| 调用点约 35 处，**清一色 `%s` 懒格式化**，无字符串拼接 | `grep -n "log\.\(info\|warning\|error\|debug\|exception\)" agent/src` |
+| 配置项 `KK_LOG`（路径）/ `KK_LOG_LEVEL` | `config.py:79-80` |
+
+**Server 现状**
+
+| 事实 | 证据 |
+|---|---|
+| 三个模块级 logger：`kk.server` / `kk.store` / `kk.bridge` | `main.py:27`、`store.py:26`、`mqtt_bridge.py:33` |
+| 唯一集中配置是 `main()` 里的 `basicConfig` | `main.py:109` |
+| uvicorn 用**自有**日志配置，格式与 `basicConfig` 不同 | `main.py:110-115` |
+| 调用点约 23 处，同为 `%s` 风格 | — |
+| **无文件落盘、无轮转、无保留上限** | 只写 stdout；`docker-compose.prod.yml:23-43` 未设 `logging:` 段 → json-file 驱动默认无 `max-size` |
+| 日志级别来自 `KK_LOG_LEVEL` | `main.py:114`；`server/README.md:93` |
+
+**缺陷清单**
+
+| # | 问题 | 证据 | 严重度 |
+|---|---|---|---|
+| **D1** | **Agent 日志文件有两个写入者、两套轮转机制** | 镜像 ENV 烧入 `KK_LOG=/var/log/kk-agent.log`（`Dockerfile.snippet:23`、`scripts/build.sh:70`）。wrapper 读它 → shell 重定向 `>>"$KK_LOG" 2>&1` 且**自带** 1MB `mv` 轮转（`entrypoint-wrapper.sh:19,25-26,42`）；Agent **也**读它 → `log_path` → `RotatingFileHandler(同一路径, 1MB×1)`（`config.py:79` → `logutil.py:23`） | 🔴 |
+| D2 | 三套日志格式并存（Agent / server `basicConfig` / uvicorn），同一份 `docker logs` 里混排 | 见上表 | 🟡 |
+| D3 | 服务端日志无落盘、无轮转、无上限 | compose 未设 `logging:` | 🟡 |
+| D4 | 无结构化字段与上下文传播：500 台规模下 `host` / `cmd` / `batch` 全靠手拼进消息串，无法按主机聚簇检索 | `mqtt_bridge.py:148-306` 十余处手工拼 `host=%s` | 🟡 |
+| D5 | 多行 traceback 破坏行式采集：`log.exception` 输出多行，docker json-file 会把一条记录拆成 N 行 | `updater.py:251`、`main.py:143`、`mqtt_bridge.py:271` | 🟢 |
+| D6 | Agent 日志保留量过小且容器重建即丢：`1MB×1` 上限仅 2MB；`/var/log` 无 volume 挂载 | `logutil.py:23`、`Dockerfile.snippet:19` | 🟢 |
+
+**D1 的后果（本节要修的实质缺陷，不只是观感问题）**：
+
+| 后果 | 说明 |
+|---|---|
+| 每条记录写两遍 | stderr 经 shell 追加进 `KK_LOG`，同时 `RotatingFileHandler` 直写同一路径 |
+| 先轮转的一方让另一方的 fd 悬空 | handler 先轮转 → `os.rename(KK_LOG → KK_LOG.1)`，shell 的 fd 仍指向该 inode，此后 Agent 的 stderr 全部落进 `.1`；wrapper 先轮转则反过来。两套重命名策略（handler 的 `os.rename` 与 wrapper 的 `mv -f`）作用于同一路径，**行为不由设计决定** |
+| 兜底排查手段是错的 | `docker exec … cat /var/log/kk-agent.log` 看到的既不完整也非全部；而 `.1` 因 wrapper 只检查 `KK_LOG`（已停止增长）**不再被轮转** |
+| 阈值形同虚设 | 两套 1MB 阈值互相踩，谁先生效取决于时序 |
+
+> 定位口径：这不是「日志写得不够好看」，而是**同一个文件被两个进程内的两套机制同时管**。修法是让写入者唯一（A7.4）。
+
+#### A7.1 选型：`loguru` + 薄适配层
+
+| 候选 | 优势 | 为什么不选 |
+|---|---|---|
+| **`loguru`（选）** | 轮转/保留/压缩/彩色/结构化一行配置；纯 Python 单包，**PyInstaller onefile 友好**（无 C 扩展、无隐藏 import、无资源文件、无 `__file__` 相对加载）；线程安全；`bind()` 传上下文；`catch()` 兜住线程入口异常 | — |
+| `structlog` | JSON 事件、processor 链最灵活 | 收益来自**改调用点**（`log.info("event", key=value)`）才拿得到；本项目痛点是「轮转缺失 + 格式不一 + 无上下文」，不是日志分析，投入产出不匹配 |
+| `picologging` | C 扩展版 `logging`，同 API 更快 | API 不变 ⇒ 不解决 handler 样板/结构/轮转；且给冻结二进制引入 C 扩展，跨平台构建风险不值得 |
+| 保留 stdlib + 自研 handler 工厂 | 零新依赖 | 等于自研一个 loguru 子集（轮转 + 保留 + 压缩 + 结构化），自研量反而上升——与项目「复用开源、压低自研」取向相反 |
+
+**关键决策：写一个薄适配层，两侧业务调用点一律不动。**
+
+现有代码全是 `%s` 懒格式化（`log.warning("mqtt connect failed: %s", reason_code)`），而 loguru 用 `{}` 占位。两条路线：
+
+| 路线 | 内容 | 结论 |
+|---|---|---|
+| (a) 全量改写调用点 | 把 58 处（Agent ~35 + Server ~23）`%s` 改成 `{}` | ❌ 机械改动却触碰全部业务模块，且测试里对消息串的断言要一起改；日志是横切关注点，不该与业务代码纠缠 |
+| **(b) 薄适配层（选）** | `logutil` 内约 40 行：`_Adapter` 保留 `.info/.warning/.error/.exception/.debug/.critical(msg, *args)` 签名，内部 `msg % args` 后交给 loguru；`bind()` 透传 | ✅ **调用点零改动**，回归面最小；依赖注入模式（`log` 形参 / `self.log` / `_Null()` 占位）原样保留 |
+
+适配层同时承担三件事，因此不是纯粹的兼容 shim：**统一格式**、**统一轮转策略**、**暴露 `bind()` 给上下文**。
+
+> **`log.exception` 语义兼容已确认**：适配器方法在调用栈上仍处于调用方的 `except` 块内，`sys.exc_info()` 可取到活动异常，loguru 的 `opt(exception=True)` 能正确附带 traceback —— 58 处 `log.exception` 无需改写。
+
+#### A7.2 Agent 侧落地
+
+`agent/src/kk_agent/logutil.py` 重写（**仍是全项目唯一 import 日志后端的地方**，公开签名 `get_logger(path, level, name)` 不变）：
+
+| 项 | 设计 | 理由 |
+|---|---|---|
+| sink 1 | stderr | 容器场景由 docker 采集，语义不变 |
+| sink 2 | 文件 sink，仅当 `path` 非空且 `!= "-"` | 与现有语义一致 |
+| 轮转 | `rotation="1 MB"`, `retention=2` | 与现状 `1MB×1` 同量级，但保留逻辑交给库保证 |
+| 压缩 | **关**（Agent 侧省 CPU） | Agent 受 nice 降权（B1），不做无收益的 gzip |
+| `enqueue` | **`False`（显式）** | `enqueue=True` 是 multiprocessing 队列 + feeder 线程 —— 与「单线程事件循环 + 一次性 daemon worker」的既定模型不符，会新增线程并抬高 RSS。同步写保留 stdlib 现有语义 |
+| `backtrace` / `diagnose` | `backtrace=True`，**`diagnose=False`** | `diagnose=True` 会把**局部变量值**写进日志（可能含密钥/环境），生产必须关闭 |
+| `catch` | `True` | 日志自身出错（磁盘满、路径不可写）不炸 Agent —— 现有 `logutil.py:26` 的 `except OSError` 是在手工做同一件事 |
+| 幂等 | 以 `name` 为键记录「已初始化」 | 现状靠 `if logger.handlers:` 判断（`logutil.py:14`），换库后需要等价机制，否则 reload/测试会重复加 sink |
+| 冻结二进制 | 纯 Python，PyInstaller 自动收集，无需 `hiddenimports` | 体积影响约 +200KB（当前二进制 8–12MB 量级，可接受） |
+| 依赖 | `agent/pyproject.toml` 加 `loguru>=0.7` | — |
+| 测试影响 | `agent/tests` 中对日志文本的断言改为断言**消息体**，不再依赖格式前缀 | 格式前缀由 sink 统一提供 |
+
+**上下文绑定**（D4 的 Agent 侧正解）：建立 logger 后按组件 `bind`，让每条记录自带来源：
+
+```python
+log = kk_logutil.get_logger(cfg["log_path"], cfg["log_level"])
+# 组件级绑定：日志自带 component=，500 台规模下可按组件过滤
+tr = Transport(cfg, log=log.bind(component="transport"))
+kk_plugins.collect_all(cfg["plugin_dir"], log=log.bind(component="plugin"))
+```
+
+#### A7.3 Server 侧落地
+
+新增 `server/src/kk_server/logsetup.py`：
+
+| 组件 | 内容 |
+|---|---|
+| `setup_logging(settings)` | 幂等注册 sink：① stdout（保留容器采集）② 文件（`KK_LOG`，默认空 = 不落盘）+ `rotation="20 MB"`, `retention=10`, `compression="gz"` —— 服务端长跑，保留规格高于 Agent |
+| `get_logger(name)` | 供各模块替换 `logging.getLogger("kk.xxx")`，调用点写法不变 |
+| `InterceptHandler` | `logging.Handler` 子类，把 stdlib 记录转投 loguru → **统一接管 uvicorn / paho / httpx** |
+| `serialize` | 由 `KK_LOG_JSON=1` 控制（默认 0，人读优先；接采集端时打开，日志即 JSON Lines） |
+
+装配点与陷阱：
+
+| 项 | 做法 | 理由 |
+|---|---|---|
+| 调用位置 | 在 **`create_app()` 内**调用，而非 `main()` | 测试用 `create_app(env)` 构造（`test_api.py:20` 是 **function 级 fixture**），日志行为需与生产一致 |
+| **幂等是硬要求** | 模块级 `_configured` 标记 + sink 句柄集合，重复调用只更新级别 | `create_app` 在整套测试里被调用**数百次**（function fixture）；若每次都 `logger.add()`，sink 线性增长 → 一条日志打印几百遍，测试输出爆炸 |
+| `uvicorn.run(..., log_config=None)` | **显式置 `None`** | 否则 uvicorn 用自带 dictConfig **覆盖**我们的格式，`InterceptHandler` 前功尽弃（`main.py:110-115`） |
+| 移除 `basicConfig` | 删除 `main.py:109`，改调 `setup_logging` | 避免两套配置打架（D2） |
+| 三处 `getLogger` | 改为 `get_logger("kk.server" / "kk.store" / "kk.bridge")` | 模块名保留，`log.xxx` 调用点不动 |
+| 请求级上下文 | `mqtt_bridge` 的 `_on_hb` / `_on_result` / `dispatch_command` 用 `log.bind(host=…, cmd=…)` | 一条记录自带主机与命令号：`grep 'host=web-07'` 即拉出该机全部事件。**这是 500 台规模下 A7 价值最高的落点** |
+| docker 兜底 | `docker-compose.prod.yml` **与 `docker-compose.offline.yml`** 的 `kk-server` 服务都加 `logging: {driver: json-file, options: {max-size: "50m", max-file: "5"}}` | 应用侧轮转是文件维度；docker 侧不设上限仍会无限增长（D3）。两个 compose 的 kk-server 段结构不同（`build` vs `image`），需分别改 |
+| 文档 | `server/README.md` 环境变量表补 `KK_LOG` / `KK_LOG_JSON`；`agent/README.md:134` 按 A7.4 更新 | — |
+
+#### A7.4 顺带修掉 D1：`KK_LOG` 归属拆分
+
+**核心：一个日志文件只能有一个写入者。** 两个方案：
+
+| 方案 | 做法 | 评价 |
+|---|---|---|
+| **α. 文件归应用（选）** | Agent 侧由 loguru 的文件 sink 全权负责 `KK_LOG`；wrapper **不再**把 Agent 输出重定向到该文件（改 stderr 直通 docker logs），supervisor 自身消息写 `KK_SUPERVISOR_LOG`（默认空 = 只走 stderr） | ✅ 单写入者、单轮转；轮转/保留/压缩由库保证（wrapper 只有裸 `mv`）；语义清晰：`KK_LOG` = Agent 应用日志 |
+| β. 文件归 wrapper | Agent 的 `log_path` 强制置空，只写 stderr，由 wrapper 统一采集轮转 | ❌ 失去 retention/compression；且不经 wrapper 直跑 Agent（开发场景）时完全没有文件日志 |
+
+**落地**：
+
+| 文件 | 改动 |
+|---|---|
+| `agent/deploy/entrypoint-wrapper.sh` | `:42` 改为 `"$KK_BIN" >/dev/null 2>&1 &`（或按可选变量保留形态）；`:45,62` 的 supervisor 消息改写 `${KK_SUPERVISOR_LOG:-/dev/stderr}`；**删除** `rotate_log()`（轮转归应用） |
+| `agent/deploy/Dockerfile.snippet` | ENV 值不变，补注释说明 `KK_LOG` 现由 Agent 独占 |
+| `agent/README.md:134` | `KK_LOG` 描述改为「Agent 日志文件，轮转与保留由 Agent 自身管理」；并提示**不要同时把 Agent stdout 重定向到同一路径** |
+| `scripts/build.sh:70` | 同步注释 |
+
+> 保留 `KK_LOG` 的 ENV 值与路径（`/var/log/kk-agent.log`）不变——**只改语义归属，不改部署面**，避免运维脚本失效。
+
+#### A7.5 测试
+
+| 用例 | 断言 |
+|---|---|
+| `test_adapter_percent_format_compat` | `log.info("a %s b %d", "x", 1)` 经适配器后消息为 `a x b 1` —— 锁死 58 处调用点语义不变 |
+| `test_adapter_no_args_untouched` | 无参数的 `log.warning("plain %d")` 不因缺参抛 `TypeError`（`%` 仅在存在 args 时执行） |
+| `test_get_logger_idempotent` | 连调两次 `get_logger`，sink 数不翻倍 |
+| `test_get_logger_no_file_sink_when_empty` | `path=""` 与 `path="-"` 均不建文件 sink |
+| `test_get_logger_file_rotation_and_retention` | 写入超阈值 → 出现轮转文件，且文件总数受 `retention` 约束 |
+| `test_exception_carries_traceback` | `try/except` 内 `log.exception("boom")`，输出含 `ZeroDivisionError` 与调用点 |
+| `test_setup_logging_idempotent_across_create_app` | 同进程 `create_app()` 调 3 次，sink 数不变（**防测试输出爆炸**） |
+| `test_stdlib_logs_intercepted` | 触发一条 stdlib 记录（模拟 uvicorn access）→ 落入统一 sink |
+| `test_server_json_sink_when_kk_log_json` | `KK_LOG_JSON=1` 时每行可被 `json.loads` 解析 |
+| `test_agent_wrapper_not_redirecting_to_kk_log` | 静态检查 `entrypoint-wrapper.sh` 中 Agent 启动行不含 `>>"$KK_LOG"`（防 D1 回归） |
+
+#### A7.6 约定固化（同步写入 `AGENTS.md`）
+
+| 约定 | 内容 |
+|---|---|
+| 单一日志后端 | 双端只允许 `loguru`，且只能经 `logutil` / `logsetup` 的适配层使用；**新代码不得再 `import logging`**（stdlib 仅允许出现在 `InterceptHandler` 内） |
+| 调用风格 | 继续用 `%s` 懒格式化（适配层契约），不写 f-string 拼消息 —— 保证延迟求值，也保证与既有 58 处风格一致 |
+| 一个文件一个写入者 | `KK_LOG` 只由应用进程写；shell / docker 侧重定向不得指向同一路径 |
+| 上下文优先 | 需要主机/命令/批次维度时用 `log.bind(...)`，不要拼进消息串 |
+| 生产红线 | `diagnose=False`；日志中不得出现口令、token、完整环境变量 |
+
+---
+
 ## 2. 阶段二 · 加固
 
 ### B1 客户端 nice 降权（P2-1）
@@ -673,6 +841,10 @@ A6 修的是「看不见」，B6 修的是「规模化下的健壮性」。六�
 > **提交 2 为何独立**：布局基建（`.kk-page` / `.kkPoll` / `downloadBlob`）是提交 3/6/7/8 的共同依赖。独立提交让「布局回归」这类问题可以单点回滚，而不必牵连业务页改动。
 >
 > **提交 10/11 为何排在 A4 之后**：A6 触碰 Agent 与服务端双端，且引入新表 —— 放在阶段一末尾，避免与 A1~A5 的改动面交织。但**若要先修一处，选提交 10**：它让「推送式更新」从静默失效变成真正可用，改动仅 `updater.py` 十余行。
+>
+> **提交 19/20（A7）为何排在最后**：A7 是**横切改造**——它会全局改变运行时与测试的日志输出形态。若早做，A1~A6 每一项的验证都会多一层无关噪音（「这条日志格式变了」与「这个功能坏了」混在一起）。排到最后，前面的验证按现状进行，A7 一次切换、一次回归。
+>
+> **D1（`KK_LOG` 双写入）与功能项完全正交**：若当下就想修，提交 19 可先只做 A7.4 的最小版（wrapper 不再重定向 + 删除 `rotate_log()`，约 6 行 shell），不必等 loguru 落地。但两者同批做更划算——因为 A7.4 让文件写入者唯一之后，正好由 loguru 的文件 sink 接手。
 
 ---
 
@@ -737,5 +909,12 @@ A6 修的是「看不见」，B6 修的是「规模化下的健壮性」。六�
 | **A6 生效需双端同版本** | 服务端先升级、Agent 未升级时，旧 Agent 不回传更新结果，台账会停在 `pending` | 由 30min 超时收敛为 `timeout`（可见的降级，非静默）。文档写明「A6 需 Agent 与服务端一并升级」；这也符合本项目双端同版本发布的既有节奏 |
 | **execv 前的成功回执可能丢帧** | 台账停在 `pending` 但实际已升级成功 | 已设计独立佐证：Agent 重启后上报新 `agent_ver` → 台账补 `done`（A6.2 时序约定）。回执是**辅助**信号，状态帧才是权威 |
 | **`updates` 表长期增长** | 与 `commands` 同型的只增不减 | 建表时即纳入 `cleanup()`：台账保留 90 天（升级是低频操作，行数远小于心跳），复用既有分批删 |
+| **loguru 在 PyInstaller 冻结后行为异常** | Agent 无法记录日志（可观测性归零） | 纯 Python 单包、PyInstaller 自动收集；提交 19 内必须实跑 `build_binary.sh` 产物验收（已列入 §4）。异常时回退 stdlib sink —— 适配层隔离了影响面，**回退只改 `logutil.py` 一个文件** |
+| **适配层语义偏差（`%s` 与 `{}` 混用）** | 日志消息错乱或丢参数 | 适配器只做 `msg % args`，不解析 `{}`；`test_adapter_percent_format_compat` 锁死语义；**约定新增调用点继续用 `%s`**（写进代码注释） |
+| **`setup_logging` 非幂等** | 测试日志量数百倍增长，CI 卡顿 | `_configured` 标记 + `test_setup_logging_idempotent_across_create_app` 门禁 |
+| **改用 loguru 后 `KK_LOG_LEVEL` 大小写/取值失配** | 级别解析异常或静默回落到默认 | 适配层对未知级别回落到 INFO 并 `catch`，不抛异常；两侧保持 `getattr`-style 容错 |
+| **`log_config=None` 漏配** | uvicorn 覆盖格式，「格式统一」静默失败 | 列入 A7.3 显式清单；`test_stdlib_logs_intercepted` 兜底 |
+| **`KK_LOG` 语义变更影响既有运维脚本** | 按旧语义（wrapper 采集）读日志的脚本看不到新内容 | ENV 名与路径均不变，只改写入者；`agent/README.md` / `scripts/build.sh` / `Dockerfile.snippet` 三处同步 + 显式提示 |
+| **`diagnose=True` 误开启致敏感信息入日志** | 局部变量（含口令/环境变量）写进日志 | 默认 `diagnose=False`，在 A7.2 表格中标注为生产红线 |
 
 **回滚**：阶段一每项互相独立、按提交分离，任一项出问题可单独 revert；`batch_id` 列只增不改不删，回滚代码后遗留列无害（`server_default=''`）。
