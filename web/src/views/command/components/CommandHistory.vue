@@ -12,7 +12,8 @@ import {
   listCommands,
   type CommandRow
 } from "@/api/commands";
-import { numText, statusLabel, statusType, tsText } from "@/utils/kk";
+import { exportCommands } from "@/api/exporting";
+import { downloadBlob, fileStamp, numText, statusLabel, statusType, tsText } from "@/utils/kk";
 
 defineOptions({ name: "CommandHistory" });
 
@@ -47,6 +48,24 @@ function restartTimer() {
 
 function errText(e: any): string {
   return e?.response?.data?.detail ?? e?.message ?? String(e);
+}
+
+const exporting = ref(false);
+
+/** 导出当前筛选结果（不是当前页）：与页面所见一致，否则报表无法核验。 */
+async function onExport() {
+  exporting.value = true;
+  try {
+    const blob = await exportCommands({
+      status: statusFilter.value || undefined,
+      include_tail: 1
+    });
+    downloadBlob(blob, `命令历史_${fileStamp()}.csv`);
+  } catch (e: any) {
+    ElMessage.error("导出失败：" + errText(e));
+  } finally {
+    exporting.value = false;
+  }
 }
 
 async function showOut(row: CommandRow) {
@@ -109,6 +128,9 @@ defineExpose({ reload: () => loadCommands() });
           </el-select>
           <el-checkbox v-model="autoRefresh" @change="restartTimer">5 秒自动刷新</el-checkbox>
           <el-button :loading="loading" @click="loadCommands()">刷新</el-button>
+          <el-button type="primary" :loading="exporting" @click="onExport">
+            导出 CSV
+          </el-button>
         </div>
       </div>
     </template>

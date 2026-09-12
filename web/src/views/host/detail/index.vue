@@ -13,7 +13,17 @@ import {
 import { CanvasRenderer } from "echarts/renderers";
 
 import { getHost, getHostMetrics, type HostDetail } from "@/api/containers";
-import { ageText, mbText, numText, statusLabel, statusType, tsText } from "@/utils/kk";
+import { exportMetrics } from "@/api/exporting";
+import {
+  ageText,
+  downloadBlob,
+  fileStamp,
+  mbText,
+  numText,
+  statusLabel,
+  statusType,
+  tsText
+} from "@/utils/kk";
 
 defineOptions({ name: "HostDetail" });
 
@@ -106,6 +116,23 @@ function onResize() {
   chart.value?.resize();
 }
 
+const exporting = ref(false);
+
+/** 导出当前时间窗口的指标曲线（与图上 hours 一致，>24h 走服务端小时聚合表）。 */
+async function onExportMetrics() {
+  exporting.value = true;
+  try {
+    downloadBlob(
+      await exportMetrics(pod.value, hours.value),
+      `指标_${pod.value}_${hours.value}h_${fileStamp()}.csv`
+    );
+  } catch (e: any) {
+    ElMessage.error("导出失败：" + (e?.message ?? e));
+  } finally {
+    exporting.value = false;
+  }
+}
+
 watch(hours, () => loadMetrics());
 
 onMounted(async () => {
@@ -149,6 +176,9 @@ onBeforeUnmount(() => {
               <el-option label="近 7 天" :value="168" />
             </el-select>
             <el-button @click="load">刷新</el-button>
+            <el-button type="primary" :loading="exporting" @click="onExportMetrics">
+              导出指标
+            </el-button>
           </div>
         </div>
       </template>

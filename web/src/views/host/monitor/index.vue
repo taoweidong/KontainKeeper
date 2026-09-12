@@ -5,7 +5,8 @@ import { ElMessage } from "element-plus";
 
 import { listHosts, type HostSummary } from "@/api/containers";
 import { createCommand, listCollectItems } from "@/api/commands";
-import { ageText, mbText, numText, tsText } from "@/utils/kk";
+import { exportHosts } from "@/api/exporting";
+import { ageText, downloadBlob, fileStamp, mbText, numText, tsText } from "@/utils/kk";
 
 defineOptions({ name: "HostMonitor" });
 
@@ -68,6 +69,20 @@ function restartTimer() {
 
 function onSelectionChange(val: HostSummary[]) {
   selection.value = val;
+}
+
+const exporting = ref(false);
+
+/** 导出全量主机清单（资产盘点场景），与「仅在线/仅告警」的前端过滤无关。 */
+async function onExport() {
+  exporting.value = true;
+  try {
+    downloadBlob(await exportHosts(), `主机清单_${fileStamp()}.csv`);
+  } catch (e: any) {
+    ElMessage.error("导出失败：" + (e?.message ?? e));
+  } finally {
+    exporting.value = false;
+  }
 }
 
 async function openCollect() {
@@ -156,6 +171,9 @@ onBeforeUnmount(() => {
               <el-option label="不自动刷新" :value="0" />
             </el-select>
             <el-button :loading="loading" @click="load">刷新</el-button>
+            <el-button type="primary" :loading="exporting" @click="onExport">
+              导出清单
+            </el-button>
           </div>
         </div>
       </template>

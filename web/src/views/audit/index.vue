@@ -3,7 +3,8 @@ import { computed, onMounted, ref } from "vue";
 import { ElMessage } from "element-plus";
 
 import { listAudit, parseDetail, type AuditRow } from "@/api/audit";
-import { tsText } from "@/utils/kk";
+import { exportAudit } from "@/api/exporting";
+import { downloadBlob, fileStamp, tsText } from "@/utils/kk";
 
 defineOptions({ name: "AuditLog" });
 
@@ -31,6 +32,24 @@ async function load() {
     ElMessage.error("加载审计日志失败：" + (e?.message ?? e));
   } finally {
     loading.value = false;
+  }
+}
+
+const exporting = ref(false);
+
+/** 导出带上当前条数上限与关键字：审计是追溯凭证，导出范围必须与页面一致。 */
+async function onExport() {
+  exporting.value = true;
+  try {
+    const blob = await exportAudit({
+      keyword: keyword.value.trim() || undefined,
+      limit: limit.value
+    });
+    downloadBlob(blob, `审计日志_${fileStamp()}.csv`);
+  } catch (e: any) {
+    ElMessage.error("导出失败：" + (e?.message ?? e));
+  } finally {
+    exporting.value = false;
   }
 }
 
@@ -62,6 +81,9 @@ onMounted(load);
             <el-option label="最近 500 条" :value="500" />
           </el-select>
           <el-button :loading="loading" @click="load">刷新</el-button>
+          <el-button type="primary" :loading="exporting" @click="onExport">
+            导出 CSV
+          </el-button>
         </div>
       </div>
     </template>
