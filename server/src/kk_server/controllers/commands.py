@@ -111,7 +111,8 @@ async def create_commands(body: CommandBody, request: Request):
         await store.add_audit(user, "command_blocked", {"argv": argv_for_check, "pods": body.pods})
         raise HTTPException(status_code=400, detail="命令命中黑名单，已被拒绝并记录审计")
 
-    ids = await store.create_commands_batch(body.pods, body.kind, payload, timeout, user)
+    ids, batch_id = await store.create_commands_batch(
+        body.pods, body.kind, payload, timeout, user)
     created = []
     for cid, pod in zip(ids, body.pods):
         # dispatch_command 是 paho 的非阻塞发布（线程安全），不是数据库调用

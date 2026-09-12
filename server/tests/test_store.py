@@ -126,9 +126,14 @@ async def test_containers_exist_is_one_query(store):
 
 async def test_batch_create_is_single_transaction(store):
     await store.upsert_container("x", "img", "0.2.0", 60)
-    ids = await store.create_commands_batch(["x"] * 50, "collect", {"items": ["cpu"]}, 30, "admin")
+    ids, batch_id = await store.create_commands_batch(
+        ["x"] * 50, "collect", {"items": ["cpu"]}, 30, "admin")
     assert len(set(ids)) == 50
     assert (await store.get_command(ids[0]))["kind"] == "collect"
+    # 一次调用一个批次：50 行共享同一个 batch_id（G3 按批次聚合的前提）
+    assert batch_id.startswith("b-")
+    rows = await store.list_commands(batch=batch_id, limit=100)
+    assert len(rows) == 50 and {r["batch_id"] for r in rows} == {batch_id}
 
 
 async def test_admin_sessions(store):

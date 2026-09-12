@@ -255,7 +255,7 @@ async def test_result_cross_host_rejected(bridge):
     """评审 P0-3：A 主机不得替 B 主机回传命令结果。"""
     await bridge._on_status("pod-a", status_frame("pod-a"))
     await bridge._on_status("pod-b", status_frame("pod-b"))
-    cid = (await bridge.store.create_commands_batch(["pod-a"], "shell", ["echo"], 30, "admin"))[0]
+    cid = (await bridge.store.create_commands_batch(["pod-a"], "shell", ["echo"], 30, "admin"))[0][0]
     await bridge._on_result("pod-b", {"id": cid, "seq": 0, "total": 1, "out_b64": "aGk=",
                                 "done": True, "rc": 0})
     row = await bridge.store.get_command(cid)
@@ -271,7 +271,7 @@ async def test_result_unknown_command_dropped(bridge):
 
 async def test_result_appends_and_completes(bridge):
     await bridge._on_status("pod-c", status_frame("pod-c"))
-    cid = (await bridge.store.create_commands_batch(["pod-c"], "shell", ["echo"], 30, "admin"))[0]
+    cid = (await bridge.store.create_commands_batch(["pod-c"], "shell", ["echo"], 30, "admin"))[0][0]
     await bridge._on_result("pod-c", {"id": cid, "seq": 0, "total": 2,
                                 "out_b64": base64.b64encode(b"part1-").decode()})
     assert (await bridge.store.get_command(cid))["status"] == "running"
@@ -294,7 +294,7 @@ async def test_result_chunks_concurrent_no_data_loss(bridge):
     import asyncio
 
     await bridge._on_status("pod-e", status_frame("pod-e"))
-    cid = (await bridge.store.create_commands_batch(["pod-e"], "shell", ["cat", "big"], 30, "admin"))[0]
+    cid = (await bridge.store.create_commands_batch(["pod-e"], "shell", ["cat", "big"], 30, "admin"))[0][0]
     data = b"x" * 204800                       # 5 块：4×48KB + 8KB
     chunk = 48 * 1024
     frames = []
@@ -324,7 +324,7 @@ async def test_result_chunks_concurrent_no_data_loss(bridge):
 
 async def test_dispatch_shell_payload(bridge):
     await bridge._on_status("pod-d", status_frame("pod-d"))
-    cid = (await bridge.store.create_commands_batch(["pod-d"], "shell", ["du", "-sh", "/"], 30, "a"))[0]
+    cid = (await bridge.store.create_commands_batch(["pod-d"], "shell", ["du", "-sh", "/"], 30, "a"))[0][0]
     assert bridge.dispatch_command(await bridge.store.get_command(cid)) is True
     msg = bridge.cli.msgs[-1]
     assert msg["topic"] == "kk/v1/pod-d/cmd" and msg["qos"] == 1
@@ -337,7 +337,7 @@ async def test_dispatch_collect_payload_carries_items(bridge):
     """R4：collect 命令必须把 items 带给 Agent，否则采集通道形同虚设。"""
     await bridge._on_status("pod-e", status_frame("pod-e"))
     cid = (await bridge.store.create_commands_batch(
-        ["pod-e"], "collect", {"items": ["cpu", "net"]}, 30, "a"))[0]
+        ["pod-e"], "collect", {"items": ["cpu", "net"]}, 30, "a"))[0][0]
     bridge.dispatch_command(await bridge.store.get_command(cid))
     body = json.loads(bridge.cli.msgs[-1]["payload"])
     assert body["kind"] == "collect" and body["items"] == ["cpu", "net"]
@@ -347,7 +347,7 @@ async def test_dispatch_collect_payload_carries_items(bridge):
 async def test_dispatch_carries_use_shell(bridge):
     await bridge._on_status("pod-f", status_frame("pod-f"))
     cid = (await bridge.store.create_commands_batch(
-        ["pod-f"], "shell", {"argv": ["ls | wc -l"], "use_shell": True}, 30, "a"))[0]
+        ["pod-f"], "shell", {"argv": ["ls | wc -l"], "use_shell": True}, 30, "a"))[0][0]
     bridge.dispatch_command(await bridge.store.get_command(cid))
     body = json.loads(bridge.cli.msgs[-1]["payload"])
     assert body["use_shell"] is True and body["argv"] == ["ls | wc -l"]
@@ -357,14 +357,14 @@ async def test_dispatch_reports_queued_when_disconnected(bridge):
     """未连上 Broker 时 paho 会入队（rc=NO_CONN），这算已尽责，不能判失败。"""
     bridge.cli.rc = 4  # MQTT_ERR_NO_CONN
     await bridge._on_status("pod-g", status_frame("pod-g"))
-    cid = (await bridge.store.create_commands_batch(["pod-g"], "shell", ["echo"], 30, "a"))[0]
+    cid = (await bridge.store.create_commands_batch(["pod-g"], "shell", ["echo"], 30, "a"))[0][0]
     assert bridge.dispatch_command(await bridge.store.get_command(cid)) is True
 
 
 async def test_dispatch_fails_on_queue_overflow(bridge):
     bridge.cli.rc = 15  # MQTT_ERR_QUEUE_SIZE
     await bridge._on_status("pod-h", status_frame("pod-h"))
-    cid = (await bridge.store.create_commands_batch(["pod-h"], "shell", ["echo"], 30, "a"))[0]
+    cid = (await bridge.store.create_commands_batch(["pod-h"], "shell", ["echo"], 30, "a"))[0][0]
     assert bridge.dispatch_command(await bridge.store.get_command(cid)) is False
 
 
@@ -373,7 +373,7 @@ async def test_dispatch_fails_on_queue_overflow(bridge):
 async def test_sweep_converges_stuck_commands(bridge):
     import time as _t
     await bridge._on_status("pod-i", status_frame("pod-i"))
-    cid = (await bridge.store.create_commands_batch(["pod-i"], "shell", ["echo"], 30, "a"))[0]
+    cid = (await bridge.store.create_commands_batch(["pod-i"], "shell", ["echo"], 30, "a"))[0][0]
     await bridge.store.mark_sent(cid)
     # 人为把时间推到超时之后
     await bridge.store.exec_sql(

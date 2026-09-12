@@ -84,6 +84,10 @@ commands = Table(
     # 输出被保留策略清掉后置 1：状态行还在，但命令回显已不可追溯，
     # 前端据此提示「输出已清理」，而不是让用户对着空白以为命令没执行。
     Column("out_purged", Integer, nullable=False, server_default="0"),
+    # 一次批量下发的批次号（b-<hex8>）：500 台一次点击后要能按「这一次操作」
+    # 聚合核验与导出。索引暂不建——现有 idx_cmd_pod(pod, created_at) 在 500 台
+    # 规模下够用；命令表上万级时再补（登记在二期备选）。
+    Column("batch_id", String(32), nullable=False, server_default=""),
     Index("idx_cmd_pod", "pod", "created_at"),
 )
 
@@ -132,5 +136,7 @@ _ADD_COLUMNS = {
     "kk_containers": [("cpu", "DOUBLE PRECISION"), ("mem_mb", "DOUBLE PRECISION"),
                       ("disk_pct", "DOUBLE PRECISION")],
     "kk_commands": [("out_purged", "INTEGER DEFAULT 0"),
-                     ("last_seq", "INTEGER DEFAULT -1")],
+                     ("last_seq", "INTEGER DEFAULT -1"),
+                     # 不带引号：MySQL 严格模式下 'VARCHAR' 被引号包住会解析失败
+                     ("batch_id", "VARCHAR(32) DEFAULT ''")],
 }

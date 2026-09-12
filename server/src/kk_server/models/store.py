@@ -11,8 +11,8 @@ import secrets
 import time
 from urllib.parse import urlparse
 
-from sqlalchemy import (BigInteger, and_, case, delete, func, insert, select,
-                        text, update)
+from sqlalchemy import (BigInteger, and_, case, delete, func, insert, or_,
+                        select, text, update)
 from sqlalchemy.dialects import mysql, postgresql, sqlite
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import StaticPool
@@ -302,31 +302,105 @@ class Store:
 
     # ---- 命令 ----
     async def create_command(self, pod, kind, argv, timeout, created_by):
-        return (await self.create_commands_batch([pod], kind, argv, timeout, created_by))[0]
+        return (await self.create_commands_batch([pod], kind, argv, timeout, created_by))[0][0]
 
-    async def create_commands_batch(self, pods, kind, argv, timeout, created_by):
-        """批量建命令：单事务 + 参数列表（驱动侧走 executemany）。"""
+    async def create_commands_batch(self, pods, kind, argv, timeout, created_by,
+                                    batch_id=None):
+        """批量建命令：单事务 + 参数列表（驱动侧走 executemany）。
+
+        返回 `(ids, batch_id)`：一次调用一个批次，全部行共享同一个 batch_id。
+        显式返回元组而不是挂在 self 上的隐式状态——批量下发后要按批次聚合核验，
+        调用方（控制器）必须拿到这个号，隐式状态在并发下会串。
+        """
         now = int(time.time())
         ids = ["c-" + secrets.token_hex(6) for _ in pods]
+        batch_id = batch_id or ("b-" + secrets.token_hex(8))
         argv_json = json.dumps(argv, ensure_ascii=False)
         rows = [{"id": cid, "pod": pod, "kind": kind, "argv": argv_json,
                  "timeout": timeout, "status": "pending", "created_by": created_by,
-                 "created_at": now, "out_b64": ""} for cid, pod in zip(ids, pods)]
+                 "created_at": now, "out_b64": "", "batch_id": batch_id}
+                for cid, pod in zip(ids, pods)]
         async with self.engine.begin() as conn:
             await conn.execute(insert(commands), rows)
-        return ids
+        return ids, batch_id
 
     async def get_command(self, cid):
         return await self._one(select(commands).where(commands.c.id == cid))
 
-    async def list_commands(self, pod=None, limit=100):
-        stmt = select(*(commands.c[c] for c in _CMD_COLS), commands.c.out_b64)
+    @staticmethod
+    def _command_filters(pod=None, batch=None, status=None, kind=None,
+                         since=None, until=None, keyword=None):
+        """命令筛选条件的唯一构造点：列表、计数、导出三处共用同一套语义。
+
+        集中在这里的理由：导出结果必须与页面所见一致（P0-1 验收项），
+        两处各写一份 where 迟早漂移。
+        """
+        conds = []
         if pod:
-            stmt = stmt.where(commands.c.pod == pod)
-        rows = await self._all(stmt.order_by(commands.c.created_at.desc()).limit(limit))
+            conds.append(commands.c.pod == pod)
+        if batch:
+            conds.append(commands.c.batch_id == batch)
+        if status:
+            conds.append(commands.c.status == status)
+        if kind:
+            conds.append(commands.c.kind == kind)
+        if since:
+            conds.append(commands.c.created_at >= int(since))
+        if until:
+            conds.append(commands.c.created_at <= int(until))
+        if keyword:
+            # 关键字必须下推到后端：前端过滤会让「导出」与「所见」不一致
+            like = "%" + str(keyword) + "%"
+            conds.append(or_(commands.c.pod.like(like), commands.c.id.like(like),
+                             commands.c.argv.like(like)))
+        return conds
+
+    async def list_commands(self, pod=None, limit=100, offset=None, batch=None,
+                            status=None, kind=None, since=None, until=None,
+                            keyword=None, tail=True):
+        stmt = select(*(commands.c[c] for c in _CMD_COLS), commands.c.out_b64)
+        for cond in self._command_filters(pod, batch, status, kind, since, until, keyword):
+            stmt = stmt.where(cond)
+        stmt = stmt.order_by(commands.c.created_at.desc()).limit(limit)
+        if offset:
+            stmt = stmt.offset(int(offset))
+        rows = await self._all(stmt)
         for r in rows:
-            r["out_tail"] = _b64_tail(r.pop("out_b64", "") or "")
+            raw = r.pop("out_b64", "") or ""
+            if tail:
+                r["out_tail"] = _b64_tail(raw)
         return rows
+
+    async def count_commands(self, pod=None, batch=None, status=None, kind=None,
+                             since=None, until=None, keyword=None):
+        """与 list_commands 同筛选条件的总数：分页要 total，导出要行数上限判断。"""
+        stmt = select(func.count().label("n")).select_from(commands)
+        for cond in self._command_filters(pod, batch, status, kind, since, until, keyword):
+            stmt = stmt.where(cond)
+        row = await self._one(stmt)
+        return row["n"] if row else 0
+
+    async def batch_summary(self, limit=20):
+        """最近批次的各自状态分布：让「500 台一次点击」变成可核验的对象。
+
+        一条 GROUP BY + 内存聚合，不按批次循环查——500 台规模下批次可能上百个。
+        """
+        rows = await self._all(
+            select(commands.c.batch_id.label("batch_id"),
+                   commands.c.status.label("status"),
+                   func.count().label("n"),
+                   func.max(commands.c.created_at).label("created_at"))
+            .where(commands.c.batch_id != "")
+            .group_by(commands.c.batch_id, commands.c.status)
+            .order_by(commands.c.created_at.desc()))
+        agg = {}
+        for r in rows:
+            b = agg.setdefault(r["batch_id"], {"batch_id": r["batch_id"], "total": 0,
+                                               "created_at": r["created_at"] or 0})
+            b[r["status"]] = b.get(r["status"], 0) + r["n"]
+            b["total"] += r["n"]
+        out = sorted(agg.values(), key=lambda x: x["created_at"], reverse=True)
+        return out[:limit] if limit else out
 
     async def command_output(self, cid, as_text=True):
         """完整输出只在单条查看时解码，不进列表响应。"""
