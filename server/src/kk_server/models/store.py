@@ -652,7 +652,16 @@ class Store:
         await self.kv_set("agent_latest", json.dumps(info, ensure_ascii=False))
 
     async def get_agent_latest(self):
-        raw = await self.kv_get("agent_latest")
+        return await self._load_json_kv("agent_latest")
+
+    async def set_agent_prev(self, info):
+        await self.kv_set("agent_prev", json.dumps(info, ensure_ascii=False))
+
+    async def get_agent_prev(self):
+        return await self._load_json_kv("agent_prev")
+
+    async def _load_json_kv(self, key):
+        raw = await self.kv_get(key)
         if not raw:
             return None
         try:

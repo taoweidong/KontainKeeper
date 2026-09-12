@@ -1,6 +1,7 @@
 """Agent 自更新接口：
 
 - POST /api/system/agent       管理员上传新版本二进制（multipart: file + version）
+- POST /api/system/agent/rollback 回滚待分发二进制到上一版（只影响重启的 Agent）
 - GET  /api/system/agent/latest   Agent 查询最新版本清单（落后才 available）
 - GET  /api/system/agent/download Agent 下载二进制（流式）
 
@@ -13,7 +14,6 @@ import asyncio
 import hashlib
 import json
 import os
-import shutil
 
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -56,23 +56,85 @@ async def upload_agent(request: Request, file: UploadFile = File(...), version: 
     def _write():
         """最大 64MB 的同步写不要占住事件循环——否则上传时所有心跳与请求都被卡住。"""
         os.makedirs(bin_dir, exist_ok=True)
+        had_prev = False
         if os.path.exists(dest):  # 保留上一版，便于回滚
             try:
-                shutil.move(dest, dest + ".prev")
+                # 必须用 os.replace（覆盖语义跨平台一致）：shutil.move 落到
+                # os.rename，在 Windows 上遇到已存在的 .prev 会 FileExistsError，
+                # 被下面的 except 吞掉 → 第二次上传起「上一版」静默不保留。
+                os.replace(dest, dest + ".prev")
+                had_prev = True
             except OSError:
                 pass
         with open(dest, "wb") as f:
             f.write(data)
         if os.name == "posix":
             os.chmod(dest, 0o755)
+        return had_prev
 
-    await asyncio.to_thread(_write)
+    # 上一版的**清单**要和二进制一起留下来（B2）：回滚时无从反推旧版本号，
+    # 而 sha256 必须对得上 .prev 文件，否则 Agent 下载后会校验失败。
+    store = request.app.state.store
+    prev_info = await store.get_agent_latest()
+    had_prev = await asyncio.to_thread(_write)
 
     sha = hashlib.sha256(data).hexdigest()
     info = {"version": version, "sha256": sha, "size": len(data)}
-    await request.app.state.store.set_agent_latest(info)
-    await request.app.state.store.add_audit(user, "agent_upload", info)
+    await store.set_agent_latest(info)
+    if had_prev and prev_info:
+        await store.set_agent_prev(prev_info)
+    elif not had_prev:
+        await store.kv_set("agent_prev", "")   # 首次上传：清掉可能的历史残留
+    await store.add_audit(user, "agent_upload", info)
     return {"ok": True, **info}
+
+
+@router.post("/agent/rollback")
+async def rollback_agent(request: Request):
+    """把服务端**待分发**的 Agent 二进制回滚到上一版（B2 / P2-7）。
+
+    语义边界（不说清就会被当成「一键回滚全网」）：
+    - 只换服务端待分发的二进制与版本清单 —— **新上线或重启的 Agent** 才会拿到旧版；
+    - 已在跑的 Agent **不会**因此降级：`version_lt` 只升不降，桥接的升级推送
+      不会反向触发；真要让在跑的实例回退，只能让它们重启后重新走 latest 判定；
+    - 本接口是「当前 ↔ 另一版」的**互换**：再调一次即撤销回滚（换回回滚前的
+      那个版本）。`agent_prev` 恒记「另一版」的清单，文件路径则看它从哪来 ——
+      上传留下的是 `.prev`，回滚留下的是 `.rollback`，两者都被认作候选。
+    """
+    user = await current_user(request)
+    store = request.app.state.store
+    dest = _bin_path(request)
+
+    prev_info = await store.get_agent_prev()
+    alt = dest + ".prev" if os.path.isfile(dest + ".prev") else dest + ".rollback"
+    if not os.path.isfile(alt) or not prev_info:
+        raise HTTPException(status_code=404, detail="没有可回滚的版本")
+    cur_info = await store.get_agent_latest()
+
+    def _swap():
+        # 顺序要紧：当前版先暂存到 .swap，再让另一版上位，最后把暂存的当前版
+        # 落为 .rollback（新备用）。若直接 replace(dest, ".rollback")，而备用
+        # 恰好就叫 .rollback，会在搬走之前把它覆盖掉 —— 回滚一次后就没得撤了。
+        # os.replace 的覆盖语义跨平台一致，Windows 上不会因目标已存在而失败。
+        if os.path.exists(dest):
+            tmp = dest + ".swap"
+            os.replace(dest, tmp)
+            os.replace(alt, dest)
+            os.replace(tmp, dest + ".rollback")
+        else:
+            os.replace(alt, dest)
+        if os.name == "posix":
+            os.chmod(dest, 0o755)
+
+    await asyncio.to_thread(_swap)
+    await store.set_agent_latest(prev_info)
+    if cur_info:
+        await store.set_agent_prev(cur_info)
+    await store.add_audit(user, "agent_rollback", {
+        "from_version": (cur_info or {}).get("version", ""),
+        "to_version": prev_info.get("version", ""),
+    })
+    return {"ok": True, **prev_info}
 
 
 def _download_url(request: Request) -> str:

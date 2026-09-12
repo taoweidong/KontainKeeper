@@ -68,7 +68,64 @@ def test_upload_and_discovery(tmp_path):
 
         # 再传一版：上一版要留成 .prev 便于回滚
         assert _upload(client, token, b"\x7fELF-second", "0.4.0").status_code == 200
-        assert os.path.exists(os.path.join(str(tmp_path / "bin"), "kk-agent.prev"))
+        prev = os.path.join(str(tmp_path / "bin"), "kk-agent.prev")
+        assert os.path.exists(prev)
+
+        # 第三次上传时 .prev 已存在：shutil.move 在 Windows 上会因目标已存在而
+        # 失败并被 except 静默吞掉，导致「上一版」从此不再更新（回滚失去意义）。
+        # 故改用 os.replace（覆盖语义跨平台一致），这里守住该回归。
+        assert _upload(client, token, b"\x7fELF-third", "0.5.0").status_code == 200
+        with open(prev, "rb") as f:
+            assert f.read() == b"\x7fELF-second"
+
+
+def test_agent_rollback_restores_prev(tmp_path):
+    """回滚要把**二进制**和**版本清单**一起换回上一版。
+
+    只换其中一个都是坏的：只换文件 → Agent 下载到的字节与 latest 的 sha256 不符，
+    校验失败；只换清单 → 下载的还是坏版本。
+    """
+    v1, v2 = b"\x7fELF-v1", b"\x7fELF-v2-longer"
+    with TestClient(_make_app(tmp_path), client=GOOD_CLIENT) as client:
+        token = _admin_token(client)
+        assert _upload(client, token, v1, "0.3.0").status_code == 200
+        assert _upload(client, token, v2, "0.4.0").status_code == 200
+        assert client.get("/api/system/agent/download").content == v2
+
+        r = client.post("/api/system/agent/rollback",
+                        headers={"Authorization": "Bearer %s" % token})
+        assert r.status_code == 200, r.text
+        assert r.json()["version"] == "0.3.0"
+
+        # 下载回来的必须是 v1 本体，且 sha256 与 v1 相符（不是 v2 的）
+        assert client.get("/api/system/agent/download").content == v1
+        body = client.get("/api/system/agent/latest", params={"ver": "0.1.0"}).json()
+        assert body["available"] is True and body["version"] == "0.3.0"
+        assert body["sha256"] == hashlib.sha256(v1).hexdigest()
+        assert body["size"] == len(v1)
+
+        # 互换语义：再回滚一次回到 v2（prev 恒记「另一个版本」）
+        r = client.post("/api/system/agent/rollback",
+                        headers={"Authorization": "Bearer %s" % token})
+        assert r.json()["version"] == "0.4.0"
+        assert client.get("/api/system/agent/download").content == v2
+
+
+def test_agent_rollback_without_prev_404(tmp_path):
+    """只上传过一次就没有「上一版」，回滚必须 404 而不是把现有二进制弄丢。"""
+    with TestClient(_make_app(tmp_path), client=GOOD_CLIENT) as client:
+        token = _admin_token(client)
+        payload = b"\x7fELF-only-one"
+        assert _upload(client, token, payload, "0.3.0").status_code == 200
+
+        r = client.post("/api/system/agent/rollback",
+                        headers={"Authorization": "Bearer %s" % token})
+        assert r.status_code == 404, r.text
+        # 现有二进制完好无损
+        assert client.get("/api/system/agent/download").content == payload
+
+        # 回滚是管理动作：无会话不得触发
+        assert client.post("/api/system/agent/rollback").status_code == 401
 
 
 def test_ip_whitelist_and_admin_auth(tmp_path):
