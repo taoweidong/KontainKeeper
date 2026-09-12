@@ -168,3 +168,63 @@ async def test_logout_writes_audit(api):
     audits = await api.store.list_audit()
     actions = [(a["actor"], a["action"]) for a in audits]
     assert (ADMIN, "logout") in actions
+
+
+# ---- A2：批量下发回路去 N+1 ----
+
+class _FakeBridge:
+    """只记录入参的假桥接：用来断言发布所需的字段全都由调用方就地提供。"""
+
+    def __init__(self):
+        self.dispatched = []
+        self.stats = {"cmd_published": 0, "cmd_failed": 0}
+
+    def dispatch_command(self, row):
+        self.dispatched.append(dict(row))
+        return True
+
+
+async def test_create_commands_batch_dispatch_without_lookup(api):
+    """P1-1：500 台一次点击，发布回路不得有任何 get_command 回查。"""
+    store = api.store
+    pods = ["h-%03d" % i for i in range(500)]
+    for p in pods:
+        await store.upsert_container(p, "img", "0.3.0", 60)
+    bridge = _FakeBridge()
+    api.app.state.bridge = bridge
+
+    calls = {"get_command": 0}
+    orig = store.get_command
+
+    async def counting(cid):
+        calls["get_command"] += 1
+        return await orig(cid)
+
+    store.get_command = counting
+    r = await api.client.post("/api/commands", json={
+        "pods": pods, "kind": "shell", "argv": ["echo", "hi"], "timeout": 30})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert len(body["items"]) == 500
+    assert body["batch_id"].startswith("b-")
+    assert calls["get_command"] == 0, "发布回路不得回查数据库"
+    # 就地组装的行必须带齐桥接要的五个字段
+    assert len(bridge.dispatched) == 500
+    assert {c["pod"] for c in bridge.dispatched} == set(pods)
+    assert all(c["kind"] == "shell" and c["timeout"] == 30 for c in bridge.dispatched)
+    # mark_sent_batch 生效：全部为 sent，且只走批量 UPDATE
+    rows = await store.list_commands(batch=body["batch_id"], limit=500)
+    assert len(rows) == 500 and all(r["status"] == "sent" for r in rows)
+
+
+async def test_mark_sent_batch_shards_and_ignores_non_pending(api):
+    """批量置 sent 走 IN（分片），且只翻 pending 行——done 行不得被拉回 sent。"""
+    store = api.store
+    await store.upsert_container("h1", "img", "0.3.0", 60)
+    ids, _ = await store.create_commands_batch(["h1"] * 3, "shell", ["echo"], 30, "admin")
+    await store.append_result({"id": ids[0], "done": True, "rc": 0})
+    n = await store.mark_sent_batch(ids)
+    assert n == 2
+    assert (await store.get_command(ids[0]))["status"] == "done"
+    assert (await store.get_command(ids[1]))["status"] == "sent"
+    assert await store.mark_sent_batch([]) == 0

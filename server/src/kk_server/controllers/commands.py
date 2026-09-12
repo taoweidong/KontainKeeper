@@ -113,17 +113,24 @@ async def create_commands(body: CommandBody, request: Request):
 
     ids, batch_id = await store.create_commands_batch(
         body.pods, body.kind, payload, timeout, user)
+    # 发布所需字段（id/pod/kind/argv/timeout）在建行时已全部具备，就地组装成 dict
+    # 下发即可——回查数据库是 500 次单查换 0 收益（P1-1）。dispatch_command 只做
+    # row["..."] 取值，dict 与 Row 同样兼容，无需改桥接。
+    argv_json = json.dumps(payload, ensure_ascii=False)
     created = []
+    sent_ids = []
     for cid, pod in zip(ids, body.pods):
         # dispatch_command 是 paho 的非阻塞发布（线程安全），不是数据库调用
-        sent = bridge.dispatch_command(await store.get_command(cid))
+        sent = bridge.dispatch_command({"id": cid, "pod": pod, "kind": body.kind,
+                                        "argv": argv_json, "timeout": timeout})
         if sent:
-            await store.mark_sent(cid)
+            sent_ids.append(cid)
         created.append({"id": cid, "pod": pod, "status": "sent" if sent else "pending"})
+    await store.mark_sent_batch(sent_ids)
     await store.add_audit(user, "command_create",
                     {"kind": body.kind, "argv": payload, "pods": body.pods,
-                     "ids": [c["id"] for c in created]})
-    return {"items": created}
+                     "batch_id": batch_id, "ids": [c["id"] for c in created]})
+    return {"items": created, "batch_id": batch_id}
 
 
 @router.get("/commands")

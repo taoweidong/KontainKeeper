@@ -415,9 +415,28 @@ class Store:
 
     async def mark_sent(self, cid):
         """语义 = 已发布给 Broker（QoS1 会排队送达），不代表 Agent 已收到。"""
-        return await self._run(update(commands).where(commands.c.id == cid)
-                               .where(commands.c.status == "pending")
-                               .values(status="sent", sent_at=int(time.time())))
+        return await self.mark_sent_batch([cid])
+
+    async def mark_sent_batch(self, cids):
+        """批量置 sent：500 台一次 UPDATE ... WHERE id IN (...)。
+
+        逐条 UPDATE 在 SQLite 上约数十毫秒，但 500 条是 500 次事务往返——
+        批量下发是「一次点击」的路径，这里省下来的都是点击后的等待。
+        分片是为了避开数据库变量数上限（与 containers_exist 同款）。
+        """
+        cids = [c for c in (cids or []) if c]
+        if not cids:
+            return 0
+        now = int(time.time())
+        total = 0
+        for i in range(0, len(cids), 400):
+            shard = cids[i:i + 400]
+            total += await self._run(
+                update(commands)
+                .where(commands.c.id.in_(shard))
+                .where(commands.c.status == "pending")
+                .values(status="sent", sent_at=now))
+        return total
 
     async def append_result(self, msg, host=None):
         """协议 v2 结果帧。
