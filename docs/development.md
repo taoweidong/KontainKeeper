@@ -88,7 +88,8 @@ v3 起 Broker 统一匿名开放（`allow_anonymous true`，无 passwordfile / A
 ```
 
 - 监听 `http://127.0.0.1:8443`，浏览器打开即管理界面；
-- 默认账号 `admin / admin123`（**连续输错 5 次锁定 300 秒**，别被自己锁了）；
+- 默认账号 `admin / admin123`（**连续输错 5 次锁定 300 秒**，且按用户名与客户端
+  IP 两个维度分别计数 —— 别被自己锁了）；
 - 未配 `KK_MQTT_URL` 时服务端仍能起（只读管理 + 审计导出），日志会警告
   不连 Broker——要联调 Agent 就先起 Mosquitto 再配环境变量：
 

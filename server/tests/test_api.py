@@ -160,6 +160,43 @@ async def test_login_rate_limit_blocks_brute_force(api):
         auth_mod._LOGIN_LOCKED_UNTIL.clear()
 
 
+async def test_login_lock_by_ip(api, monkeypatch):
+    """B3 / P2-3：同一 IP 换着用户名试，也必须在 5 次内被锁。
+
+    只按用户名计数时，攻击者拿一个 IP 遍历「admin / root / ops …」，每个名字
+    各错一次，任何一个都到不了 5 次 —— 用户名枚举这条路等于不设防。
+    """
+    from kk_server.controllers import auth as auth_mod
+
+    src = {"ip": "203.0.113.7"}
+    monkeypatch.setattr(auth_mod, "_client_ip", lambda request: src["ip"])
+    auth_mod._LOGIN_FAILS.clear()
+    auth_mod._LOGIN_LOCKED_UNTIL.clear()
+    try:
+        await api.store.ensure_admin(ADMIN, PASS)
+        await api.store.ensure_admin("ops", "ops-pass")
+
+        # 4 个不同用户名各错一次：用户名维度一次都没到 5，IP 维度累加到 4
+        for i in range(4):
+            r = await api.client.post("/api/login",
+                                      json={"username": "u%d" % i, "password": "nope"})
+            assert r.status_code == 401, r.text
+
+        # 第 5 次仍错（换回真实用户名）→ IP 维度达阈值，直接 429
+        r = await api.client.post("/api/login",
+                                  json={"username": ADMIN, "password": "nope"})
+        assert r.status_code == 429, r.text
+
+        # 换一个来源 IP 且换一个未被锁的用户名：不应被上一个 IP 连坐
+        src["ip"] = "198.51.100.9"
+        r = await api.client.post("/api/login",
+                                  json={"username": "ops", "password": "ops-pass"})
+        assert r.status_code == 200 and "token" in r.json(), r.text
+    finally:
+        auth_mod._LOGIN_FAILS.clear()
+        auth_mod._LOGIN_LOCKED_UNTIL.clear()
+
+
 async def test_logout_writes_audit(api):
     """P2 审计：登出动作须留痕（带用户名与动作 'logout'），便于安全事件追溯。"""
     # api 客户端已带 Bearer（由 fixture 注入）
