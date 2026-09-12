@@ -136,18 +136,44 @@ def test_dispatch_ignores_frame_without_id():
 
 
 def test_dispatch_update_kind_triggers_self_update(monkeypatch):
-    """推送式自更新此前在 dispatcher 里没有分支，落到 unknown kind → 永远不更新。"""
+    """推送式自更新此前在 dispatcher 里没有分支，落到 unknown kind → 永远不更新。
+
+    A6.2 起改为走 runner 并回传回执：更新曾经是全平台唯一没有结果的操作，
+    服务端无从回答「500 台升了多少、失败多少」，故这里连回执一起锁。
+    """
     seen = {}
 
-    def spy(cfg, log, manifest):
+    def spy(cfg, log, manifest, on_before_restart=None):
         seen["manifest"] = manifest
-    monkeypatch.setattr(m.kk_updater, "spawn_apply", spy)
+        return True, None
+
+    monkeypatch.setattr(m.kk_updater, "apply_manifest_receipt", spy)
     tr = FakeTransport()
     dispatch = build_runner(tr)
     manifest = {"id": "c-up", "kind": "update", "version": "9.9.9", "sha256": "abc"}
     dispatch(manifest)
-    assert seen["manifest"] == manifest
-    assert tr.frames == [], "update 不该回命令结果"
+    for _ in range(200):
+        if tr.frames and tr.frames[-1].get("done"):
+            break
+        threading.Event().wait(0.05)
+    assert seen.get("manifest") == manifest
+    assert tr.frames and tr.frames[-1]["rc"] == 0, "更新成功也要回执，否则台账永远停在 pending"
+
+
+def test_dispatch_update_failure_receipt_carries_reason(monkeypatch):
+    """失败回执带原因码：台账要显示 sha256_mismatch，而不是一句「失败」。"""
+    monkeypatch.setattr(
+        m.kk_updater, "apply_manifest_receipt",
+        lambda cfg, log, manifest, on_before_restart=None: (False, "sha256_mismatch"))
+    tr = FakeTransport()
+    dispatch = build_runner(tr)
+    dispatch({"id": "c-up-bad", "kind": "update", "version": "9.9.9", "sha256": "x"})
+    for _ in range(200):
+        if tr.frames and tr.frames[-1].get("done"):
+            break
+        threading.Event().wait(0.05)
+    assert tr.frames[-1]["rc"] == 1
+    assert b"sha256_mismatch" in decode(tr.frames)
 
 
 def test_dispatch_collect_requires_items(monkeypatch):
