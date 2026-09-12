@@ -28,6 +28,8 @@ export type CommandRow = {
   elapsed_ms: number | null;
   out_chunks: number;
   out_purged: number;
+  /** 一次批量下发的批次号（A3） */
+  batch_id?: string;
   out_tail?: string;
 };
 
@@ -43,7 +45,37 @@ export type CommandCreateBody = {
 
 export type CommandCreateResult = {
   items: Array<{ id: string; pod: string; status: string }>;
+  /** 一批次一号：下发后据此聚合核验（A3） */
+  batch_id: string;
 };
+
+/** 列表查询：筛选条件全部下推后端，导出与所见才一致 */
+export type CommandListParams = {
+  pod?: string;
+  batch?: string;
+  status?: string;
+  kind?: string;
+  keyword?: string;
+  limit?: number;
+  offset?: number;
+};
+
+export type CommandListResult = {
+  items: CommandRow[];
+  total: number;
+  offset: number;
+  limit: number;
+};
+
+/** 批次内各状态计数（GET /api/commands/batches） */
+export type BatchSummary = {
+  batch_id: string;
+  total: number;
+  created_at: number;
+  [status: string]: number | string;
+};
+
+export type BatchListResult = { items: BatchSummary[] };
 
 export const listCollectItems = () => {
   return http.request<{ items: string[] }>("get", "/api/collect/items");
@@ -53,8 +85,14 @@ export const createCommand = (data: CommandCreateBody) => {
   return http.request<CommandCreateResult>("post", "/api/commands", { data });
 };
 
-export const listCommands = (params?: { pod?: string; limit?: number }) => {
-  return http.request<{ items: CommandRow[] }>("get", "/api/commands", { params });
+export const listCommands = (params?: CommandListParams) => {
+  return http.request<CommandListResult>("get", "/api/commands", { params });
+};
+
+export const listBatches = (limit = 20) => {
+  return http.request<BatchListResult>("get", "/api/commands/batches", {
+    params: { limit }
+  });
 };
 
 export const getCommand = (id: string) => {

@@ -68,10 +68,32 @@
   }
 }
 
+/* 本次下发的命令行：左侧色条，500 台里一眼找到刚才发的那批 */
+.kk-row-fresh > td.el-table__cell:first-child {
+  box-shadow: inset 3px 0 0 var(--el-color-primary);
+}
+
 /* 总览页告警行整行浅红底：扫描时不必逐格看磁盘列。
    本文件是全局样式（非 scoped），el-table 的行类名落在 <tr> 上，直接后代选择即可。 */
 .kk-row-alert > td.el-table__cell {
   background: var(--el-color-danger-light-9);
+}
+
+/* 抽屉内表格高度锚点：与 --kk-page-h 同族，数值只在这里维护 */
+:root {
+  --kk-drawer-h: 300px;
+}
+
+.kk-mb {
+  margin-bottom: 10px;
+}
+
+/* 主机选择触发区：已选标签横向排列，超过 5 个折叠为 +M */
+.kk-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
 }
 
 /* 卡片：同页相邻卡片垂直间距（el-card 默认无 margin） */
