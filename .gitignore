@@ -22,3 +22,10 @@ deploy/mosquitto/passwordfile
 # 本地工作日志（审查会话记忆），非项目产物
 .workbuddy/
 .trae/
+# CI 产物与构建缓存（Jenkins 流水线：测试报告、uv/pip 缓存、节点内的 uv 与构建 venv）
+reports/
+.ci-cache/
+.ci-tools/
+# 离线镜像 tar（deploy/offline/pack.sh 产出，动辄数 GB，严禁入库）
+deploy/offline/images/*.tar.gz
+deploy/offline/images/SHA256SUMS

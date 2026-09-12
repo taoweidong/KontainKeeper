@@ -21,6 +21,10 @@ services:
     restart: unless-stopped
 
   kk-server:
+    # image 与 build 并存（compose 支持）：手工部署走 build（默认产物标签就是 kk-server:latest，
+    # 与 deploy/offline/pack.sh、docker-compose.offline.yml 一致，行为不变）；
+    # CI 部署则用 KK_SERVER_IMAGE 指定已推送的镜像标签，配合 `docker compose pull` 免去目标机构建。
+    image: ${KK_SERVER_IMAGE:-kk-server:latest}
     build:
       context: .
       dockerfile: server/Dockerfile

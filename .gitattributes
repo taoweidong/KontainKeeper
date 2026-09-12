@@ -1,0 +1,47 @@
+# 统一换行符策略
+#
+# 背景：开发机（Windows / core.autocrlf=true）与 CI/部署目标（Linux）共用同一仓库。
+# 若 shell 脚本或 Dockerfile 以 CRLF 落盘，Linux 侧会报 `\r: command not found`
+# 或 Docker 构建指令解析失败。这里对行尾敏感的文件强制 LF，与平台无关。
+#
+# 默认：由 Git 自动判断文本文件（提交时归一化为 LF）
+* text=auto
+
+# ---- 强制 LF（Linux 侧执行/解析）----
+*.sh            text eol=lf
+*.bash          text eol=lf
+Jenkinsfile     text eol=lf
+Dockerfile      text eol=lf
+Dockerfile.*    text eol=lf
+*.dockerfile    text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+*.conf          text eol=lf
+*.env           text eol=lf
+.env.example    text eol=lf
+*.py            text eol=lf
+*.md            text eol=lf
+*.toml          text eol=lf
+*.spec          text eol=lf
+Makefile        text eol=lf
+
+# ---- 显式二进制（禁止任何换行符转换与 diff）----
+*.png           binary
+*.jpg           binary
+*.jpeg          binary
+*.gif           binary
+*.ico           binary
+*.pdf           binary
+*.tar           binary
+*.tar.gz        binary
+*.tgz           binary
+*.zip           binary
+*.whl           binary
+*.db            binary
+*.sqlite        binary
+
+# ---- 第三方/构建产物不入 diff 统计 ----
+web/dist/**             linguist-generated=true
+server/src/kk_server/web/** linguist-generated=true
+pnpm-lock.yaml          linguist-generated=true
+uv.lock                 linguist-generated=true
