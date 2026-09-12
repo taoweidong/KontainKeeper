@@ -22,7 +22,7 @@
 | **二** | B2 自更新回滚接口 | 补 P2-7：`.prev` 有文件无入口 | 1 端点 + 前端 1 按钮 | 无 |
 | **二** | B3 登录限流补 IP 维度 | 补 P2-3 | `auth.py` | 无 |
 | **二** | B4 文档一致性修正 | 补 P2-8 | `AGENTS.md` / `main.py` 注释 / `architecture-review.md` | 无 |
-| **二** | B5 CI 落地（真库 + Broker + nightly 压测） | 补 P2-5/P2-6 | 新增 `.github/workflows/ci.yml` | 需要仓库启用 Actions |
+| **二** | B5 CI 落地（**Jenkins**：主流水线已落地 / 真库 + nightly 待做） | 补 P2-5/P2-6 | 新增 `Jenkinsfile` + `scripts/ci_smoke.sh` + `docs/ci-jenkins.md` | 需要 Jenkins 节点与凭据 |
 | 不做 | C1 ed25519 签名、C2 协议压缩、C3 共享订阅 | 既有决策（`architecture-review` §0 已关闭），本次不翻案 | — | — |
 
 **阶段一完成后的验收口径**：在命令中心**一屏之内**完成「选 500 台 → 下发 → 看到该批次进度 → 翻页/按批次筛选看全结果 → 一键导出 CSV 核验成功/失败分布」，且发布动作零 DB 回查、业务页无布局硬编码、无新增 UI 依赖；**推送式自更新在镜像零配置下可用，且每次升级的结果与失败原因可查**；**双端日志收敛为同一套格式、各自唯一写入者，可轮转可保留，且同一记录不再重复出现**。
@@ -733,17 +733,38 @@ fi
 
 ### B5 CI 落地（P2-5 / P2-6）
 
-**现状**：仓库**没有 `.github/workflows/`**（已确认），因此「三库真库验证」与「500 台压测」目前无任何自动保障。
+> **2026-09-12 决定变更**：CI 平台由 GitHub Actions 改为 **Jenkins**（用户指定）。
+> 主流水线（测试 → 构建 → 镜像冒烟 → 推送 → 部署 → 验证）**已落地**，
+> 见根目录 `Jenkinsfile`、`scripts/ci_smoke.sh` 与 [ci-jenkins.md](ci-jenkins.md)。
 
-新增 `.github/workflows/ci.yml`，三个 job：
+**现状**：仓库**没有 `.github/workflows/`**（已确认），CI 改为 Jenkins 后不再需要它。
 
-| job | 内容 | 触发 |
+已落地部分（本次提交）：
+
+| 段 | 内容 | 复用 |
 |---|---|---|
-| `test` | `uv sync --all-packages` → `pytest agent/tests server/tests`，配 `eclipse-mosquitto:2` service（1883）→ 断言 **202 passed（含 4 个原 skip 的集成用例）** | push / PR |
-| `dialects` | matrix `postgres:16` / `mysql:8` service，跑 `test_dialects.py` 的**真实连接**版本 + `test_store.py`，断言扩列迁移（`_ensure_schema`）在两库上真的成功 | push / PR |
-| `nightly` | `scripts/loadtest.py` 500 连接 × 60s，断言心跳零误判掉线、命令成功率 100%；`scripts/bench_agent.py` 断言 RSS `< 40MB` | `schedule: cron` |
+| 后端测试 | 流水线自起 `eclipse-mosquitto:2`（端口 18830，只绑回环）→ `uv sync --all-packages` → `pytest agent/tests server/tests`，**断言 202 passed**（无 Broker 时是 198+4 skipped 的假绿，见 ci-jenkins.md §3） | 既有测试 |
+| Broker 语义冒烟 | retain 只落 status、LWT、离线排队、大输出分块 | `scripts/mqtt_e2e.py` |
+| 前端构建 | `pnpm typecheck && pnpm build` → 同步进 `server/src/kk_server/web/` → **产物漂移检查** | `web/package.json` |
+| Agent 二进制 | PyInstaller 单文件（用 `uv venv --seed` 建的构建 venv：uv 的 venv 不带 pip，而该脚本用 pip 装 pyinstaller） | `agent/build/build_binary.sh` |
+| 服务端镜像 | 上下文为仓库根（uv workspace 锁在根）+ OCI 修订标签 | `server/Dockerfile` |
+| **镜像部署冒烟** | 真起 Broker + 真起镜像 + **真跑 Agent 二进制**：健康 → 登录 → 上线 → 指标 → 命令 → 结果 → 审计，11 条断言 | `scripts/ci_smoke.sh`（新增） |
+| 部署 | 目标机 `git reset --hard` 到本次提交 → `docker compose pull` → `up -d`；生产需人工确认 | `docker-compose.prod.yml` |
+| 部署验证 | `/api/health` 断言 `ok=true` + `broker=connected`，再登录读 `/api/system/stats` | — |
 
-> **真库验证的已知风险**（`design.md:222` 已标注）：MySQL 排序规则大小写、PG 标识符小写折叠可能暴露既有代码的隐性问题。**这正是这个 job 的价值**——它可能一次跑出若干真实缺陷，需要预留修复余量，不要指望「加个 CI 文件就绿」。
+仍待落地（建议单独建一个 daily job，`when` 里只跑这两段——它们耗时长且与部署无关）：
+
+| 段 | 内容 | 触发 |
+|---|---|---|
+| `dialects` | matrix `postgres:16` / `mysql:8`，跑 `test_dialects.py` 的**真实连接**版本 + `test_store.py`，断言扩列迁移（`_ensure_schema`）在两库上真的成功 | 每次 push 或每日 |
+| `nightly` | `scripts/loadtest.py` 500 连接 × 60s，断言心跳零误判掉线、命令成功率 100%；`scripts/bench_agent.py` 断言 RSS `< 40MB` | 每日定时 |
+
+> **真库验证的已知风险**（`design.md:222` 已标注）：MySQL 排序规则大小写、PG 标识符小写折叠可能暴露既有代码的隐性问题。**这正是这个 job 的价值**——它可能一次跑出若干真实缺陷，需要预留修复余量，不要指望「配个 job 就绿」。
+
+> **一处为流水线做的前置改动**：`docker-compose.prod.yml` 的 `kk-server` 服务加上了
+> `image: ${KK_SERVER_IMAGE:-kk-server:latest}`。原文件只有 `build:`，**无法部署已推送到镜像仓库的产物**
+> （`docker compose pull` 没有可拉的对象）。默认值与 `deploy/offline/pack.sh`、`docker-compose.offline.yml`
+> 的 `kk-server:latest` 一致，手工部署流程与行为不变。
 
 ### B6 自更新健壮性（机制审视新增）
 
@@ -832,7 +853,7 @@ A6 修的是「看不见」，B6 修的是「规模化下的健壮性」。六�
 | 13 | `feat(server): Agent 自更新回滚接口` | B2（含 B6.6 的语义文档） |
 | 14 | `fix(server): 登录限流补客户端 IP 维度` | B3 |
 | 15 | `docs: 修正文档与代码失配项` | B4 |
-| 16 | `chore(ci): 落地测试/真库/nightly 压测流水线` | B5 |
+| 16 | `chore(ci): 落地真库验证与 nightly 压测 job` | B5 剩余部分（主流水线已随 `chore(ci): Jenkins 流水线` 单独提交） |
 | 17 | `perf(agent): 更新轮询抖动、失败退避与 size 校验` | B6.2 / B6.3 / B6.4 |
 | 18 | `fix(server): 自更新上传加锁与更新期离线标记` | B6.5 / B6.1 |
 

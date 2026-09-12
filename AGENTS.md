@@ -24,6 +24,10 @@ web/ Vue3 前端（REST 轮询 + ECharts，构建产物由 kk-server 托管）
 - `web/` — **独立 pnpm 工程**（Vue3 + TS + Element Plus + Vite + Pinia + ECharts，底座 pure-admin-thin v6.2.0）。`src/api/` 业务 API 层、`src/views/` 五个业务页（host/monitor 总览、host/detail 详情、command/shell 命令面板、command/collect 采集面板、audit 审计）、`src/router/modules/kk.ts` 静态路由。`web/dist/` 被 .gitignore 忽略，产物需人工同步到 `server/src/kk_server/web/`。
 - `proto/messages.md` — 双端通信协议契约（**v3 = 去 token：匿名 Broker + 服务端 `KK_AGENT_IPS` 白名单，上行帧携带自报 `ip`**）。改协议必须同步：`agent/src/kk_agent/config.py` 的 `PROTO_VER`、`server/src/kk_server/__init__.py` 的 `PROTO_VER`、协议文档、双端测试。
 - `agent/tests/`、`server/tests/`、`scripts/build.sh`（把 agent 叠加进 vscode-server 镜像）。
+- `Jenkinsfile` — **CI/CD 流水线**（测试 → Agent 二进制 → 服务端镜像 → 镜像冒烟 → 推送 → 部署 → 部署验证），
+  走 Jenkins 而非 GitHub Actions（仓库无 `.github/workflows/`）。配套 `scripts/ci_smoke.sh`（镜像级部署冒烟，
+  真起容器 + 真跑 Agent 二进制）与 `docs/ci-jenkins.md`（节点要求 / 凭据 ID / 参数 / 排障 / 回滚）。
+  `scripts/mqtt_e2e.py` 被流水线复用作 Broker 语义冒烟。
 
 ## 常用命令
 
@@ -42,6 +46,19 @@ pnpm build       # 产物输出到 web/dist/
 
 依赖：`uv sync --all-packages`（服务端 + dev）；`--extra postgres` / `--extra mysql` 按需装驱动。前端 `pnpm install`。无 lint 配置，前端有 typecheck。
 
+```bash
+# CI/CD（定义在根 Jenkinsfile，节点要求与凭据见 docs/ci-jenkins.md）
+docker run -d --name kk-ci-broker -p 127.0.0.1:18830:1883 \
+  -v "$PWD/deploy/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" eclipse-mosquitto:2
+KK_IT_MQTT_URL=mqtt://127.0.0.1:18830 .venv/Scripts/python.exe -m pytest agent/tests server/tests -q  # 有 Broker 才是 202 passed
+KK_MQTT_URL=mqtt://127.0.0.1:18830 .venv/Scripts/python.exe scripts/mqtt_e2e.py                      # Broker 语义冒烟（LWT/离线队列）
+docker build -f server/Dockerfile -t kontainkeeper-server:local .                                    # 上下文必须是仓库根
+bash scripts/ci_smoke.sh kontainkeeper-server:local agent/dist/kk-agent                              # 镜像级部署冒烟
+```
+
+> CI 用的临时 Broker 端口是 **18830**（不是 1883），避免与开发机上的 Broker 抢端口；
+> 集成用例读 `KK_IT_MQTT_URL`，`mqtt_e2e.py` 读 `KK_MQTT_URL` —— 两者都要设。
+
 ## 关键约束与陷阱
 
 - **Agent 线程模型**：主循环是单线程事件循环，MQTT socket 只由 paho 的后台网络线程触碰；采集/命令/插件在一次性 daemon 线程跑，结果由工作线程直接经 paho 发帧（paho 发布线程安全，不回主线程）；回调里不要做阻塞操作，重活丢给 worker 线程。
@@ -59,7 +76,7 @@ pnpm build       # 产物输出到 web/dist/
 
 ## 背景阅读
 
-改协议、Agent 资源策略或部署方式前先读 `docs/design.md`（总体设计）与 `proto/messages.md`（v3 MQTT 主题与帧格式）；执行路线图与缺陷账本在 `docs/completion-plan-mqtt.md`；生产部署流程在 `docs/deployment.md`，开发环境搭建在 `docs/development.md`。
+改协议、Agent 资源策略或部署方式前先读 `docs/design.md`（总体设计）与 `proto/messages.md`（v3 MQTT 主题与帧格式）；执行路线图与缺陷账本在 `docs/completion-plan-mqtt.md`；生产部署流程在 `docs/deployment.md`，开发环境搭建在 `docs/development.md`，CI/CD 流水线在 `docs/ci-jenkins.md`。
 
 ## 约定
 
