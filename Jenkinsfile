@@ -62,6 +62,8 @@ pipeline {
                description: '生产部署免人工确认（默认需要点一次「确认部署」）')
         booleanParam(name: 'PACK_OFFLINE', defaultValue: false,
                description: '额外打包离线镜像 tar（内网无网部署用，会拉取全部基础镜像，较慢）')
+        booleanParam(name: 'FORCE_NIGHTLY', defaultValue: false,
+               description: '强制跑 ⑬ 真库 + 夜测（默认仅 TimerTrigger 每日触发，不随普通 push 跑）')
     }
 
     environment {
@@ -486,6 +488,71 @@ set -euo pipefail
 ./deploy/offline/pack.sh
 ls -lh deploy/offline/images
 '''
+            }
+        }
+
+        // --------------------------------------------------------------------
+        // 真库 + 夜测：与「测试 job」解耦，不阻塞阶段一交付（见 docs/ci-jenkins.md）。
+        // 默认只在每日 TimerTrigger 跑；调试时打 FORCE_NIGHTLY。
+        stage('⑬ 真库 + 夜测（daily）') {
+            when {
+                anyOf {
+                    triggeredBy 'TimerTrigger'
+                    expression { params.FORCE_NIGHTLY }
+                }
+            }
+            steps {
+                sh '''#!/usr/bin/env bash
+set -euo pipefail
+# 真库验证：test_dialects 只编译 SQL 不连库，PG/MySQL 的排序规则、标识符折叠
+# 只在真连时才暴露。这里起两个真实实例，跑 scripts/db_smoke.py 真连一次。
+# dialects 矩阵可能一次跑出若干真实缺陷，预留修复余量，别指望「配个 job 就绿」。
+PG_CT="kk-ci-pg"; MY_CT="kk-ci-my"
+docker rm -f "$PG_CT" "$MY_CT" >/dev/null 2>&1 || true
+docker run -d --name "$PG_CT" -p 127.0.0.1:15432:5432 -e POSTGRES_PASSWORD=kk -e POSTGRES_DB=kk postgres:16 >/dev/null
+docker run -d --name "$MY_CT" -p 127.0.0.1:13306:3306 -e MYSQL_ROOT_PASSWORD=kk -e MYSQL_DATABASE=kk -e MYSQL_USER=kk -e MYSQL_PASSWORD=kk mysql:8 >/dev/null
+for _ in $(seq 1 90); do
+  python3 -c "import socket;[socket.create_connection(('127.0.0.1',p),2) for p in (15432,13306)]" 2>/dev/null && break
+  sleep 1
+done
+
+uv sync --all-packages --extra postgres --extra mysql
+for url in \\
+  "postgresql+asyncpg://kk:kk@127.0.0.1:15432/kk" \\
+  "mysql+aiomysql://kk:kk@127.0.0.1:13306/kk" ; do
+  echo ">> dialects smoke: $url"
+  KK_DB_URL="$url" .venv/bin/python scripts/db_smoke.py
+done
+'''
+                sh '''#!/usr/bin/env bash
+set -euo pipefail
+# 夜测：500 连接压测（心跳零误判掉线 + 命令成功率 100%）+ Agent RSS 基线（< 40MB）。
+# 两者都依赖本机 1883 有 Mosquitto，复用 ④ 的方式起一个。
+docker rm -f "$BROKER_CT" >/dev/null 2>&1 || true
+docker run -d --name "$BROKER_CT" -p "127.0.0.1:${CI_MQTT_PORT}:1883" \\
+  -v "$WORKSPACE/deploy/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" "$BROKER_IMAGE" >/dev/null
+for _ in $(seq 1 60); do
+  python3 -c "import socket;socket.create_connection(('127.0.0.1',${CI_MQTT_PORT}),2)" 2>/dev/null && break
+  sleep 1
+done
+
+# 先起服务端（loadtest 打它的 /api/health 与在线数）
+KK_MQTT_URL="$CI_MQTT_URL" .venv/bin/python -m kk_server >reports/server-nightly.log 2>&1 &
+SRV=$!
+for _ in $(seq 1 30); do
+  curl -sf "http://127.0.0.1:8443/api/health" >/dev/null 2>&1 && break
+  sleep 1
+done
+
+.venv/bin/python scripts/loadtest.py 500 127.0.0.1 ${CI_MQTT_PORT} 8443 | tee reports/loadtest.log
+.venv/bin/python scripts/bench_agent.py 15 | tee reports/bench_agent.log
+kill "$SRV" 2>/dev/null || true
+'''
+            }
+            post {
+                always {
+                    sh 'docker rm -f "$BROKER_CT" kk-ci-pg kk-ci-my >/dev/null 2>&1 || true'
+                }
             }
         }
     }

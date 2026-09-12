@@ -23,10 +23,15 @@
 | ⑩ | 部署 | `docker-compose.prod.yml` | 目标机 `git reset --hard` 到本次提交 → `pull` → `up -d`；生产需人工确认 |
 | ⑪ | 部署验证 | `GET /api/health`、`/api/login`、`/api/system/stats` | 断言「真起来了且连得上 Broker」，而不是「容器在跑」 |
 | ⑫ | 离线包（可选） | `deploy/offline/pack.sh` | 内网无网部署用，勾选 `PACK_OFFLINE` 才跑 |
+| ⑬ | 真库 + 夜测（daily） | `scripts/db_smoke.py` + `scripts/loadtest.py`/`bench_agent.py` | PG/MySQL 真连建表扩列 + 500 连接压测 + Agent RSS 基线；默认仅 TimerTrigger 每日跑，调试打 `FORCE_NIGHTLY`，不随普通 push 跑 |
 
 **⑧ 是这条流水线的价值核心**。只做「构建成功 + 容器起来了」的 CI 会漏掉本项目最容易坏的地方——
 服务端起来了但连不上 Broker、Agent 上线了但自报 IP 不在白名单、命令发得出去但结果回不来。
-`scripts/ci_smoke.sh` 把这条链路拆成 11 条断言，任何一条断了构建就红。
+`scripts/ci_smoke.py` 把这条链路拆成 11 条断言，任何一条断了构建就红。
+
+**⑬ 与阶段一~⑫ 刻意解耦**：真库建表扩列、500 连接压测、Agent RSS 基线都**耗时长且与部署无关**，
+每次 push 都跑只会拖慢反馈。因此它只挂在 `TimerTrigger`（默认每日）上；调试时打 `FORCE_NIGHTLY=true`
+可强制触发。它的失败**不阻断**①②③…⑫ 的发布链路——但会独立在每日报告中红出来，逼你修（见 §9）。
 
 ## 2. 接入准备
 
@@ -139,6 +144,7 @@ git add server/src/kk_server/web && git commit -m "chore(web): 同步前端构�
 | `STRICT_WEB_SYNC` | true | 前端产物与仓库不一致时失败 |
 | `AUTO_APPROVE` | false | 生产部署免人工确认 |
 | `PACK_OFFLINE` | false | 额外打包离线镜像 tar（较慢，拉取全部基础镜像） |
+| `FORCE_NIGHTLY` | false | 强制跑 ⑬ 真库 + 夜测（默认仅 `TimerTrigger` 每日触发，不随普通 push 跑） |
 
 ## 6. 排障
 
@@ -154,6 +160,7 @@ git add server/src/kk_server/web && git commit -m "chore(web): 同步前端构�
 | ⑨ 失败 | 构建日志 | 仓库凭据错、仓库地址不可达、tag 无推权 |
 | ⑩ 失败 | 构建日志（SSH 输出） | 私钥不对、`DEPLOY_DIR` 不是克隆、目标机连不上仓库、`.env` 缺 `KK_AGENT_IPS`（production 自检会拒绝启动） |
 | ⑪ 失败 | 构建日志 | 服务端没起来、Broker 未连上、口令与目标机 `.env` 不一致 |
+| ⑬ 失败 | `reports/loadtest.log` / `reports/bench_agent.log` / `reports/db-smoke*.log` | PG/MySQL 真连建表扩列失败（方言缺陷）、压测掉线或命令回传 < 100%、Agent RSS 超基线；属每日报告，不阻塞 ①~⑫ |
 
 两个容易踩的坑：
 
@@ -216,15 +223,16 @@ scripts/ci_smoke.sh kontainkeeper-server:local agent/dist/kk-agent
 
 | B5 子项 | 状态 |
 |---|---|
-| 单测 job（含真 Broker，202 passed） | ✅ 已落地（③④） |
+| 单测 job（含真 Broker，236 passed） | ✅ 已落地（③④） |
 | 服务端镜像构建与部署 | ✅ 已落地（⑦⑩⑪）——**超出 B5 原范围，属本次新增** |
 | 镜像级部署冒烟 | ✅ 新增（⑧，`scripts/ci_smoke.sh`） |
 | 前端产物漂移检查 | ✅ 新增（⑤） |
-| **真库 job**（PG/MySQL 连真实库跑 `test_dialects.py`） | ⏳ 未做，仍按 B5 规划 |
-| **nightly 压测**（`loadtest.py` / `bench_agent.py`） | ⏳ 未做，建议单独建一个定时 job 复用本流水线的 ①~⑥ |
+| **真库 job**（PG/MySQL 真连建表扩列，见 ⑬） | ✅ 已落地（`scripts/db_smoke.py` + ⑬ 矩阵跑 PG:16 / MySQL:8） |
+| **nightly 压测**（500 连接 + Agent RSS 基线，见 ⑬） | ✅ 已落地（`scripts/loadtest.py` / `bench_agent.py`） |
 
-真库与压测没有塞进这条流水线，是因为它们**耗时长且与部署无关**：每次 push 都跑会让反馈变慢。
-建议后续单独建一个 daily job，`when` 里只跑这两段。
+> 真库与压测**已塞进同一条流水线**的 ⑬ 阶段，但用 `triggeredBy 'TimerTrigger'` 与 `FORCE_NIGHTLY`
+> 与每日 push 解耦：普通提交跑 ①~⑫ 不碰它们，只有定时触发或手动勾选时才跑（见 §1、§5）。
+> 这样既不拖慢单次交付反馈，又能每日暴露「编译得过、建不出表」一类的方言真实缺陷。
 
 ## 10. 本次配套改动的说明
 
