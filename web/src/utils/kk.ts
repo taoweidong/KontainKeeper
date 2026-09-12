@@ -52,6 +52,31 @@ export const statusType = (s: string): "success" | "danger" | "info" | "warning"
   }
 };
 
+/** 触发浏览器下载一个 Blob。
+ *
+ * 不能用 `window.open(导出接口)`：后端导出走 Bearer 鉴权，地址栏带不上 token；
+ * 也不能依赖 `Content-Disposition`——响应拦截器只返回 `response.data`，
+ * 拿不到响应头，所以文件名由前端拼。
+ */
+export const downloadBlob = (blob: Blob, filename: string): void => {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  // 立即回收：晚一点（setTimeout）会让部分浏览器拿不到已开始的下载
+  URL.revokeObjectURL(url);
+};
+
+/** 导出文件名的时间戳后缀：同一天多次导出不会互相覆盖。 */
+export const fileStamp = (d = new Date()): string => {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+};
+
 export const statusLabel = (s: string): string => {
   return {
     pending: "待下发",

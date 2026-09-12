@@ -6,6 +6,74 @@
  * 自己独有的样式。
  */
 
+/* ---- 布局基建（A5.2）：全站唯一的高度锚点 ----
+ *
+ * 背景：.app-main 是 height:100vh + overflow-x:hidden，页面根拿不到确定的
+ * height:100%（中间 .el-scrollbar__view 由内容撑开），所以各页只能写
+ * calc(100vh - Npx)；而 N 是手算的——命令历史表为了扣掉上方表单算了 560，
+ * 表单增删一项就失效。
+ *
+ * 收敛方式：高度只在**页面根算一次**，值集中到 --kk-page-h；页面内部全部 flex，
+ * 不再出现第二个 calc。以后改布局只动这一个变量。
+ */
+:root {
+  /* navbar(48) + tabs(33) + 内容区留白 + 页脚 的合计占用，约 150px 量级。
+     只在此处维护；业务页不得再写 calc(100vh - N)。 */
+  --kk-page-h: 152px;
+}
+
+/* 页面根容器：全站唯一的高度锚点 */
+.kk-page {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - var(--kk-page-h));
+  min-height: 0;
+}
+
+/* 卡片 / 内容区：占满页面剩余高度 */
+.kk-page__body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* 表格填满卡片剩余空间：替代 height="calc(...)" 的硬编码 */
+.kk-fill-table {
+  flex: 1;
+  min-height: 0;
+}
+
+/* 表底批量操作条：吸底常驻（总览页 500 台时不用拉到底才能点） */
+.kk-sticky-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  padding: 10px 12px;
+  background: var(--el-bg-color);
+  border-top: 1px solid var(--el-border-color-lighter);
+}
+
+/* 命令中心左右栏容器 */
+.kk-side {
+  display: flex;
+  gap: 16px;
+  align-items: stretch;
+}
+
+/* 1366×768 运维笔记本常见：窄屏折叠为上下，避免横向滚动 */
+@media (max-width: 1200px) {
+  .kk-side {
+    flex-direction: column;
+  }
+}
+
+/* 总览页告警行整行浅红底：扫描时不必逐格看磁盘列。
+   本文件是全局样式（非 scoped），el-table 的行类名落在 <tr> 上，直接后代选择即可。 */
+.kk-row-alert > td.el-table__cell {
+  background: var(--el-color-danger-light-9);
+}
+
 /* 卡片：同页相邻卡片垂直间距（el-card 默认无 margin） */
 .kk-card + .kk-card {
   margin-top: 16px;
