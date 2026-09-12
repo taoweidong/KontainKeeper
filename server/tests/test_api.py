@@ -228,3 +228,70 @@ async def test_mark_sent_batch_shards_and_ignores_non_pending(api):
     assert (await store.get_command(ids[0]))["status"] == "done"
     assert (await store.get_command(ids[1]))["status"] == "sent"
     assert await store.mark_sent_batch([]) == 0
+
+
+# ---- A3：结果分页 + 批次聚合 ----
+
+async def test_list_commands_pagination(api):
+    """P1-2：offset/limit 生效，total 是全量而非当页条数。"""
+    store = api.store
+    await store.upsert_container("h1", "img", "0.3.0", 60)
+    ids, _ = await store.create_commands_batch(["h1"] * 5, "shell", ["echo"], 30, "admin")
+    # created_at 相同（同一秒建），按 id 侧的稳定顺序断言：翻页总数为 5 且两页不重叠
+    p1 = (await api.client.get("/api/commands", params={"limit": 2, "offset": 0})).json()
+    p2 = (await api.client.get("/api/commands", params={"limit": 2, "offset": 2})).json()
+    assert p1["total"] == 5 and p1["offset"] == 0 and p1["limit"] == 2
+    assert len(p1["items"]) == 2 and len(p2["items"]) == 2
+    assert {i["id"] for i in p1["items"]}.isdisjoint({i["id"] for i in p2["items"]})
+    assert {i["id"] for i in p1["items"] + p2["items"]} <= set(ids)
+
+
+async def test_list_commands_batch_filter(api):
+    """两个批次各自筛选互不污染（P1-3 的前提）。"""
+    store = api.store
+    await store.upsert_container("h1", "img", "0.3.0", 60)
+    ids1, b1 = await store.create_commands_batch(["h1"] * 2, "shell", ["echo"], 30, "admin")
+    ids2, b2 = await store.create_commands_batch(["h1"] * 3, "shell", ["ls"], 30, "admin")
+    assert b1 != b2
+    r1 = (await api.client.get("/api/commands", params={"batch": b1})).json()
+    r2 = (await api.client.get("/api/commands", params={"batch": b2})).json()
+    assert r1["total"] == 2 and {i["id"] for i in r1["items"]} == set(ids1)
+    assert r2["total"] == 3 and {i["id"] for i in r2["items"]} == set(ids2)
+
+
+async def test_batch_id_assigned_to_all_rows(api):
+    """一次批量 = 一个批次号，全部行共享（500 台聚合核验的唯一抓手）。"""
+    store = api.store
+    await store.upsert_container("h1", "img", "0.3.0", 60)
+    ids, batch = await store.create_commands_batch(["h1"] * 3, "shell", ["echo"], 30, "admin")
+    assert batch.startswith("b-") and len(ids) == 3
+    rows = await store.list_commands(batch=batch, limit=10)
+    assert len(rows) == 3 and {r["batch_id"] for r in rows} == {batch}
+
+
+async def test_batch_summary_groups_by_status(api):
+    """批次汇总按状态分布计数：让一次下发可以整体核验。"""
+    store = api.store
+    await store.upsert_container("h1", "img", "0.3.0", 60)
+    ids, batch = await store.create_commands_batch(["h1"] * 4, "shell", ["echo"], 30, "admin")
+    for cid in ids[:2]:
+        await store.append_result({"id": cid, "done": True, "rc": 0})
+    await store.append_result({"id": ids[2], "done": True, "rc": 1})
+    r = await api.client.get("/api/commands/batches")
+    assert r.status_code == 200, r.text
+    hit = [b for b in r.json()["items"] if b["batch_id"] == batch]
+    assert hit, r.json()
+    # status 表示「结果是否收全」，退出码看 rc：rc=1 的命令状态仍是 done
+    assert hit[0]["total"] == 4 and hit[0].get("done") == 3
+    assert hit[0].get("pending") == 1
+
+
+async def test_list_commands_keyword_pushed_to_backend(api):
+    """关键字必须下推：否则导出与页面所见不一致。"""
+    store = api.store
+    await store.upsert_container("alpha-01", "img", "0.3.0", 60)
+    await store.upsert_container("beta-02", "img", "0.3.0", 60)
+    await store.create_commands_batch(["alpha-01"], "shell", ["echo"], 30, "admin")
+    await store.create_commands_batch(["beta-02"], "shell", ["ls"], 30, "admin")
+    r = (await api.client.get("/api/commands", params={"keyword": "alpha"})).json()
+    assert r["total"] == 1 and r["items"][0]["pod"] == "alpha-01"

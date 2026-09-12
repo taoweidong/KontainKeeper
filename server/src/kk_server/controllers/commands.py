@@ -5,6 +5,7 @@
 - kind=collect 按项采集指标：不经 shell，items 取自 COLLECT_ITEMS 白名单
 - kind=plugin_reload 让 Agent 重扫采集插件目录
 """
+import asyncio
 import json
 import shlex
 from typing import List, Optional
@@ -133,10 +134,35 @@ async def create_commands(body: CommandBody, request: Request):
     return {"items": created, "batch_id": batch_id}
 
 
-@router.get("/commands")
-async def list_commands(request: Request, pod: Optional[str] = None, limit: int = 100):
+@router.get("/commands/batches")
+async def list_batches(request: Request, limit: int = 20):
+    """最近批次的状态分布：让「500 台一次点击」变成一个可核验的对象。
+
+    必须在 /commands/{cid} 之前注册，否则 "batches" 会被当成命令 id 吃掉。
+    """
     await current_user(request)
-    return {"items": await request.app.state.store.list_commands(pod=pod, limit=min(limit, 500))}
+    return {"items": await request.app.state.store.batch_summary(limit=min(limit, 100))}
+
+
+@router.get("/commands")
+async def list_commands(request: Request, pod: Optional[str] = None, limit: int = 100,
+                        offset: int = 0, batch: Optional[str] = None,
+                        status: Optional[str] = None, kind: Optional[str] = None,
+                        keyword: Optional[str] = None):
+    """命令列表：筛选全部下推到后端——前端过滤会让「导出」与「所见」不一致。
+
+    响应只加 total/offset/limit 字段，`items` 结构不变，既有前端解析不受影响。
+    """
+    await current_user(request)
+    store = request.app.state.store
+    limit = min(max(limit, 1), 500)
+    items, total = await asyncio.gather(
+        store.list_commands(pod=pod or None, limit=limit, offset=offset,
+                            batch=batch or None, status=status or None,
+                            kind=kind or None, keyword=keyword or None),
+        store.count_commands(pod=pod or None, batch=batch or None, status=status or None,
+                             kind=kind or None, keyword=keyword or None))
+    return {"items": items, "total": total, "offset": offset, "limit": limit}
 
 
 @router.get("/commands/{cid}")
