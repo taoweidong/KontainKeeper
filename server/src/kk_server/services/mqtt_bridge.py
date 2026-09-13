@@ -223,6 +223,8 @@ class MqttBridge:
             # 状态帧是升级成功与否的**权威佐证**：execv 前的回执帧可能来不及发出，
             # 主机重启后上报的新 agent_ver 才作数（A6.2 时序约定）
             await self.store.finish_updates_reaching(host, agent_ver)
+            # D2.3 重连补投：下发时离线（queued）的升级，到此刻才真正投出去
+            await self.flush_queued_upgrades(host, agent_ver)
             await self._maybe_push_upgrade(host, agent_ver)
 
     async def _on_hb(self, host, body):
@@ -369,34 +371,94 @@ class MqttBridge:
         return base + path if base else path
 
     async def _maybe_push_upgrade(self, host, agent_ver):
+        # auto 模式专属路径（D2.1）：manual 下服务端不自动推，由人工在「版本与更新」页
+        # 选机触发。这里再判一次模式，是为了让「桥接被别处直接调用」也不会绕过策略。
+        if self._update_mode() != "auto":
+            return
         latest = await self.store.get_agent_latest()
         if not latest or not version_lt(agent_ver or "", latest.get("version", "")):
             return
-        # 先写台账再用台账主键作为 cmd 帧的 id：回执才有地方落（A6.2）。
-        # 旧实现用 "u-<host>"，即使 Agent 回传也会被判为未知命令拒收。
+        return await self.dispatch_upgrade(host, agent_ver, latest, online=True)
+
+    def _update_mode(self):
+        return (getattr(self.s, "update_mode", "manual") or "manual").strip().lower()
+
+    async def dispatch_upgrade(self, host, from_ver, latest, online=True):
+        """建台账 + 投递 `kind=update` 帧（D2.2）。返回台账主键。
+
+        - **先写台账再用台账主键作为 cmd 帧的 id**：回执才有地方落（A6.2）。旧实现用
+          `u-<host>`，即使 Agent 回传也会被判为未知命令拒收。
+        - `online=False` 时只写 `queued` **不发帧**：主机离线时帧要靠 Broker 的持久会话
+          排队，而此刻它连会话都没有；等重连时补投即可（D2.3）。
+        """
         uid = "up-%s-%d" % (host, int(time.time()))
-        await self.store.create_update(uid, host, agent_ver or "", latest["version"])
+        await self.store.create_update(uid, host, from_ver or "", latest.get("version", ""),
+                                       status="pending" if online else "queued")
+        if not online:
+            log.bind(host=host, cmd=uid).info("upgrade queued（主机离线，重连后补投）-> %s",
+                                              latest.get("version", ""))
+            return uid
+        await self.publish_update(host, uid, latest)
+        return uid
+
+    async def publish_update(self, host, uid, latest):
+        """把一条台账对应的 update 帧投出去；失败即把台账置 `failed`。返回是否投出。"""
         payload = {"id": uid, "kind": "update",
-                   "version": latest["version"], "sha256": latest.get("sha256", ""),
+                   "version": latest.get("version", ""),
+                   "sha256": latest.get("sha256", ""),
                    "size": latest.get("size", 0), "url": self._download_url()}
         try:
             self.cli.publish(self._cmd_topic(host), json.dumps(payload), qos=QOS_CMD)
             self.stats["upgrade_pushed"] += 1
-            log.bind(host=host, cmd=uid).info("pushed upgrade %s -> %s",
-                                              agent_ver, latest["version"])
+            log.bind(host=host, cmd=uid).info("pushed upgrade -> %s",
+                                              latest.get("version", ""))
+            return True
         except Exception:
             # 推失败意味着该主机停在旧版本；静默吞掉就再也发现不了
             await self.store.finish_update(uid, "failed", "publish_failed")
             log.bind(host=host, cmd=uid).warning("push upgrade failed", exc_info=True)
+            return False
+
+    async def flush_queued_upgrades(self, host, agent_ver):
+        """重连补投（D2.3）：主机上线时把它 `queued` 的行补投一次。
+
+        只补投「目标版本仍是服务端最新」的行：期间又上传了更新版本的话，补投旧目标
+        等于让它白下 8–12MB 再升一次，直接丢弃更划算（行会被 30min/7d 收敛规则收走）。
+        """
+        latest = await self.store.get_agent_latest()
+        latest_ver = (latest or {}).get("version", "")
+        if not latest_ver:
+            return 0
+        rows = await self.store.queued_updates(host)
+        n = 0
+        for row in rows:
+            if row["to_version"] != latest_ver:
+                continue
+            if agent_ver and not version_lt(agent_ver, row["to_version"]):
+                continue   # 状态帧已佐证主机达标，不必再投
+            # 先转 pending（刷新计时窗口）再发帧：反过来会出现「帧已出去、台账仍是
+            # queued」的窗口，此时若进程重启，这条会被当成「还没投」再投一次。
+            await self.store.mark_update_pending(row["id"])
+            await self.publish_update(host, row["id"], latest)
+            n += 1
+        if n:
+            self.stats["upgrade_flushed"] = self.stats.get("upgrade_flushed", 0) + n
+            log.bind(host=host).info("补投 %d 条离线升级", n)
+        return n
 
     # ---- 周期任务 ----
     async def sweep(self):
-        """命令超时收敛 + 僵尸在线判定：一个周期任务搞定，不需要每连接一个定时器。"""
+        """命令超时收敛 + 僵尸在线判定 + 在途升级收敛：一个周期任务搞定，不需要每连接一个定时器。"""
         n = await self.store.sweep_command_timeouts()
         stale = await self.store.mark_stale_offline(OFFLINE_GRACE)
+        # 在途升级的收敛此前只被测试调用过（A6.2 定义了规则却没接进生产循环），
+        # 结果是丢了回执的台账永远停在 pending、把该主机的 in_flight 去重永久卡死。
+        upd = await self.store.sweep_update_timeouts(
+            queued_ttl=max(3600, int(getattr(self.s, "update_queue_ttl", 7 * 86400) or 0)))
         self.stats["sweeps"] += 1
         self.stats["swept_timeouts"] += n
         self.stats["swept_offline"] += stale
-        if n or stale:
-            log.info("sweep: %d 条命令置 timeout, %d 台判离线", n, stale)
+        self.stats["swept_updates"] = self.stats.get("swept_updates", 0) + upd
+        if n or stale or upd:
+            log.info("sweep: %d 条命令置 timeout, %d 台判离线, %d 条升级收敛", n, stale, upd)
         return n, stale

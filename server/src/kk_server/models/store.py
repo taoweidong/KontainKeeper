@@ -247,6 +247,33 @@ class Store:
         row = await self._one(select(func.count().label("n")).select_from(containers))
         return row["n"] if row else 0
 
+    async def agent_versions(self, pods):
+        """批量取 `{pod: agent_ver}`（D2.2）。
+
+        批量升级要先判 `already_latest`；逐台 `get_container` 在 500 台时就是 500 次
+        查询，与 P1-1 同型的 N+1。分片避开数据库变量数上限。
+        """
+        pods = list(pods or [])
+        out = {}
+        for i in range(0, len(pods), 400):
+            shard = pods[i:i + 400]
+            rows = await self._all(select(containers.c.pod, containers.c.agent_ver)
+                                   .where(containers.c.pod.in_(shard)))
+            out.update({r["pod"]: (r["agent_ver"] or "") for r in rows})
+        return out
+
+    async def in_flight_pods(self, pods):
+        """批量取「有未终结升级」的主机集合（D2.3 的 in_flight 去重，一次查完）。"""
+        pods = list(pods or [])
+        out = set()
+        for i in range(0, len(pods), 400):
+            shard = pods[i:i + 400]
+            rows = await self._all(
+                select(updates.c.pod).where(updates.c.pod.in_(shard))
+                .where(updates.c.status.in_(("pending", "queued"))))
+            out.update(r["pod"] for r in rows)
+        return out
+
     async def agent_version_counts(self):
         """版本直方图 `{agent_ver: 台数}`，用于算「落后 N 台」（D1.2/D1.3）。
 
@@ -564,6 +591,26 @@ class Store:
             .where(updates.c.pod == pod)
             .where(updates.c.status.in_(("pending", "queued")))
             .order_by(updates.c.created_at.desc()).limit(1))
+
+    async def queued_updates(self, pod):
+        """该主机所有 `queued` 行（D2.3 重连补投的输入）。"""
+        return await self._all(
+            select(updates.c.id, updates.c.to_version)
+            .where(updates.c.pod == pod)
+            .where(updates.c.status == "queued"))
+
+    async def mark_update_pending(self, uid):
+        """`queued` → `pending`：消息真正投出去了，计时窗口从此刻开始。
+
+        **必须同时刷新 `created_at`**：它在本表里的语义是「当前状态开始计时的时刻」，
+        而 `sweep_update_timeouts` 正是拿它算 pending 的 30min 窗口。若不刷新，一条
+        「3 天前下发、当时离线」的 queued 行会在重连补投的瞬间就被判 timeout ——
+        刚投出去就被记成失败。运维真正关心的「何时发起的升级」在 `audit` 里有记录。
+        """
+        return await self._run(
+            update(updates).where(updates.c.id == uid)
+            .where(updates.c.status == "queued")
+            .values(status="pending", created_at=int(time.time())))
 
     async def finish_updates_reaching(self, pod, agent_ver):
         """状态帧佐证：主机已上报某版本 → 目标不高于它的在途台账收敛为 done。

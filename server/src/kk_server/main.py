@@ -43,6 +43,12 @@ def create_app(env=None):
     elif not settings.agent_ips:
         log.warning("KK_AGENT_IPS 未配置：Agent 接入白名单为空，允许所有上报"
                     "（仅适用于开发/测试；生产请配置 KK_AGENT_IPS）")
+    if settings.update_mode != "auto":
+        # 默认值从「自动全网推」改成 manual 是有意的行为变更（D2.1）：必须显式说出来，
+        # 否则存量部署会以为自更新坏了。需要旧行为就设 KK_UPDATE_MODE=auto。
+        log.warning("KK_UPDATE_MODE=%s：自动升级已关闭，Agent 轮询也会被答「无需升级」；"
+                    "请在「版本与更新」页手动选机升级（置 auto 恢复自动全网推）",
+                    settings.update_mode)
 
     @asynccontextmanager
     async def lifespan(app):

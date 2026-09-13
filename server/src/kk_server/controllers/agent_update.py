@@ -16,11 +16,14 @@ import hashlib
 import json
 import os
 import time
+from typing import List
 
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel
 
 from .deps import agent_ip_auth, current_user
+from ..models.tables import ONLINE_GRACE
 from ..models.version import count_outdated, version_lt
 
 router = APIRouter(prefix="/api/system")
@@ -220,19 +223,108 @@ async def agent_current(request: Request):
 
 @router.get("/agent/latest")
 async def agent_latest(request: Request, ver: str = ""):
+    """Agent 轮询路径：「**现在**该不该升级」。
+
+    响应恒带 `policy` 自描述（D2.1）：`manual` 模式下答案是「否」，这是策略而非故障 ——
+    没有这个字段，排障时会把「自动升级被策略关闭」误读成端点坏了。
+
+    关轮询**不需要改 Agent 一行**：老版本 Agent 读到 `available=false` 就什么都不做，
+    于是服务端单侧改动就建立起一个全网点，避免「要改行为先得升级全网」的鸡生蛋困境。
+    """
     await agent_ip_auth(request)
-    latest = await request.app.state.store.get_agent_latest()
+    store = request.app.state.store
+    policy = (getattr(request.app.state.settings, "update_mode", "manual")
+              or "manual").strip().lower()
+    if policy != "auto":
+        return JSONResponse({"available": False, "policy": policy})
+    latest = await store.get_agent_latest()
     if not latest:
-        return JSONResponse({"available": False})
+        return JSONResponse({"available": False, "policy": policy})
     if not version_lt(ver or "", latest.get("version", "")):
-        return JSONResponse({"available": False})
+        return JSONResponse({"available": False, "policy": policy})
     return {
         "available": True,
+        "policy": policy,
         "version": latest["version"],
         "sha256": latest.get("sha256", ""),
         "size": latest.get("size", 0),
         "url": _download_url(request),
     }
+
+
+class UpgradeBody(BaseModel):
+    hosts: List[str]
+    version: str = ""      # 省略/空 = 用当前最新；服务端单槽位，指定别的版本即 bad_version
+
+
+@router.post("/agent/upgrade")
+async def upgrade_hosts(body: UpgradeBody, request: Request):
+    """受控批量升级（D2.2）：把选中的主机升到服务端当前最新版本。
+
+    需求②的落地：原先只有「Agent 自己轮询」与「服务端在 status 帧无差别推送」两条路，
+    两条都**选不了机器**（status 只在连接时发一次，上传新版本后已在线的主机根本收不到）。
+    这里把决策权显式收归服务端 + 人工选机。
+
+    每台受理的主机在 `updates` 台账写一行，并用**台账主键**作为 cmd 帧的 id（A6.2），
+    于是「升级了多少、谁失败了、为什么」全都能逐台核验。
+
+    离线主机**照常受理**：Broker 的持久会话会为它排队（QoS1），台账记 `queued`，重连时
+    由桥接补投。对运维的说法应是「已排队，重连即升」，UI 也必须如实说明 —— 把离线记成
+    失败会让人以为要重试，实际上什么都不用做。
+
+    查询次数与主机数无关：版本、在途台账、在线集合各一次（500 台不留 N+1）。
+    """
+    user = await current_user(request)
+    store = request.app.state.store
+    bridge = request.app.state.bridge
+
+    # 同一批里重复传同一台按一次算（保持传入顺序，便于前端逐条对齐）
+    hosts = list(dict.fromkeys(h.strip() for h in (body.hosts or []) if h and h.strip()))
+    if not hosts:
+        raise HTTPException(status_code=400, detail="hosts 不能为空")
+    batch_id = "ug-%d-%d" % (int(time.time()), len(hosts))
+
+    latest = await store.get_agent_latest()
+    if not latest:
+        return {"ok": True, "batch_id": batch_id, "accepted": [],
+                "skipped": [{"host": h, "reason": "no_binary"} for h in hosts]}
+    target = (body.version or "").strip() or latest.get("version", "")
+    if target != latest.get("version"):
+        # 单槽位存储：不存在的版本号只能是运维敲错了
+        return {"ok": True, "batch_id": batch_id, "accepted": [],
+                "skipped": [{"host": h, "reason": "bad_version"} for h in hosts]}
+
+    versions, in_flight, online = await asyncio.gather(
+        store.agent_versions(hosts), store.in_flight_pods(hosts),
+        store.online_set(ONLINE_GRACE))
+
+    accepted, skipped = [], []
+    for host in hosts:
+        if host not in versions:
+            skipped.append({"host": host, "reason": "not_found"})
+            continue
+        from_ver = versions[host]
+        if not version_lt(from_ver, target):
+            skipped.append({"host": host, "reason": "already_latest"})
+            continue
+        if host in in_flight:
+            # 没有台账就只能靠版本比较猜，必然重复下发与重复下载（8–12MB/台）
+            skipped.append({"host": host, "reason": "in_flight"})
+            continue
+        if bridge is None:
+            # 未配 Broker 的只读部署：明说而不是静默受理
+            skipped.append({"host": host, "reason": "no_broker"})
+            continue
+        is_online = host in online
+        uid = await bridge.dispatch_upgrade(host, from_ver, latest, online=is_online)
+        accepted.append({"host": host, "from_version": from_ver, "to_version": target,
+                         "ledger_id": uid, "queued": not is_online})
+
+    if accepted:
+        await store.add_audit(user, "agent_upgrade_batch", {
+            "batch_id": batch_id, "to_version": target,
+            "accepted": [a["host"] for a in accepted], "skipped": skipped})
+    return {"ok": True, "batch_id": batch_id, "accepted": accepted, "skipped": skipped}
 
 
 @router.get("/agent/download")

@@ -21,6 +21,7 @@ BAD_IP = "192.0.2.66"
 
 
 class FakePublish:
+    """paho `Client.publish` 的替身：把每条发出的消息记进 `msgs` 用于断言。"""
     def __init__(self, rc=0):
         self.msgs = []
         self.rc = rc
@@ -28,25 +29,6 @@ class FakePublish:
     def publish(self, topic, payload, qos=0, retain=False):
         self.msgs.append({"topic": topic, "payload": payload, "qos": qos, "retain": retain})
         return types.SimpleNamespace(rc=self.rc)
-
-
-@pytest.fixture
-async def bridge(tmp_path):
-    """默认不配白名单（空 = 放行），聚焦路由与归属逻辑。"""
-    store = Store(str(tmp_path / "b.db"))
-    await store.setup()
-    settings = load_settings({
-        "KK_DB_PATH": str(tmp_path / "b.db"),
-        "KK_MQTT_URL": "mqtt://broker:1883",
-        "KK_TOPIC_PREFIX": "kk/v1",
-        "KK_MQTT_CLIENT_ID": "kk-server",
-        "KK_WEB_DIR": str(tmp_path / "noweb"),
-    })
-    b = MqttBridge(store, settings, settings.agent_ips, loop=None, proto_ver=3)
-    b.cli = FakePublish()
-    b.store = store
-    yield b
-    await store.close()
 
 
 @pytest.fixture
@@ -218,6 +200,8 @@ async def test_lwt_offline_marks_offline(bridge):
 
 
 async def test_status_pushes_upgrade_when_agent_behind(bridge):
+    # 旧测试默认在 auto 模式触发推送（D2.1 之后默认 manual 关闭推送）
+    bridge.s.update_mode = "auto"
     await bridge.store.set_agent_latest({"version": "99.0.0", "sha256": "ab", "size": 8})
     await bridge._on_status("web-05", status_frame("web-05", ver="0.0.1"))
     pushed = [m for m in bridge.cli.msgs if m["topic"] == "kk/v1/web-05/cmd"]
@@ -503,6 +487,9 @@ def _result_frame(cid, done=True, rc=0, out=b""):
 
 async def test_update_receipt_marks_ledger_done(bridge):
     """Agent 回执 rc=0 → 台账置 done，不再停在 pending。"""
+    # 旧测试直接调 _maybe_push_upgrade；该方法在 manual 模式已不动作，
+    # 这里显式置 auto 并改走 dispatch_upgrade（_maybe_push_upgrade 仍走它）。
+    bridge.s.update_mode = "auto"
     await bridge._on_status("up-1", status_frame("up-1", ver="0.1.0"))
     await bridge.store.set_agent_latest({"version": "9.9.9", "sha256": "s", "size": 1})
     await bridge._maybe_push_upgrade("up-1", "0.1.0")

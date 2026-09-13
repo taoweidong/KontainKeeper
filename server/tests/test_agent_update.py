@@ -20,12 +20,16 @@ BAD_CLIENT = ("192.0.2.9", 50002)     # 白名单外的模拟 Agent 来源
 
 
 def _make_app(tmp_path):
+    # KK_UPDATE_MODE 默认 manual（D2.1：关自动全网推）。本文件里的测试覆盖的就是
+    # 「上传 → /agent/latest 立即可拉 / status 帧触发升级推送」这条主链路 —— 把模式
+    # 显式拨成 auto 还原旧行为，使本文件与 D2.1 解耦。
     return create_app({
         "KK_AGENT_IPS": "127.0.0.1",
         "KK_ADMIN_USER": ADMIN_USER,
         "KK_ADMIN_PASS": ADMIN_PASS,
         "KK_DB_PATH": str(tmp_path / "au.db"),
         "KK_AGENT_BIN_DIR": str(tmp_path / "bin"),
+        "KK_UPDATE_MODE": "auto",
     })
 
 
@@ -182,6 +186,7 @@ async def test_agent_latest_returns_absolute_url_when_public_url_set(tmp_path):
         "KK_DB_PATH": str(tmp_path / "pub.db"),
         "KK_WEB_DIR": str(tmp_path / "noweb"),
         "KK_PUBLIC_URL": "http://10.0.0.1:8443",
+        "KK_UPDATE_MODE": "auto",
     })
     store = app.state.store
     await store.setup()
@@ -270,7 +275,8 @@ async def test_agent_latest_relative_url_without_public_url(tmp_path):
     from kk_server.main import create_app
 
     app = create_app({"KK_DB_PATH": str(tmp_path / "nopub.db"),
-                      "KK_WEB_DIR": str(tmp_path / "noweb")})
+                      "KK_WEB_DIR": str(tmp_path / "noweb"),
+                      "KK_UPDATE_MODE": "auto"})
     store = app.state.store
     await store.setup()
     await store.set_agent_latest({"version": "9.9.9", "sha256": "s" * 64, "size": 10})

@@ -38,6 +38,18 @@ class Settings:
     # 服务端对外访问基址（如 http://10.0.0.1:8443）。配了它，下发给 Agent 的
     # 自更新 url 就是绝对地址，镜像侧零配置即可升级（A6.1）
     public_url: str = ""
+    # ---- 自更新策略（D2）----
+    # manual（默认）：服务端**不自动推**升级，且 Agent 轮询路径也答「无需升级」——
+    #   自动全网推与人工选机不能同时成立（你选了 3 台，剩下 497 台下次重连仍会自己
+    #   升，「选择」就没有意义）。关轮询**不需要改 Agent 一行**：直接让
+    #   `/agent/latest` 在 manual 下回 `available=false`（该端点的语义本就是
+    #   「**现在**该不该升级」，策略是人工时正确答案就是「否」），于是**存量老版本
+    #   Agent 无需升级即服从新策略**，避免「要改行为先得升级全网」的鸡生蛋困境。
+    # auto：完全保留旧行为（自动推 + 轮询）。
+    update_mode: str = "manual"
+    # queued 行（下发时主机离线、消息在 Broker 排着队）的存活上限，与 Broker 离线
+    # 队列保留期对齐；pending（已下发、在线）仍按 30min 收敛。
+    update_queue_ttl: int = 7 * 86400
     # ---- 日志（A7）----
     log_level: str = "INFO"
     log_path: str = ""        # 空 = 只写 stdout（容器采集），不落盘
@@ -53,6 +65,17 @@ def _env_int(env, key, default):
 
 def _env_bool(env, key):
     return env.get(key, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def normalize_update_mode(raw):
+    """`KK_UPDATE_MODE` 归一（D2.1）。未知取值一律回落 `manual`。
+
+    取值的「安全方向」与常见默认相反：写错成 `atuo` 时若回落 `auto`，就会在无人
+    察觉的情况下**自动全网升级**；回落 `manual` 最坏只是「没自动升」，运维在
+    「版本与更新」页立刻能看出并纠正。
+    """
+    mode = (raw or "").strip().lower()
+    return mode if mode in ("manual", "auto") else "manual"
 
 
 def parse_ip_whitelist(raw):
@@ -128,6 +151,9 @@ def load_settings(env=None) -> Settings:
                     mqtt_tls_ca=env.get("KK_MQTT_TLS_CA", "").strip(),
                     mqtt_tls_insecure=_env_bool(env, "KK_MQTT_TLS_INSECURE"),
                     public_url=env.get("KK_PUBLIC_URL", "").strip().rstrip("/"),
+                    update_mode=normalize_update_mode(env.get("KK_UPDATE_MODE")),
+                    update_queue_ttl=max(3600, _env_int(env, "KK_UPDATE_QUEUE_TTL",
+                                                        7 * 86400)),
                     log_level=(env.get("KK_LOG_LEVEL") or "INFO").strip().upper(),
                     log_path=env.get("KK_LOG", "").strip(),
                     log_json=_env_bool(env, "KK_LOG_JSON"))
