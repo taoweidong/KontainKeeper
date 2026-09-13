@@ -13,6 +13,7 @@ import paho.mqtt.client as mqtt
 import pytest
 
 from kk_agent import transport as tp
+from kk_agent.config import AGENT_VER
 
 
 CFG = {
@@ -308,3 +309,22 @@ def test_stop_announces_offline_before_disconnect(monkeypatch):
     body = json.loads(fake.published[-1]["payload"])
     assert body["online"] is False and body["reason"] == "stopping"
     assert tr.connected.is_set() is False
+
+
+# ---- 版本治理契约（D1.4）----
+
+def test_hb_frame_always_carries_agent_ver(monkeypatch):
+    """版本是**默认上报数据**：两帧都带，且不受 `KK_HB_ITEMS` 精简影响。
+
+    实现里一直如此，但协议文档只在 status 帧列了 `agent_ver`。这条用例把「默认上报」
+    从实现细节提升为契约 —— 否则日后有人优化帧体积时，最容易先砍的就是它。
+    """
+    tr, fake = make_transport(monkeypatch, connected=True)
+
+    tr.publish_hb({"cpu": 1.0})            # 只采一项也不影响版本字段
+    hb = json.loads(fake.published[-1]["payload"])
+    assert hb["agent_ver"] == AGENT_VER and hb["agent_ver"]
+
+    tr.publish_status(True, "online")
+    st = json.loads(fake.published[-1]["payload"])
+    assert st["agent_ver"] == AGENT_VER, "status 与 hb 必须同源同值"

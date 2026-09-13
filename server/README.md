@@ -106,8 +106,8 @@ uv sync --all-packages                 # 仓库根执行，统一安装全部成
 | 认证 | POST | `/api/login` | 管理员登录，返回 token |
 | 认证 | POST | `/api/logout` | 注销 |
 | 认证 | GET | `/api/me` | 当前管理员信息 |
-| 主机 | GET | `/api/containers?view=summary\|full` | 主机列表（**summary 只读摘要列**，500 台场景用） |
-| 主机 | GET | `/api/containers/{pod}` | 主机详情 |
+| 主机 | GET | `/api/containers?view=summary\|full` | 主机列表（**summary 只读摘要列**，500 台场景用）。每行带 `latest_agent_ver` / `agent_outdated`，**落后判定由服务端算**（D1.3，前端不做版本比较） |
+| 主机 | GET | `/api/containers/{pod}` | 主机详情（同上带版本标记） |
 | 主机 | GET | `/api/containers/{pod}/metrics?hours=` | 指标趋势（原始/小时聚合） |
 | 命令 | GET | `/api/collect/items` | 可采集项白名单（8 项） |
 | 命令 | POST | `/api/commands` | 下发命令（`kind=shell/collect/plugin_reload/update`） |
@@ -115,10 +115,13 @@ uv sync --all-packages                 # 仓库根执行，统一安装全部成
 | 命令 | GET | `/api/commands/{cid}` | 命令详情与结果 |
 | 命令 | GET | `/api/commands/{cid}/out` | 完整输出（`?format=text\|base64`） |
 | 审计 | GET | `/api/audit?limit=` | 审计日志 |
-| 可观测 | GET | `/api/system/stats` | 主机/命令/存储/Broker 统计与 uptime |
+| 可观测 | GET | `/api/system/stats` | 主机/命令/存储/Broker 统计与 uptime；含 `agent_latest_ver` / `agents_outdated`（总览页卡片直接用） |
 | 自更新 | POST | `/api/system/agent` | 管理员上传新版本二进制（附 version） |
-| 自更新 | GET | `/api/system/agent/latest?ver=` | 查询是否有可用更新（SHA256/size/url） |
-| 自更新 | GET | `/api/system/agent/download` | 下载最新二进制 |
+| 自更新 | POST | `/api/system/agent/rollback` | 回滚**待分发**二进制到上一版（已在跑的 Agent 不会降级，详见 `docs/deployment.md`） |
+| 自更新 | GET | `/api/system/agent/current` | 服务端当前待分发版本 + 落后主机数（管理员会话；与下面的 `/latest` 鉴权与语义均不同） |
+| 自更新 | GET | `/api/system/agent/latest?ver=` | **Agent 侧**查询是否有可用更新（源 IP 白名单鉴权，SHA256/size/url） |
+| 自更新 | GET | `/api/system/agent/download` | 下载最新二进制（源 IP 白名单鉴权） |
+| 自更新 | GET | `/api/system/updates?limit=` | 升级台账：各状态计数 + 逐台明细与失败原因 |
 
 双端通信主题布局与帧格式见 [`proto/messages.md`](../../proto/messages.md)（协议 v3）。
 v1 的 WebSocket close code（`4401/4402/4403/4404`）已随 `/ws/agent` 一并删除；

@@ -247,6 +247,16 @@ class Store:
         row = await self._one(select(func.count().label("n")).select_from(containers))
         return row["n"] if row else 0
 
+    async def agent_version_counts(self):
+        """版本直方图 `{agent_ver: 台数}`，用于算「落后 N 台」（D1.2/D1.3）。
+
+        GROUP BY 而非逐台取回：500 台逐行比版本与列表接口同价，而版本种类通常个位数。
+        """
+        rows = await self._all(select(containers.c.agent_ver.label("ver"),
+                                      func.count().label("n"))
+                               .group_by(containers.c.agent_ver))
+        return {(r["ver"] or ""): r["n"] for r in rows}
+
     async def get_container(self, pod):
         return await self._one(select(containers).where(containers.c.pod == pod))
 

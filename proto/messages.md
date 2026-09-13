@@ -111,6 +111,10 @@ v1 的 WebSocket close code（`4400/4401/4402/4403/4404`）**已随 WS 删除**�
 ```
 
 - 默认 60s 一帧，带 ±10% 抖动（`random.uniform(0.9, 1.1)`，用于打散 500 台峰值）。
+- `agent_ver` 是**无条件字段**（与 §3.1 status 帧同义，需求①「版本作为默认上报数据」）：
+  **不受 `KK_HB_ITEMS` 精简影响** —— 被砍掉的只有 `metrics` 里的采集项。此前的文档只
+  在 status 帧列出它，实现里却两帧都带；现在把「默认上报」从实现细节提升为契约，
+  免得日后有人优化帧体积时先砍它。
 - `custom` 为自定义采集插件输出，可缺省；插件 `collect()` 超时（默认 5s，
   `KK_PLUGIN_TIMEOUT`）即被隔离到文件 mtime 变化重载为止，不影响整帧心跳。
 - 心跳采集项可用 `KK_HB_ITEMS` 精简（逗号分隔，取值同 §4.1 `kind=collect` 白名单；
@@ -149,7 +153,7 @@ v1 的 WebSocket close code（`4400/4401/4402/4403/4404`）**已随 WS 删除**�
 {"id":"c-124","kind":"collect","items":["cpu","mem","net"],"timeout":30}
 {"id":"c-125","kind":"collect","items":["cpu"],"use_shell":true,"argv":["..."],"timeout":30}
 {"id":"c-126","kind":"plugin_reload","timeout":30}
-{"id":"u-web-01","kind":"update","version":"0.2.0","sha256":"<hex>",
+{"id":"up-web-01-1690000000","kind":"update","version":"0.4.0","sha256":"<hex>",
  "size":1234567,"url":"/api/system/agent/download"}
 ```
 
@@ -160,7 +164,13 @@ v1 的 WebSocket close code（`4400/4401/4402/4403/4404`）**已随 WS 删除**�
 | `argv` | `kind=shell` 时为数组直传 exec（不经 shell 拼接），`timeout` 1–600s |
 | `items` | `kind=collect` 必需，取自下方白名单 |
 | `use_shell` | 允许管道等 shell 语法，受 Agent `KK_ALLOW_SHELL` 约束 |
-| `update` 专用 | `version` / `sha256` / `size` / `url`（相对管理 API 基址） |
+| `update` 专用 | `version` / `sha256` / `size` / `url`（相对管理 API 基址；服务端配了 `KK_PUBLIC_URL` 则为绝对地址，见 A6.1） |
+
+> **`kind=update` 的 `id` 是** `updates` **台账主键**（`up-<host>-<ts>`），不是 `commands`
+> 表的行：Agent 的更新回执按同一 id 回传，服务端据此把结果落到台账（A6.2）。用别的
+> 形式生成 id（历史实现是 `u-<host>`）会让回执被判为「未知命令」而丢掉。
+> 示例里的 `version` 恒为**比当前 `AGENT_VER` 更高**的版本 —— 它是「服务端推着 Agent 升级」
+> 的方向，由 `tests/test_version_governance.py` 守住，防止文档随版本演进漂移。
 
 **采集项白名单（8 项，双端必须一致）**：
 
@@ -183,6 +193,7 @@ cpu, mem, disk, disk_io, net, proc, user, sys
 | 方法 | 路径 | 鉴权 | 说明 |
 |---|---|---|---|
 | POST | `/api/system/agent` | 管理员会话 | 上传新版本二进制（multipart: `file` + `version`），服务端算 `sha256` 并记录为最新 |
+| GET | `/api/system/agent/current` | 管理员会话 | 服务端当前待分发版本 `{version, sha256, size, uploaded_at, hosts_total, hosts_outdated}`（D1.2；与下一条**刻意分离**：鉴权与语义都不同） |
 | GET | `/api/system/agent/latest?ver=<当前版本>` | 请求源 IP ∈ `KK_AGENT_IPS` | 返回 `{available, version, sha256, size, url}` |
 | GET | `/api/system/agent/download` | 请求源 IP ∈ `KK_AGENT_IPS` | 流式下发最新二进制 |
 

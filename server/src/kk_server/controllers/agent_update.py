@@ -2,6 +2,7 @@
 
 - POST /api/system/agent       管理员上传新版本二进制（multipart: file + version）
 - POST /api/system/agent/rollback 回滚待分发二进制到上一版（只影响重启的 Agent）
+- GET  /api/system/agent/current  服务端当前待分发版本 + 落后主机数（管理员可读）
 - GET  /api/system/agent/latest   Agent 查询最新版本清单（落后才 available）
 - GET  /api/system/agent/download Agent 下载二进制（流式）
 
@@ -14,12 +15,13 @@ import asyncio
 import hashlib
 import json
 import os
+import time
 
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .deps import agent_ip_auth, current_user
-from ..models.version import version_lt
+from ..models.version import count_outdated, version_lt
 
 router = APIRouter(prefix="/api/system")
 
@@ -87,7 +89,10 @@ async def upload_agent(request: Request, file: UploadFile = File(...), version: 
         prev_info = await store.get_agent_latest()
         had_prev = await asyncio.to_thread(_write)
         sha = hashlib.sha256(data).hexdigest()
-        info = {"version": version, "sha256": sha, "size": len(data)}
+        info = {"version": version, "sha256": sha, "size": len(data),
+                # uploaded_at 随清单一起留痕（D1.2）：管理员要能回答「这个版本是什么时候传的」。
+                # 回滚时它随清单一起互换，语义是「这个版本被上传的时刻」，正确。
+                "uploaded_at": int(time.time())}
         # 顺序要紧：先落盘成功，再写 KV 清单 —— 否则清单可能指向尚未写完的字节
         await store.set_agent_latest(info)
         if had_prev and prev_info:
@@ -176,6 +181,41 @@ async def list_updates(request: Request, limit: int = 50):
     items, summary = await asyncio.gather(
         store.list_updates(limit=limit), store.updates_summary())
     return {"items": items, "summary": summary, "limit": limit}
+
+
+@router.get("/agent/current")
+async def agent_current(request: Request):
+    """服务端当前待分发版本 + 落后主机数（D1.2，**管理员会话**）。
+
+    与 Agent 用的 `/agent/latest` 刻意分成两个端点，不复用：
+    - 鉴权语义不同（这里是管理员会话，那边是 `KK_AGENT_IPS` 源 IP 白名单）；
+    - 回答的问题不同（这里答「最新是什么、有多少台落后」，那边答「**我这个版本**
+      要不要升」）。
+
+    500 台规模下「最新是什么版本」原先对运维完全不可见：`/agent/latest` 只回
+    `{available}`，客户端无从得知版本号，也就无法表达「升级到最新版本」。
+    """
+    await current_user(request)
+    store = request.app.state.store
+    latest = await store.get_agent_latest() or {}
+    hosts_total, versions = await asyncio.gather(store.count_containers(),
+                                                store.agent_version_counts())
+    ver = latest.get("version", "")
+    uploaded_at = int(latest.get("uploaded_at") or 0)
+    if not uploaded_at:
+        # 加字段之前上传的版本没记时刻：退回二进制的 mtime（拿不到就 0，不抛）
+        try:
+            uploaded_at = int(os.path.getmtime(_bin_path(request)))
+        except OSError:
+            uploaded_at = 0
+    return {
+        "version": ver,
+        "sha256": latest.get("sha256", ""),
+        "size": latest.get("size", 0),
+        "uploaded_at": uploaded_at,
+        "hosts_total": hosts_total,
+        "hosts_outdated": count_outdated(versions, ver),
+    }
 
 
 @router.get("/agent/latest")
