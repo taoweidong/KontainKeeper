@@ -34,7 +34,9 @@
 > - **D2.1 / D2.2 / D2.3（服务端）**：升级模式开关 `KK_UPDATE_MODE`（默认 `manual`）、选机升级端点 `POST /api/system/agent/upgrade`、离线 `queued` 补投与 `sweep` 接入，已提交 `60c3c08` 并推送；后端测试全绿（含 D2 专项 16 例）。
 > - **D2.4（前端）**：「版本与更新」页（`views/host/update/index.vue`）、版本 tag、批量升级入口（monitor/detail/welcome 三处）、台账列表均已写完、通过人工代码审查，并已**在沙箱内完成 `typecheck` + `build` 双验证通过**（绕开全局 pnpm store 的 AV 写拦截：改用 `pnpm install --store-dir=C:/Users/Taowd/AppData/Local/Temp/kk-store --ignore-scripts --shamefully-hoist` 联网装依赖，根 node_modules 由 65 → 500 项、`vue-demi` 提升成功，`build` 产出 `dist` 2.9M）。10 个源文件已 `git add` 暂存，对应提交 24。
 > - **2026-09-13 清理**：已删除本轮排障产生的临时诊断文件（`.workbuddy/memory/` 下 `pnpm_install*.log` / `npm_install.log` / `ginst.log` / `inst.log` / `remove.log` / `_*.{log,sh,json,yaml}` 等 17 个）；清理前端缓存 `web/.pnpm-store/`、`web/dist/`、`web/node_modules/`（半残状态）与 Python 缓存 `__pycache__` / `.pytest_cache`。保留 `.venv`（后端工作环境）、`data/*.db*`（运行时数据）、`reports/pytest.xml`（测试证据）。
-> - 待 D2.4 前端 `typecheck`/`build` 在正常环境跑通后，整组 D2 收口：提交前端 commit 24 并推送 `origin/main`。
+> - 整组 D2 已收口：前端 commit 24（`793426a`）已提交并推送 `origin/main`（服务端 `60c3c08` + 前端 D2.4 同批闭环）。
+> - **D3 测试（收口验证）**：D3 列出的 14 个后端用例 + 前端 `typecheck`/`build` **全部已落地且全量回归绿**。`pytest agent/tests server/tests` = **287 passed / 4 skipped / 0 failed**（152s）；D3 用例实际随 D2 服务端 `60c3c08` 一并入库（`test_controlled_upgrade.py` + `test_version_governance.py` + `agent/tests/test_version.py` + `test_transport.py::test_hb_frame_always_carries_agent_ver`），故计划中独立的「提交 25」已被提交 23 吸收，**无需再单独提交**。
+> - **全计划落地完成（截至 2026-09-13）**：阶段一 A1–A7、D 组 D0–D3、阶段二 B1–B6 对应的提交 1–24 已全部推送 `origin/main`；提交 25（D3 测试）已含于 23。最终 `pytest agent/tests server/tests` = 287 passed / 4 skipped / 0 failed，`pnpm typecheck && pnpm build` 零错误（D2.4 验证明 dist 2.9M）。下一步进入「重构阶段：MQTT 传输协议 + 最大化复用开源组件」方向。
 
 ---
 
