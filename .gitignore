@@ -11,6 +11,10 @@ data/
 agent/build/
 *.egg-info/
 .venv/
+# WSL 在仓库根跑 `python3 -m venv` 失败时落下的残留（曾出现 bin/python → WSL、lib64、pyvenv.cfg）
+bin/
+lib64
+pyvenv.cfg
 kk-agent.log*
 # Agent 自更新：上传/缓存的二进制与临时文件（默认 KK_AGENT_BIN_DIR=agent_assets）
 agent_assets/
