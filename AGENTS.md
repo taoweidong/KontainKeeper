@@ -76,6 +76,9 @@ bash scripts/ci_smoke.sh kontainkeeper-server:local agent/dist/kk-agent         
 - 插件热加载按 mtime 比较，Windows 文件时间粒度粗：测试写文件后需显式 `os.utime` 递增时间戳。
 - 前端**轮询**定时器统一走 `web/src/utils/kkPoll.ts` 的 `usePolls()` + `setPoll(key, fn, ms)`（按 key 覆盖、卸载自动 `clearPolls()`），不要直接 `setInterval` 散落各处；长按等**交互计时器**不在此列（`directives/longpress`），别顺手套上去。菜单**完全静态**（`getAsyncRoutes()` 返回 `[]`，走 `router/modules/`），否则 prod 下 fake server 缺失会导致菜单空白。`pnpm build` 要求 `web/mock/` 目录存在（空目录即可）。
 - 安全红线：命令黑名单（`KK_CMD_BLACKLIST`）+ 审计（`store.add_audit`）不能绕过；Agent 接入管控靠上行帧自报 `ip` 按服务端 `KK_AGENT_IPS` 白名单校验（白名单校验收在 `MqttBridge._on_message` 一处入口，REST 自更新接口走 `deps.agent_ip_auth` 的真实源 IP），`KK_ENV=production` 未配白名单直接拒绝启动。
+- **日志（A7，单一日志后端 loguru）**：双端只允许经适配层取日志（Agent `kk_agent.logutil.get_logger`、Server `kk_server.logsetup.get_logger`），**新代码不得 `import logging`**（stdlib 仅允许出现在 server 的 `InterceptHandler` 内，有静态回归用例锁住）；调用风格继续 `%s` 懒格式化，适配层内部才做 `msg % args`，**不写 f-string 拼消息**；需要主机/命令/批次维度时用 `log.bind(...)`（会渲染成 `host=… cmd=…` 并进 JSON 的 `extra`），不要拼进消息串；生产红线 `diagnose=False`，日志不得含口令/token/环境变量。
+- **`KK_LOG` 一个文件只有一个写入者（A7.4）**：`KK_LOG` 由 Agent 进程独占（loguru 文件 sink 负责轮转/保留），`entrypoint-wrapper.sh` 不再把 Agent 输出重定向到该路径（supervisor 消息走 `KK_SUPERVISOR_LOG`）；服务端 `KK_LOG` 留空即只写 stdout，由 docker 采集——两侧 compose 都设了 `logging.max-size: 50m / max-file: 5`。
+- `setup_logging` 的 sink 装配**必须幂等**（`create_app` 在测试里被调用数百次，重复 `logger.add()` 会让一条日志打几百遍）；patcher 走 `Logger.patch()` 而非 `add(patch=...)`（后者是运行期 TypeError）。
 
 ## 背景阅读
 
@@ -85,4 +88,5 @@ bash scripts/ci_smoke.sh kontainkeeper-server:local agent/dist/kk-agent         
 
 - 提交信息用中文，`feat/fix/docs/test/chore` 前缀，按模块分批提交；信息里标注覆盖的缺陷编号（P0-x / P1-x / R-x）。
 - 所有配置走 `KK_*` 环境变量（双端均是），不引入配置文件。
+- 日志后端收敛在 loguru 一处，轮转/保留/结构化都由库保证；**格式前缀只由 sink 提供**，测试断言日志时断言消息体，不要依赖格式前缀。
 - 产品术语统一用「主机 / host」；但**不改数据库表名与列名**（`containers` / `pod` 保持历史命名，改名迁移成本换不到功能收益）。

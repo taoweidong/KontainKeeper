@@ -10,7 +10,6 @@ Agent 侧的连接保活、鉴权、离线命令排队全部在 Broker（Mosquit
 持有任何长连接，因此可多实例水平扩容——注意每实例的 KK_MQTT_CLIENT_ID 必须唯一。
 """
 import asyncio
-import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -21,15 +20,18 @@ from fastapi.staticfiles import StaticFiles
 from . import PROTO_VER, __version__
 from .config import load_settings
 from .controllers import register
+from .logsetup import get_logger, setup_logging
 from .models.store import Store, normalize_url
 from .services.mqtt_bridge import MqttBridge, SWEEP_INTERVAL
 
-log = logging.getLogger("kk.server")
+log = get_logger("kk.server")
 CLEANUP_PASSES = 10   # 每 N 个 sweep 周期做一次存储回收（30s × 10 = 5min）
 
 
 def create_app(env=None):
     settings = load_settings(env)
+    # 日志在装配期就配好（幂等）：测试也用 create_app 构造，日志行为需与生产一致
+    setup_logging(settings)
     # 建库放 lifespan：Store 全异步，装配函数保持同步给 uvicorn/测试用
     store = Store(normalize_url(settings.db_url, settings.db_path))
 
@@ -106,11 +108,13 @@ def create_app(env=None):
 
 def main():
     import uvicorn
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    # log_config=None：别让 uvicorn 自带的 dictConfig 覆盖我们的 sink/格式（A7.3）。
+    # 其记录由 logsetup 的 InterceptHandler 统一收取，级别也由 KK_LOG_LEVEL 掌控。
     uvicorn.run(
         create_app(),
         host=os.environ.get("KK_HOST", "0.0.0.0"),
         port=int(os.environ.get("KK_PORT", "8443")),
+        log_config=None,
         log_level=os.environ.get("KK_LOG_LEVEL", "info").lower(),
     )
 

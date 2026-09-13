@@ -91,7 +91,9 @@ uv sync --all-packages                 # 仓库根执行，统一安装全部成
 | `KK_INTERVAL_MIN` | 最小上报间隔（秒），留空不检查。低于阈值只审计 + 计数，不阻断上报 | `""` |
 | `KK_AGENT_BIN_DIR` | Agent 二进制存储目录 | `agent_assets` |
 | `KK_WEB_DIR` | 前端静态目录（缺省用包内 `web/`） | `<包>/web` |
-| `KK_LOG_LEVEL` | 日志级别 | `info` |
+| `KK_LOG_LEVEL` | 日志级别（`TRACE/DEBUG/INFO/SUCCESS/WARNING/ERROR/CRITICAL`，未知值回落 `INFO`） | `INFO` |
+| `KK_LOG` | 服务端日志文件路径，**留空只写 stdout**（容器场景推荐留空，由 docker 采集 + 轮转）；设了则额外落文件，规格 `20MB × 10` + gzip（A7） | `""` |
+| `KK_LOG_JSON` | 置真值时日志以 JSON 行输出（便于日志平台解析，`host`/`cmd` 等上下文进 `extra` 字段） | `false` |
 | `KK_ENV` | 置 `production` 时启用安全自检：默认口令 `admin123` 或未配 `KK_AGENT_IPS` 白名单均拒绝启动 | `""` |
 
 ## REST API 总览

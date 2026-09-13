@@ -36,6 +36,12 @@ services:
     depends_on:
       - mosquitto
     restart: unless-stopped
+    # 与 docker-compose.prod.yml 一致：日志走 docker，必须设轮转上限（A7.4）
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
 
 volumes:
   mosquitto-data:

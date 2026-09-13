@@ -10,6 +10,8 @@ dependencies = [
     "paho-mqtt>=2.1.0",
     "aiosqlite>=0.20",
     "sqlalchemy[asyncio]>=2.0.40",
+    # A7：日志后端（统一格式/轮转，并拦截 stdlib 日志接管 uvicorn）
+    "loguru>=0.7",
 ]
 
 [project.scripts]

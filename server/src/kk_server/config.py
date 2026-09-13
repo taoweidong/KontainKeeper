@@ -38,6 +38,10 @@ class Settings:
     # 服务端对外访问基址（如 http://10.0.0.1:8443）。配了它，下发给 Agent 的
     # 自更新 url 就是绝对地址，镜像侧零配置即可升级（A6.1）
     public_url: str = ""
+    # ---- 日志（A7）----
+    log_level: str = "INFO"
+    log_path: str = ""        # 空 = 只写 stdout（容器采集），不落盘
+    log_json: bool = False    # KK_LOG_JSON=1 → JSON Lines（接日志采集端时打开）
 
 
 def _env_int(env, key, default):
@@ -123,4 +127,7 @@ def load_settings(env=None) -> Settings:
                     mqtt_password=env.get("KK_MQTT_PASSWORD", "").strip(),
                     mqtt_tls_ca=env.get("KK_MQTT_TLS_CA", "").strip(),
                     mqtt_tls_insecure=_env_bool(env, "KK_MQTT_TLS_INSECURE"),
-                    public_url=env.get("KK_PUBLIC_URL", "").strip().rstrip("/"))
+                    public_url=env.get("KK_PUBLIC_URL", "").strip().rstrip("/"),
+                    log_level=(env.get("KK_LOG_LEVEL") or "INFO").strip().upper(),
+                    log_path=env.get("KK_LOG", "").strip(),
+                    log_json=_env_bool(env, "KK_LOG_JSON"))

@@ -45,6 +45,13 @@ services:
     depends_on:
       - mosquitto
     restart: unless-stopped
+    # 日志：stdout 由 docker 采集（服务端不再自己维护文件 sink，除非显式设 KK_LOG）。
+    # 必须设上限——默认 json-file 驱动不轮转，长跑节点的磁盘会被打满（A7.4）。
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
 
 volumes:
   mosquitto-data:

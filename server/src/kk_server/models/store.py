@@ -6,7 +6,6 @@ KK_DB_URL 选库，缺省回落 KK_DB_PATH 的 SQLite。表定义见 tables.py�
 import base64
 import hashlib
 import json
-import logging
 import secrets
 import time
 from urllib.parse import urlparse
@@ -23,8 +22,9 @@ from .tables import (MD, ONLINE_GRACE, _ADD_COLUMNS, _CMD_COLS, _SUMMARY_COLS,
 from .helpers import (_PWDF_ITERS_LEGACY, _b64_tail, _num, _pwdf,
                        mask_url, normalize_url)
 from .version import version_lt as _version_lt
+from ..logsetup import get_logger
 
-log = logging.getLogger("kk.store")
+log = get_logger("kk.store")
 
 # 空 reason 的离线（Broker 补发的 LWT）不覆盖**刚写入的** updating 的宽限窗口（B6.1）。
 # execv 替换进程后连接被异常断开，Broker 会立刻补发 LWT（reason 恒为空）；若直接落库，

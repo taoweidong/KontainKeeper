@@ -38,6 +38,12 @@ services:
     depends_on:
       - mosquitto
     restart: unless-stopped
+    # 日志走 docker（保留上限，避免长跑打满磁盘）；要落文件就设 KK_LOG
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
 
 volumes:
   mosquitto-data:

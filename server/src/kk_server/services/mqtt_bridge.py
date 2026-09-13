@@ -21,7 +21,6 @@ KK_AGENT_IPS 白名单统一校验（ipaddress 网段匹配）。MQTT 经 Broker
 import asyncio
 import base64
 import json
-import logging
 import ssl
 import threading
 import time
@@ -29,6 +28,7 @@ import time
 import paho.mqtt.client as mqtt
 
 from ..config import ip_in_whitelist
+from ..logsetup import get_logger
 from ..models.version import version_lt
 
 
@@ -39,7 +39,7 @@ def _b64_text(raw):
     except Exception:
         return ""
 
-log = logging.getLogger("kk.bridge")
+log = get_logger("kk.bridge")
 
 QOS_STATUS = 1
 QOS_HB = 0
@@ -170,7 +170,7 @@ class MqttBridge:
         # 无状态、服务端重启安全。白名单为空（未配置）时不设限。
         if not ip_in_whitelist(self.agent_ips, body.get("ip")):
             self.stats["rejected"] += 1
-            log.warning("拒绝白名单外上报：host=%s ip=%r", host, body.get("ip"))
+            log.bind(host=host).warning("拒绝白名单外上报：ip=%r", body.get("ip"))
             self._dispatch(self._on_ip_rejected, host, body)
             return
         self.stats["last_msg_ts"] = int(time.time())
@@ -182,7 +182,8 @@ class MqttBridge:
         if self.loop is None:
             # 没有循环说明装配漏了 lifespan：宁可显式拒帧，也不要静默丢数据
             self.stats["rejected"] += 1
-            log.error("桥接未绑定事件循环，丢弃 %s/%s 帧", host, body.get("id") or "status")
+            log.bind(host=host).error("桥接未绑定事件循环，丢弃 %s 帧",
+                                      body.get("id") or "status")
             return
         self.loop.call_soon_threadsafe(self._spawn, fn, host, body)
 
@@ -206,8 +207,9 @@ class MqttBridge:
             self.stats["rejected"] += 1
             await self.store.add_audit("mqtt", "proto_mismatch",
                                  {"host": host, "proto_ver": body.get("proto_ver")})
-            log.warning("协议版本不匹配 host=%s got=%s want=%s，忽略该帧",
-                        host, body.get("proto_ver"), self.proto_ver)
+            log.bind(host=host).warning(
+                "协议版本不匹配 got=%s want=%s，忽略该帧",
+                body.get("proto_ver"), self.proto_ver)
             return
         online = bool(body.get("online"))
         agent_ver = str(body.get("agent_ver") or "")
@@ -251,8 +253,8 @@ class MqttBridge:
             await self.store.add_audit("mqtt", "interval_violation",
                                        {"host": host, "interval": interval,
                                         "min": floor})
-            log.warning("上报间隔低于下限 host=%s interval=%ss min=%ss",
-                        host, interval, floor)
+            log.bind(host=host).warning("上报间隔低于下限 interval=%ss min=%ss",
+                                        interval, floor)
 
     async def _on_result(self, host, body):
         cid = body.get("id")
@@ -278,7 +280,8 @@ class MqttBridge:
                 self.stats["rejected"] += 1
                 await self.store.add_audit("mqtt", "result_mismatch",
                                            {"expect": cmd["pod"], "got": host, "id": cid})
-                log.warning("丢弃跨主机结果 cmd=%s expect=%s got=%s", cid, cmd["pod"], host)
+                log.bind(host=host, cmd=cid).warning(
+                    "丢弃跨主机结果 expect=%s", cmd["pod"])
                 return
             await self.store.append_result(body, host=host)
             self.stats["result"] += 1
@@ -306,7 +309,8 @@ class MqttBridge:
         if rc in (None, 0):
             await self.store.finish_update(cid, "done")
             self.stats["upgrade_done"] = self.stats.get("upgrade_done", 0) + 1
-            log.info("agent upgrade done host=%s -> %s", host, row["to_version"])
+            log.bind(host=host, cmd=cid).info(
+                "agent upgrade done -> %s", row["to_version"])
             return
         reason = _b64_text(body.get("out_b64"))[:40] or "agent_reported_failure"
         await self.store.finish_update(cid, "failed", reason)
@@ -315,8 +319,8 @@ class MqttBridge:
                                    {"host": host, "id": cid,
                                     "to_version": row["to_version"], "reason": reason,
                                     "rc": rc})
-        log.warning("agent upgrade failed host=%s to=%s reason=%s",
-                    host, row["to_version"], reason)
+        log.bind(host=host, cmd=cid).warning("agent upgrade failed to=%s reason=%s",
+                                             row["to_version"], reason)
 
     # ---- 下行 ----
     def _cmd_topic(self, host):
@@ -346,7 +350,7 @@ class MqttBridge:
                                     json.dumps(payload, ensure_ascii=False), qos=QOS_CMD)
         except Exception:
             self.stats["cmd_failed"] += 1
-            log.exception("发布命令失败 id=%s", row["id"])
+            log.bind(host=row["pod"], cmd=row["id"]).exception("发布命令失败")
             return False
         ok = info.rc in (mqtt.MQTT_ERR_SUCCESS, mqtt.MQTT_ERR_NO_CONN)
         # 入队失败（out-queue 满）也要看得见：静默丢命令与丢结果同型，都是石沉大海
@@ -354,7 +358,8 @@ class MqttBridge:
             self.stats["cmd_published"] += 1
         else:
             self.stats["cmd_failed"] += 1
-            log.warning("命令入队失败 id=%s rc=%s（Broker 未连接或队列已满）", row["id"], info.rc)
+            log.bind(host=row["pod"], cmd=row["id"]).warning(
+                "命令入队失败 rc=%s（Broker 未连接或队列已满）", info.rc)
         return ok
 
     def _download_url(self):
@@ -377,11 +382,12 @@ class MqttBridge:
         try:
             self.cli.publish(self._cmd_topic(host), json.dumps(payload), qos=QOS_CMD)
             self.stats["upgrade_pushed"] += 1
-            log.info("pushed upgrade %s -> %s to %s", agent_ver, latest["version"], host)
+            log.bind(host=host, cmd=uid).info("pushed upgrade %s -> %s",
+                                              agent_ver, latest["version"])
         except Exception:
             # 推失败意味着该主机停在旧版本；静默吞掉就再也发现不了
             await self.store.finish_update(uid, "failed", "publish_failed")
-            log.warning("push upgrade failed host=%s", host, exc_info=True)
+            log.bind(host=host, cmd=uid).warning("push upgrade failed", exc_info=True)
 
     # ---- 周期任务 ----
     async def sweep(self):
