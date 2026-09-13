@@ -34,6 +34,9 @@ containers = Table(
     Column("last_metrics", _long_text(), nullable=False),
     Column("online", Integer, nullable=False, server_default="0"),
     Column("status_ts", BigInteger, nullable=False, server_default="0"),
+    # 最近一帧 status 的可读原因（online / offline / updating / LWT 触发为空）。
+    # B6.1：自更新会先自报 reason=updating，让运维能把「正在升级」与「容器停了」分开。
+    Column("status_reason", String(20), nullable=False, server_default=""),
     Column("cpu", Float),
     Column("mem_mb", Float),
     Column("disk_pct", Float),
@@ -148,13 +151,14 @@ ONLINE_GRACE = 180
 # 列表摘要视图只读这几列：完整 last_metrics（每帧 2~4KB JSON）不进列表响应。
 # 500 台 × 4KB = 2MB 的 JSON 解析开销，占了列表接口耗时的绝大部分。
 _SUMMARY_COLS = ["pod", "image", "agent_ver", "hb_interval", "online",
-                 "last_seen", "cpu", "mem_mb", "disk_pct"]
+                 "last_seen", "cpu", "mem_mb", "disk_pct", "status_reason"]
 
 # 既有库补列清单：create_all 不会给已存在的表加列，升级后必须自己 ALTER。
 # 类型写三库都认的写法（DOUBLE PRECISION / BIGINT），避免再分支。
 _ADD_COLUMNS = {
     "kk_containers": [("cpu", "DOUBLE PRECISION"), ("mem_mb", "DOUBLE PRECISION"),
-                      ("disk_pct", "DOUBLE PRECISION")],
+                      ("disk_pct", "DOUBLE PRECISION"),
+                      ("status_reason", "VARCHAR(20) DEFAULT ''")],
     "kk_commands": [("out_purged", "INTEGER DEFAULT 0"),
                      ("last_seq", "INTEGER DEFAULT -1"),
                      # 不带引号：MySQL 严格模式下 'VARCHAR' 被引号包住会解析失败

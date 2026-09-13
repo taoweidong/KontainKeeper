@@ -118,6 +118,39 @@ async def test_online_column_and_grace(store):
     assert await store.mark_stale_offline() >= 0
 
 
+async def test_status_reason_persisted_and_lwt_does_not_clobber_updating(store):
+    """B6.1：status 的 reason 要落库；Broker 补发的空 reason(LWT) 不得抹掉刚写的 updating。
+
+    自更新时序：Agent 发 offline/updating → execv → 连接被断 → Broker 补发 LWT(空)。
+    没有这层保护，离线视图看到的仍是「原因未知的离线」，B6.1 白做。
+    """
+    await store.set_online("pod-u", True, image="img", agent_ver="0.3.0", reason="online")
+    assert (await store.get_container("pod-u"))["status_reason"] == "online"
+
+    # 自更新前的宣告
+    await store.set_online("pod-u", False, reason="updating")
+    row = await store.get_container("pod-u")
+    assert row["online"] == 0 and row["status_reason"] == "updating"
+
+    # 紧随其后的 LWT（reason 为空）在宽限窗口内不得把它抹成空白
+    await store.set_online("pod-u", False, reason="")
+    assert (await store.get_container("pod-u"))["status_reason"] == "updating"
+
+    # 摘要视图也要带上该列（列表页据此显示离线原因）
+    rows = await store.list_containers("summary")
+    assert any(r["pod"] == "pod-u" and r["status_reason"] == "updating" for r in rows)
+
+
+async def test_status_reason_blank_after_grace(store):
+    """宽限窗口外，空 reason 正常落为空白（不保留陈旧的 updating）。"""
+    await store.set_online("pod-g", True, reason="online")
+    await store.set_online("pod-g", False, reason="updating")
+    await store.exec_sql("UPDATE kk_containers SET status_ts=:a WHERE pod=:b",
+                           {"a": int(time.time()) - 1000, "b": "pod-g"})
+    await store.set_online("pod-g", False, reason="")
+    assert (await store.get_container("pod-g"))["status_reason"] == ""
+
+
 async def test_containers_exist_is_one_query(store):
     for p in ("a", "b", "c"):
         await store.upsert_container(p, "img", "0.2.0", 60)
@@ -186,7 +219,7 @@ async def test_summary_view_written_with_heartbeat(store):
     # 磁盘告警取的是「最满的那块盘」，不是第一块
     assert row["disk_pct"] == 91.0
     assert set(row) == {"pod", "image", "agent_ver", "hb_interval", "online",
-                        "last_seen", "cpu", "mem_mb", "disk_pct"}, \
+                        "last_seen", "cpu", "mem_mb", "disk_pct", "status_reason"}, \
         "摘要视图不该把 last_metrics 这种大字段带出来"
 
 

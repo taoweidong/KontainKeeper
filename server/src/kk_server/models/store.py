@@ -26,6 +26,12 @@ from .version import version_lt as _version_lt
 
 log = logging.getLogger("kk.store")
 
+# 空 reason 的离线（Broker 补发的 LWT）不覆盖**刚写入的** updating 的宽限窗口（B6.1）。
+# execv 替换进程后连接被异常断开，Broker 会立刻补发 LWT（reason 恒为空）；若直接落库，
+# 运维看到的仍是「原因未知的离线」，B6.1 白做。窗口取 120s，足以覆盖「重启 → 新进程上线」。
+_UPDATING_REASON_GRACE = 120
+
+
 class Store:
     """异步存储。全部方法是协程——调用方 await，事件循环不再被数据库拖住。"""
 
@@ -148,18 +154,33 @@ class Store:
              "last_metrics": "", "online": 0, "status_ts": 0},
             ["pod"], ["image", "agent_ver", "hb_interval", "last_seen"])
 
-    async def set_online(self, pod, online, ts=None, image="", agent_ver=""):
-        """在线真相来自 Broker：上线是 retained status，下线是 LWT 或优雅 stop。"""
+    async def set_online(self, pod, online, ts=None, image="", agent_ver="", reason=""):
+        """在线真相来自 Broker：上线是 retained status，下线是 LWT 或优雅 stop。
+
+        reason 是 Agent 自报的状态原因（B6.1：自更新前自报 reason=updating）。LWT
+        的 reason 恒为空且紧随 updating 之后到达，这里对「空 reason 覆盖刚写入的
+        updating」做一次宽限保留，否则升级窗口仍会显示成「原因未知的离线」。
+        """
         now = int(ts or time.time())
         if not online:
+            keep = ""
+            if not reason:
+                row = await self.get_container(pod)
+                if (row and row.get("status_reason") == "updating"
+                        and int(time.time()) - int(row.get("status_ts") or 0)
+                        <= _UPDATING_REASON_GRACE):
+                    keep = "updating"
             return await self._run(update(containers).where(containers.c.pod == pod)
-                                   .values(online=0, status_ts=now))
+                                   .values(online=0, status_ts=now,
+                                           status_reason=(reason or keep)))
         return await self._upsert(
             containers,
             {"pod": pod, "image": image or "", "agent_ver": agent_ver or "",
              "hb_interval": 60, "first_seen": now, "last_seen": now,
-             "last_metrics": "", "online": 1, "status_ts": now},
-            ["pod"], ["online", "status_ts", "last_seen", "image", "agent_ver"])
+             "last_metrics": "", "online": 1, "status_ts": now,
+             "status_reason": str(reason or "online")},
+            ["pod"], ["online", "status_ts", "last_seen", "image", "agent_ver",
+                      "status_reason"])
 
     async def touch(self, pod):
         return await self._run(update(containers).where(containers.c.pod == pod)

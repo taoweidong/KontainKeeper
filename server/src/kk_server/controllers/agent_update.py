@@ -27,6 +27,13 @@ MAX_BIN_BYTES = 64 * 1024 * 1024
 _BIN_NAME = "kk-agent"
 _CHUNK = 256 * 1024
 
+# 串行化「换 .prev / 写二进制 / 更新 KV 清单」与回滚交换（B6.5）：两个管理员并发
+# 上传会互相踩 —— A 刚换完 .prev，B 又换一次，.prev 便成中间态；Windows 上换一个
+# 正被下载线程读的文件还会直接失败。
+# 用 asyncio.Lock 而非 threading.Lock：端点是协程，锁要跨 await（to_thread 落盘）
+# 持有；阻塞式 threading.Lock 会让事件循环在第二个请求取锁时整条卡死（死锁）。
+_upload_lock = asyncio.Lock()
+
 
 def _bin_path(request: Request):
     return os.path.join(request.app.state.agent_bin_dir, _BIN_NAME)
@@ -75,17 +82,19 @@ async def upload_agent(request: Request, file: UploadFile = File(...), version: 
     # 上一版的**清单**要和二进制一起留下来（B2）：回滚时无从反推旧版本号，
     # 而 sha256 必须对得上 .prev 文件，否则 Agent 下载后会校验失败。
     store = request.app.state.store
-    prev_info = await store.get_agent_latest()
-    had_prev = await asyncio.to_thread(_write)
-
-    sha = hashlib.sha256(data).hexdigest()
-    info = {"version": version, "sha256": sha, "size": len(data)}
-    await store.set_agent_latest(info)
-    if had_prev and prev_info:
-        await store.set_agent_prev(prev_info)
-    elif not had_prev:
-        await store.kv_set("agent_prev", "")   # 首次上传：清掉可能的历史残留
-    await store.add_audit(user, "agent_upload", info)
+    async with _upload_lock:
+        # 读旧清单 → 换 .prev 并落盘 → 写新清单，三步必须整体原子（B6.5）
+        prev_info = await store.get_agent_latest()
+        had_prev = await asyncio.to_thread(_write)
+        sha = hashlib.sha256(data).hexdigest()
+        info = {"version": version, "sha256": sha, "size": len(data)}
+        # 顺序要紧：先落盘成功，再写 KV 清单 —— 否则清单可能指向尚未写完的字节
+        await store.set_agent_latest(info)
+        if had_prev and prev_info:
+            await store.set_agent_prev(prev_info)
+        elif not had_prev:
+            await store.kv_set("agent_prev", "")   # 首次上传：清掉可能的历史残留
+        await store.add_audit(user, "agent_upload", info)
     return {"ok": True, **info}
 
 
@@ -105,6 +114,12 @@ async def rollback_agent(request: Request):
     store = request.app.state.store
     dest = _bin_path(request)
 
+    async with _upload_lock:   # 与上传共用一把锁：并发上传/回滚同样会踩 .prev/.rollback
+        return await _do_rollback(user, store, dest)
+
+
+async def _do_rollback(user, store, dest):
+    """回滚的临界区（调用方须持 _upload_lock）。"""
     prev_info = await store.get_agent_prev()
     alt = dest + ".prev" if os.path.isfile(dest + ".prev") else dest + ".rollback"
     if not os.path.isfile(alt) or not prev_info:

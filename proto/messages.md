@@ -83,8 +83,13 @@ v1 的 WebSocket close code（`4400/4401/4402/4403/4404`）**已随 WS 删除**�
 | `host` | 主机标识 |
 | `ip` | 自报出口 IP（`KK_ADVERTISE_IP` 覆盖 > 自动探测），服务端按 `KK_AGENT_IPS` 白名单校验；探测失败为空串（将被拒） |
 | `proto_ver` | 必须为 `3` |
-| `reason` | 可读原因（`online` / `offline` / LWT 触发时为空） |
+| `reason` | 可读原因：`online` / `offline` / `updating`（自更新前自报）/ LWT 触发时为空 |
 | `ts` | Unix 秒 |
+
+> **`reason=updating`（B6.1）**：`os.execv` 自更新会直接替换进程、断开 MQTT，Broker 随即
+> 补发 LWT（`reason` 为空）。Agent 在 execv 前先发一帧 `online=false, reason=updating`
+> 并**等 PUBACK**再替换进程，服务端据此把「正在升级」与「容器停了」区分开。
+> 服务端对「空 reason 覆盖刚写入的 `updating`」有 120s 宽限保留，避免紧跟着的 LWT 把它抹白。
 
 ### 3.2 `kk/v1/{host}/hb`（QoS0，**不 retain**）
 

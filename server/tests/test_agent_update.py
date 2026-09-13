@@ -197,6 +197,74 @@ async def test_agent_latest_returns_absolute_url_when_public_url_set(tmp_path):
         await store.close()
 
 
+async def test_concurrent_uploads_stay_consistent(tmp_path):
+    """并发上传必须串行化（B6.5）。
+
+    无锁时两路「换 .prev / 写文件 / 更新 KV」会交错，可能落到「KV 清单是 A 的版本号、
+    磁盘却是 B 的字节」这种错配 —— Agent 下载后 sha256 校验必失败。持锁后从清单 sha
+    到磁盘字节恒一致。
+    """
+    import asyncio
+
+    import httpx
+
+    app = _make_app(tmp_path)
+    store = app.state.store
+    await store.setup()
+    await store.ensure_admin(ADMIN_USER, ADMIN_PASS)
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                     base_url="http://test") as c:
+            tok = (await c.post("/api/login",
+                                json={"username": ADMIN_USER, "password": ADMIN_PASS})
+                   ).json()["token"]
+            h = {"Authorization": "Bearer %s" % tok}
+            a, b = b"A" * 4096, b"B" * 8192
+            await asyncio.gather(
+                c.post("/api/system/agent", headers=h,
+                       files={"file": ("kk-agent", a)}, data={"version": "1.0.0"}),
+                c.post("/api/system/agent", headers=h,
+                       files={"file": ("kk-agent", b)}, data={"version": "2.0.0"}),
+            )
+        latest = await store.get_agent_latest()
+        on_disk = open(os.path.join(str(tmp_path / "bin"), "kk-agent"), "rb").read()
+        assert hashlib.sha256(on_disk).hexdigest() == latest["sha256"], \
+            "清单与磁盘字节必须一致（并发交错会破坏它）"
+        assert latest["version"] in ("1.0.0", "2.0.0")
+        assert latest["size"] == len(on_disk)
+    finally:
+        await store.close()
+
+
+async def test_status_reason_recorded_via_bridge(tmp_path):
+    """B6.1：status 帧的 reason 经桥接落库（离线视图据此分辨 updating / 容器停了）。"""
+    from kk_server.models.store import Store
+    from kk_server.services.mqtt_bridge import MqttBridge
+
+    app = _make_app(tmp_path)
+    store = Store(str(tmp_path / "reason.db"))
+    await store.setup()
+    try:
+        bridge = MqttBridge(store, app.state.settings, app.state.agent_ips, proto_ver=3)
+        bridge.cli = types.SimpleNamespace(
+            publish=lambda *a, **k: types.SimpleNamespace(rc=0))
+        base = {"host": "pod-r", "ip": "127.0.0.1", "proto_ver": 3,
+                "agent_ver": "0.3.0", "image": "img", "interval": 60,
+                "ts": int(time.time())}
+        await bridge._on_status("pod-r", dict(base, online=True, reason="online"))
+        assert (await store.get_container("pod-r"))["status_reason"] == "online"
+
+        # 自更新宣告
+        await bridge._on_status("pod-r", dict(base, online=False, reason="updating"))
+        assert (await store.get_container("pod-r"))["status_reason"] == "updating"
+
+        # 紧随其后的 LWT（reason 为空）不得抹掉 updating
+        await bridge._on_status("pod-r", dict(base, online=False, reason=""))
+        assert (await store.get_container("pod-r"))["status_reason"] == "updating"
+    finally:
+        await store.close()
+
+
 async def test_agent_latest_relative_url_without_public_url(tmp_path):
     """未配 KK_PUBLIC_URL 时行为不变（相对路径），不破坏既有部署。"""
     from kk_server.main import create_app

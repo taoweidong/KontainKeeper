@@ -211,9 +211,11 @@ class MqttBridge:
             return
         online = bool(body.get("online"))
         agent_ver = str(body.get("agent_ver") or "")
+        # reason（B6.1）：Agent 自更新前会自报 reason=updating，落库后离线视图可辨
         await self.store.set_online(host, online, ts=body.get("ts"),
                                     image=str(body.get("image") or ""),
-                                    agent_ver=agent_ver)
+                                    agent_ver=agent_ver,
+                                    reason=str(body.get("reason") or ""))
         self.stats["status"] += 1
         if online:
             # 状态帧是升级成功与否的**权威佐证**：execv 前的回执帧可能来不及发出，

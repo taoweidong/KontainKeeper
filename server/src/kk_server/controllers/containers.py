@@ -38,6 +38,8 @@ def _container_view(row, online_set):
         "last_seen": row["last_seen"],
         "online": row["pod"] in online_set,
         "age_sec": max(0, now - row["last_seen"]),
+        # 离线原因（B6.1）：updating = 正在自更新，而非「容器停了」
+        "status_reason": row.get("status_reason") or "",
         "metrics": metrics,
         "custom": hb.get("custom") or {},
         "disk_alert": _disk_alert(metrics),
@@ -57,6 +59,7 @@ def _container_summary(row, online_set, now):
         "agent_ver": row["agent_ver"],
         "online": row["pod"] in online_set,
         "age_sec": max(0, now - row["last_seen"]),
+        "status_reason": row.get("status_reason") or "",
         "cpu": row.get("cpu"),
         "mem_mb": row.get("mem_mb"),
         "disk_pct": disk_pct,
