@@ -111,6 +111,7 @@ def _run_update(tr, cid, cmd, cfg, log):
     成功回执由 apply_manifest_receipt 在 execv 之前发出（进程被替换后来不及发帧）；
     失败回执在这里发，out 里带原因码。
     """
+    log = log.bind(component="updater")
 
     def before_restart():
         # B6.1：让服务端能把「正在自更新」与「容器停了」区分开。
@@ -158,6 +159,7 @@ def submit_heartbeat(tr, cfg, log, state_box, busy):
     if busy.is_set():
         return
     busy.set()
+    log = log.bind(component="hb")
 
     def work():
         try:
@@ -188,7 +190,8 @@ def run(stop=None, cfg=None, overrides=None):
 
     tr = None
     try:
-        tr = Transport(cfg, log)
+        # 组件级上下文（A7.2/D4）：日志自带 component=，500 台规模下可按组件过滤
+        tr = Transport(cfg, log=log.bind(component="transport"))
     except TransportError as e:
         log.error("%s", e)
         return
@@ -210,8 +213,9 @@ def run(stop=None, cfg=None, overrides=None):
 
     runner = kk_executor.Runner(emit, max_out=cfg["max_out_mb"] * 1024 * 1024,
                                 max_workers=cfg["max_workers"],
-                                allow_shell=cfg["allow_shell"], log=log)
-    tr.on_cmd = make_dispatcher(tr, runner, cfg, log, state_box)
+                                allow_shell=cfg["allow_shell"],
+                                log=log.bind(component="executor"))
+    tr.on_cmd = make_dispatcher(tr, runner, cfg, log.bind(component="cmd"), state_box)
 
     # 优雅退出：信号处理器只能在主线程注册（测试跑在子线程时跳过）
     if threading.main_thread() is threading.current_thread():

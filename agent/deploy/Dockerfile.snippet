@@ -18,6 +18,9 @@ COPY agent/deploy/entrypoint-wrapper.sh /usr/local/bin/kk-entrypoint
 RUN chmod +x /opt/kk-agent/kk-agent /usr/local/bin/kk-entrypoint \
     && mkdir -p /var/log
 
+# KK_LOG 由 Agent 进程**独占**写入（A7.4）：轮转/保留由 Agent 的日志 sink 负责。
+# wrapper 不再把 Agent stdout/stderr 追加到该文件（否则一个文件两个写入者 + 两套轮转，
+# 这是历史缺陷 D1 的根因）；请勿在外部脚本里 `>>"$KK_LOG"`。
 ENV KK_AGENT_BIN=/opt/kk-agent/kk-agent \
     KK_PLUGIN_DIR=/opt/kk-agent/plugins \
     KK_LOG=/var/log/kk-agent.log

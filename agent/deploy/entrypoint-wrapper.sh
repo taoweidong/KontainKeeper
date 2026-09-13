@@ -11,24 +11,22 @@
 #      容器常驻、Agent 继续在线。
 #
 # 环境变量：
-#   KK_AGENT_BIN   Agent 二进制路径（默认 /opt/kk-agent/kk-agent）
-#   KK_LOG         日志路径（默认 /var/log/kk-agent.log，>1MB 自动轮转一份）
-#   KK_NICE        Agent 的 CPU 调度优先级（默认 19 = 最低）。Agent 是旁路进程，
-#                  CPU 争抢时必须主动让位给用户的 IDE；置 0 等价关闭降权。
+#   KK_AGENT_BIN       Agent 二进制路径（默认 /opt/kk-agent/kk-agent）
+#   KK_LOG             Agent 日志文件（默认 /var/log/kk-agent.log）。**由 Agent 独占写入**
+#                      （A7.4）：轮转/保留/压缩由 Agent 的日志 sink 负责，wrapper 不再碰它。
+#   KK_SUPERVISOR_LOG  监管脚本自身消息的去处（默认 /dev/stderr，即 docker logs）。
+#                      绝不能指向 KK_LOG —— 一个文件两个写入者 + 两套轮转是 D1 的根因。
+#   KK_NICE            Agent 的 CPU 调度优先级（默认 19 = 最低）。Agent 是旁路进程，
+#                      CPU 争抢时必须主动让位给用户的 IDE；置 0 等价关闭降权。
 set -u
 
 KK_BIN="${KK_AGENT_BIN:-/opt/kk-agent/kk-agent}"
 KK_LOG="${KK_LOG:-/var/log/kk-agent.log}"
+KK_SUPERVISOR_LOG="${KK_SUPERVISOR_LOG:-/dev/stderr}"
 KK_NICE="${KK_NICE:-19}"
-MAX_LOG=$((1024 * 1024))
 
-mkdir -p "$(dirname "$KK_LOG")"
-
-rotate_log() {
-  if [ -f "$KK_LOG" ] && [ "$(stat -c%s "$KK_LOG" 2>/dev/null || echo 0)" -gt "$MAX_LOG" ]; then
-    mv -f "$KK_LOG" "$KK_LOG.1"
-  fi
-}
+# 只建 Agent 日志的父目录；文件本身交给 Agent 的日志 sink 独占（loguru 也会自建目录）
+mkdir -p "$(dirname "$KK_LOG")" 2>/dev/null || true
 
 # PyInstaller onefile 被 SIGKILL 时解压目录 /tmp/_MEI* 不会自清（资源评审 P3）。
 # 容器启动时顺手清理 60 分钟前的残留；带存活实例的目录因 mtime 新鲜而得以保留。
@@ -47,23 +45,25 @@ supervise() {
   # 监管循环自身也要接信号：转发给 Agent 子进程后退出，避免 Agent 被 SIGKILL。
   trap 'kill -TERM "$AGENT_PID" 2>/dev/null; exit 0' TERM INT
   while true; do
-    rotate_log
+    # 不再把 Agent 输出重定向进 $KK_LOG（A7.4：该文件由 Agent 独占）。
+    # 也不丢到 /dev/null —— Agent 的 stderr 直通容器 stderr，由 docker logs 采集，
+    # 启动失败这类「还没建立起文件 sink」的错误才不会消失。
     # nice 降权（P2-1）：Agent 与用户 IDE 在同一容器里抢 CPU，代码级封顶只能
     # 限制自己采集多少，限制不了「什么时候能让出 CPU」。nice 只改调度优先级、
     # 不改变功能，探测失败时原样启动（不阻断）。
     # ionice 属 util-linux，镜像不保证存在，因此只做探测式可选。
     if command -v nice >/dev/null 2>&1 && [ "$KK_NICE" != "0" ]; then
       if command -v ionice >/dev/null 2>&1; then
-        ionice -c3 nice -n "$KK_NICE" "$KK_BIN" >>"$KK_LOG" 2>&1 &
+        ionice -c3 nice -n "$KK_NICE" "$KK_BIN" &
       else
-        nice -n "$KK_NICE" "$KK_BIN" >>"$KK_LOG" 2>&1 &
+        nice -n "$KK_NICE" "$KK_BIN" &
       fi
     else
-      "$KK_BIN" >>"$KK_LOG" 2>&1 &
+      "$KK_BIN" &
     fi
     AGENT_PID=$!
     wait "$AGENT_PID"          # execv 自更新会复用该 PID，此处不会提前返回
-    echo "$(date) kk-agent exited ($?), restart in 5s" >>"$KK_LOG"
+    echo "$(date) kk-agent exited ($?), restart in 5s" >>"$KK_SUPERVISOR_LOG"
     sleep 5
   done
 }
@@ -80,7 +80,7 @@ trap 'forward_signal INT' INT
 
 cleanup_stale_mei
 
-echo "$(date) kk-entrypoint: supervising $KK_BIN" >>"$KK_LOG"
+echo "$(date) kk-entrypoint: supervising $KK_BIN" >>"$KK_SUPERVISOR_LOG"
 supervise &
 SUPERVISOR_PID=$!
 

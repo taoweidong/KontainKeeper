@@ -131,7 +131,7 @@ cd agent
 | `KK_ALLOW_SHELL` | 允许 `use_shell` 管道模式 | `1` |
 | `KK_MAX_OUT_MB` | 单条命令输出上限（MB） | `4` |
 | `KK_MAX_QUEUED` | 离线 out-queue 上限 | `512` |
-| `KK_LOG` | 日志文件路径，留空输出到 stdout | `""` |
+| `KK_LOG` | Agent 日志文件，留空则只输出到 stderr。**轮转与保留由 Agent 自身管理**（A7.4）；勿把 Agent 的 stdout/stderr 重定向到同一路径，否则一个文件两个写入者 | `""` |
 | `KK_LOG_LEVEL` | 日志级别 | `INFO` |
 | `KK_IMAGE` | 上报的镜像名（可选） | `""` |
 | `KK_UPDATE_URL` | 自更新地址（覆盖从服务端推断的 base） | `""` |

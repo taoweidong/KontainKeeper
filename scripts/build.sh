@@ -58,6 +58,8 @@ cp "$REPO_ROOT/agent/deploy/entrypoint-wrapper.sh" "$WORK/kk-entrypoint"
 
 # 3) 生成叠加 Dockerfile：ENTRYPOINT/CMD 均为 exec 形式（JSON 数组），
 #    不产生 shell 形式的歧义行，也不出现 "CMD null" 这类非法指令
+#    注：KK_LOG 由 Agent 独占写入（A7.4），wrapper 不再把 Agent 输出重定向到该路径；
+#    轮转/保留由 Agent 的日志 sink（loguru）负责。监管脚本消息走 KK_SUPERVISOR_LOG（默认 stderr）。
 {
   echo "FROM $BASE_IMAGE"
   echo "COPY kk-agent /opt/kk-agent/kk-agent"

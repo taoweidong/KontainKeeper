@@ -14,6 +14,27 @@ if str(SRC) not in sys.path:
 
 
 @pytest.fixture(autouse=True)
+def _cleanup_log_sinks():
+    """logutil 的 sink 挂在 loguru 全局单例上：用例结束必须移除。
+
+    否则跨用例串扰（上一条日志被下一条的捕获 sink 收到）并泄漏文件 fd
+    （轮转用例会打开真实文件）。
+    """
+    yield
+    from loguru import logger as _logger
+
+    from kk_agent import logutil
+
+    for cfg in list(logutil._CONFIGURED.values()):
+        for sid in list(cfg.get("sinks", [])):
+            try:
+                _logger.remove(sid)
+            except ValueError:
+                pass
+    logutil._CONFIGURED.clear()
+
+
+@pytest.fixture(autouse=True)
 def _reset_update_backoff():
     """updater 的失败退避是**模块级**状态（B6.3）。
 
