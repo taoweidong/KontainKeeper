@@ -43,6 +43,20 @@ const cmdStats = computed(() => {
 
 const brokerOk = computed(() => stats.value?.broker?.connected ?? false);
 
+/** 落后台数 + 当前版本：欢迎页头部一句话「Agent 版本 vX.Y.Z · 落后 N 台」
+ *  —— 没上传过版本时显示「尚无版本」（不是「落后 0 台」）。 */
+const agentVerText = computed(() => {
+  const v = stats.value?.agent_latest_ver ?? "";
+  const n = stats.value?.agents_outdated ?? 0;
+  if (!v) return "尚无版本（去「版本与更新」上传二进制）";
+  return `Agent 版本 ${v} · 落后 ${n} 台`;
+});
+
+/** 跳到「版本与更新」页 */
+function gotoUpdate() {
+  router.push("/hosts/update");
+}
+
 /** 离线主机名单（最多 5 个）：告警卡片下钻用 */
 const offlineHosts = computed(() =>
   hosts.value.filter(h => !h.online).slice(0, 5).map(h => h.pod)
@@ -149,16 +163,13 @@ onMounted(() => {
         </el-card>
       </el-col>
       <el-col :xs="12" :sm="6">
-        <el-card shadow="hover" class="stat-card">
-          <div class="stat-value" :class="brokerOk ? 'text-success' : 'text-danger'">
-            {{ brokerOk ? "正常" : "断开" }}
+        <el-card shadow="hover" class="stat-card clickable" @click="gotoUpdate">
+          <div class="stat-value" :class="{ 'text-warning': (stats?.agents_outdated ?? 0) > 0 }">
+            {{ stats?.agent_latest_ver ? `v${stats.agent_latest_ver}` : "—" }}
           </div>
-          <div class="stat-label">Broker 链路</div>
-          <div class="stat-sub">
-            <template v-if="stats?.broker?.last_msg_age_sec !== null && stats?.broker?.last_msg_age_sec !== undefined">
-              最近消息 {{ ageText(stats.broker.last_msg_age_sec) }}
-            </template>
-            <template v-else>暂无消息</template>
+          <div class="stat-label">Agent 当前版本</div>
+          <div class="stat-sub text-overflow">
+            {{ agentVerText }}
           </div>
         </el-card>
       </el-col>
@@ -254,6 +265,12 @@ onMounted(() => {
 
         <el-card shadow="never" class="panel grow">
           <template #header><span>系统状态</span></template>
+          <div class="sys-row">
+            <span>Broker 链路</span>
+            <span :class="brokerOk ? 'text-success' : 'text-danger'">
+              {{ brokerOk ? "正常" : "断开" }}
+            </span>
+          </div>
           <div class="sys-row">
             <span>服务版本</span><span>{{ health?.version ?? "-" }}</span>
           </div>
@@ -442,6 +459,10 @@ onMounted(() => {
 
 .text-danger {
   color: var(--el-color-danger);
+}
+
+.text-warning {
+  color: var(--el-color-warning);
 }
 
 .text-overflow {

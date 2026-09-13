@@ -31,6 +31,14 @@ export default [
         component: () => import("@/views/host/detail/index.vue"),
         // 详情是「点列表某行进去」的二级页：不出现在侧边栏，但仍可路由跳转
         meta: { title: "主机详情", showLink: false }
+      },
+      {
+        // 版本与更新（D2.4）：上传新版本后唯一的入口。与主机总览并列但不嵌在二级下，
+        // 让运维点开「主机管理」就能直接看到，不会被「详情」二级页挡住。
+        path: "/hosts/update",
+        name: "HostUpdate",
+        component: () => import("@/views/host/update/index.vue"),
+        meta: { title: "版本与更新" }
       }
     ]
   },

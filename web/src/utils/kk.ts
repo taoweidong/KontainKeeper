@@ -85,6 +85,7 @@ export const statusLabel = (s: string): string => {
     done: "已完成",
     failed: "失败",
     timeout: "超时",
-    lost: "结果丢失"
+    lost: "结果丢失",
+    queued: "已排队"
   }[s] || s;
 };

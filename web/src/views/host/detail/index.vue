@@ -13,6 +13,7 @@ import {
 import { CanvasRenderer } from "echarts/renderers";
 
 import { getHost, getHostMetrics, type HostDetail } from "@/api/containers";
+import { upgradeHosts } from "@/api/agent";
 import { exportMetrics } from "@/api/exporting";
 import {
   ageText,
@@ -119,6 +120,7 @@ function onResize() {
 }
 
 const exporting = ref(false);
+const upgrading = ref(false);
 
 /** 导出当前时间窗口的指标曲线（与图上 hours 一致，>24h 走服务端小时聚合表）。 */
 async function onExportMetrics() {
@@ -134,6 +136,36 @@ async function onExportMetrics() {
     exporting.value = false;
   }
 }
+
+/** 单机升级：直接复用选机升级端点，单台与批量走同一条路，UI 语义一致（D2.4）。 */
+async function onUpgradeOne() {
+  if (!detail.value) return;
+  upgrading.value = true;
+  try {
+    const r = await upgradeHosts([detail.value.pod]);
+    if (r.accepted.length) {
+      const a = r.accepted[0];
+      ElMessage.success(a.queued ? `已排队，主机上线后自动补投` : `已下发`);
+    } else if (r.skipped.length) {
+      ElMessage.warning(SKIP_REASON_LABEL[r.skipped[0].reason] || r.skipped[0].reason);
+    }
+    await load();
+  } catch (e: any) {
+    ElMessage.error("升级失败：" + (e?.response?.data?.detail ?? e?.message ?? e));
+  } finally {
+    upgrading.value = false;
+  }
+}
+
+/** 与「版本与更新」页对齐的 skipped 原因文案 */
+const SKIP_REASON_LABEL: Record<string, string> = {
+  not_found: "主机不存在",
+  already_latest: "已是最新",
+  in_flight: "已有升级在途",
+  no_binary: "未上传任何版本",
+  bad_version: "版本号无效",
+  no_broker: "服务端未连 Broker"
+};
 
 watch(hours, () => loadMetrics());
 
@@ -183,6 +215,15 @@ onBeforeUnmount(() => {
             </el-select>
             <el-button @click="load">刷新</el-button>
             <el-button @click="gotoCommand">在此主机执行命令</el-button>
+            <!-- 仅当本机落后于最新版本时显示升级按钮：避免「点了却显示已是最新」的无效路径 -->
+            <el-button
+              v-if="detail.agent_outdated"
+              type="warning"
+              :loading="upgrading"
+              @click="onUpgradeOne"
+            >
+              升级到 {{ detail.latest_agent_ver }}
+            </el-button>
             <el-button type="primary" :loading="exporting" @click="onExportMetrics">
               导出指标
             </el-button>

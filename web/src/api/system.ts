@@ -25,6 +25,12 @@ export type StatsResult = {
     stats: Record<string, number> | null;
     last_msg_age_sec: number | null;
   };
+  /** 当前待分发 Agent 版本（"vX.Y.Z" 形式），空字符串 = 还没上传过版本 */
+  agent_latest_ver?: string;
+  /** 落后于最新版本的主机数；管理员首页/欢迎页用于「落后 N 台」提示 */
+  agents_outdated?: number;
+  /** 升级在途/失败的汇总（pending + queued + failed + timeout + done） */
+  updates?: Record<string, number>;
 };
 
 export const getHealth = () => {

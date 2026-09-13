@@ -11,12 +11,18 @@ export type HostSummary = {
   pod: string;
   image: string;
   agent_ver: string;
+  /** 服务端当前待分发版本：空字符串 = 还没上传过版本，「落后」无从定义 */
+  latest_agent_ver: string;
+  /** 是否落后于 latest_agent_ver（D1.2 引入：详情/列表/总览共用） */
+  agent_outdated: boolean;
   online: boolean;
   age_sec: number;
   cpu: number | null;
   mem_mb: number | null;
   disk_pct: number;
   disk_alert: boolean;
+  /** 主机被标 offline 的原因（updating / stopped / ...），供 UI 区分运维场景 */
+  status_reason: string;
 };
 
 export type HostListResult = {
@@ -24,6 +30,8 @@ export type HostListResult = {
   total: number;
   online: number;
   alerts: number;
+  /** 「最新版本下的落后台数」——与 summary 中 agent_outdated 等价，由后端算好避免前端再过 500 行 */
+  outdated: number;
 };
 
 /** 详情视图：metrics 是最近一帧完整指标（含 disks / procs_top / users） */
@@ -31,6 +39,8 @@ export type HostDetail = {
   pod: string;
   image: string;
   agent_ver: string;
+  latest_agent_ver: string;
+  agent_outdated: boolean;
   hb_interval: number;
   first_seen: number;
   last_seen: number;

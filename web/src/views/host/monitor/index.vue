@@ -133,6 +133,15 @@ function gotoDetail(pod: string) {
   router.push({ name: "HostDetail", params: { pod } });
 }
 
+/** 跳到「版本与更新」页并把已选主机带过去（D2.4：批量升级是跨页动作）。 */
+function gotoUpgrade() {
+  if (!selection.value.length) return;
+  router.push({
+    name: "HostUpdate",
+    query: { pods: selection.value.map(r => r.pod).join(",") }
+  });
+}
+
 /** 整行可点进详情（原只能点主机名链接，命中区域太小）。
  *  必须跳过 selection 列，否则勾选会被误判为进详情。 */
 function onRowClick(row: HostSummary, column: any) {
@@ -228,8 +237,17 @@ onMounted(async () => {
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="Agent" width="100">
-          <template #default="{ row }">{{ row.agent_ver || "-" }}</template>
+        <el-table-column label="Agent" width="140">
+          <template #default="{ row }">
+            <!-- 版本 tag：落后于 latest 时打 warning——一眼看出「哪些要升」（D2.4） -->
+            <el-tag
+              :type="row.agent_outdated ? 'warning' : 'info'"
+              size="small"
+              effect="plain"
+            >
+              {{ row.agent_ver || "-" }}
+            </el-tag>
+          </template>
         </el-table-column>
         <el-table-column label="最近心跳" width="130">
           <template #default="{ row }">{{ ageText(row.age_sec) }}</template>
@@ -261,6 +279,17 @@ onMounted(async () => {
         </el-button>
         <el-button :disabled="!selection.length" @click="openCommandCenter">
           批量执行命令
+        </el-button>
+        <!-- 升级按钮只对选中的落后主机开放：
+             - 全是最新版本时灰着，避免「点了却跳过全部」造成的体验割裂；
+             - 有落后时直接跳到「版本与更新」页并在 query 里带上已选主机，
+               进入页面后 selection 已被预填好。 -->
+        <el-button
+          type="warning"
+          :disabled="!selection.length || !selection.some(h => h.agent_outdated)"
+          @click="gotoUpgrade"
+        >
+          批量升级
         </el-button>
         <el-button :disabled="!selection.length" :loading="exporting" @click="onExport">
           导出选中清单
