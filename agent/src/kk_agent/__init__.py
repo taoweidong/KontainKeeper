@@ -10,6 +10,9 @@
 """
 from .config import AGENT_VER, PROTO_VER
 
-__version__ = "0.2.0"
+# 单一真源（D1.1）：版本号只写在 config.AGENT_VER 一处，它已被 transport 上行帧消费。
+# 曾经这里写死 "0.2.0" 而 config 是 "0.3.0" —— 任何按惯例读 kk_agent.__version__
+# 的脚本/打包元数据都会拿到与真实上报值矛盾的结果。
+__version__ = AGENT_VER
 
 __all__ = ["AGENT_VER", "PROTO_VER", "__version__"]

@@ -517,6 +517,18 @@ async def count_commands(self, pod=None, batch=None, status=None, kind=None) -> 
 
 ### A7 日志体系重构：引入 `loguru` 替换原生 `logging`
 
+> **2026-09-13 已落地**：`cc5d45c`（Agent 侧）+ `3aedd31`（服务端侧）。全量 260 passed + 4 skipped。
+> 两处与本文档的偏离/补充，供后续参照：
+> ① **A7.4 随 Agent 侧提交落地**（原文排在提交 20）：`test_wrapper_never_redirects_agent_output_to_kk_log`
+> 这类静态回归锁必须与 wrapper 改动同批，否则中间提交点是红的。
+> ② 方案未预见但实测撞到的两件事：**patcher 是 Logger 级配置**（`add(patch=…)` 是运行期
+> `TypeError`，必须 `logger.patch()`）；**`InterceptHandler` 的 component 要显式取 `record.name`**
+> （用 `logging.currentframe()` 起栈回溯会落成 `"logging"`，分不清 uvicorn 还是 paho）。
+> 另外 **`bind()` 的上下文必须显式渲染**（两侧格式串都加了 `ctx`）——loguru 的 `extra` 只在
+> JSON 模式可见，不渲染则 `log.bind(host=…)` 在 docker logs 里等于没绑。
+> PyInstaller 冻结验收已实跑（10.18MB，文件与 stderr 两个 sink 均正常），§6 的
+> 「loguru 冻结后行为异常」风险项排除。
+
 #### A7.0 现状盘点（含一个顺带修掉的真实缺陷）
 
 **Agent 现状**
