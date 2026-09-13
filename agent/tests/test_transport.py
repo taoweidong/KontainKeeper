@@ -33,6 +33,18 @@ class _NullLog:
         return lambda *a, **k: None
 
 
+class _Info:
+    """paho publish() 返回的 MQTTMessageInfo 的替身：记录 wait_for_publish 的调用。"""
+
+    def __init__(self, rc, owner):
+        self.rc = rc
+        self._owner = owner
+
+    def wait_for_publish(self, timeout=None):
+        self._owner.waited = timeout
+        return None
+
+
 class FakeClient:
     """记录所有对外调用；publish 的返回码由测试指定。"""
 
@@ -47,6 +59,7 @@ class FakeClient:
         self.reconnect_delay = None
         self.clean_session = None
         self.client_id = None
+        self.waited = None          # announce_update 等 PUBACK 的超时值（B6.1）
 
     def tls_set(self, **kw):
         self.tls_calls.append(kw)
@@ -68,7 +81,7 @@ class FakeClient:
 
     def publish(self, topic, payload, qos=0, retain=False):
         self.published.append({"topic": topic, "payload": payload, "qos": qos, "retain": retain})
-        return type("Info", (), {"rc": self.publish_rc})()
+        return _Info(self.publish_rc, self)
 
     def is_connected(self):
         return self._connected
@@ -224,6 +237,31 @@ def test_queue_overflow_reports_failure(monkeypatch):
     """out-queue 挤爆时必须报 False，好让上层补发失败终态。"""
     tr, fake = make_transport(monkeypatch, publish_rc=mqtt.MQTT_ERR_QUEUE_SIZE)
     assert tr.publish_result({"id": "c1"}) is False
+
+
+# ---- B6.1：自更新前的离线宣告 ----
+
+def test_announce_update_sends_retained_offline_reason_and_waits(monkeypatch):
+    """execv 前发 reason=updating 的 retained 离线帧，并**等 PUBACK**。
+
+    只 publish 不等：execv 会掐断 paho 的发送队列，帧随进程一起消失，
+    服务端只能看到 Broker 补发的 LWT（reason 为空）。
+    """
+    tr, fake = make_transport(monkeypatch, connected=True)
+    tr.announce_update()
+    assert fake.published, "必须发出离线状态帧"
+    frame = fake.published[-1]
+    assert frame["retain"] is True and frame["qos"] == tp.QOS_CMD
+    body = json.loads(frame["payload"])
+    assert body["online"] is False and body["reason"] == "updating"
+    assert fake.waited == 1.0, "必须等 PUBACK，否则帧会随 execv 丢失"
+
+
+def test_announce_update_is_silent_when_disconnected(monkeypatch):
+    """钩子绝不能抛错：未连接时直接返回，且不影响更新主流程。"""
+    tr, fake = make_transport(monkeypatch, connected=False)
+    tr.announce_update()          # 不抛即通过
+    assert fake.published == []
 
 
 def test_connect_subscribes_cmd_and_announces_online(monkeypatch):

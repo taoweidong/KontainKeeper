@@ -358,3 +358,103 @@ def test_update_relative_url_needs_base_warns(tmp_path, caplog):
         assert updater.apply_manifest(cfg, real_log, manifest) is False
     assert target.read_bytes() == before, "拿不到地址时不得落盘"
     assert any("KK_UPDATE_URL" in r.getMessage() for r in caplog.records), caplog.text
+
+
+# ---- B6.4：下载后比对清单 size ----
+
+def test_size_mismatch_rejected_before_sha(tmp_path, monkeypatch):
+    """size 与清单不符即拒（B6.4）：截断/半截响应在 size 上就露馅，比 sha256 更直观。
+
+    sha256 按「实际拿到的字节」算，若只比 sha 会漏判 —— 这里显式把 sha 造对，
+    证明拒绝来自 size 而非 sha。
+    """
+    data = b"abc"                     # 实际 3 字节
+    target = tmp_path / "kk-agent-size"
+    target.write_bytes(b"old")
+    monkeypatch.setattr(updater, "download_binary", lambda *a, **k: data)
+    monkeypatch.setattr(os, "execv", lambda *a: None)
+    cfg = {"token": "t", "update_url": "http://api", "agent_bin": str(target),
+           "update_insecure": False}
+    manifest = {"version": "9.9.9", "sha256": hashlib.sha256(data).hexdigest(),
+                "size": 5, "url": "/x"}          # sha 对得上，只有 size 不符
+    assert updater.apply_manifest_receipt(cfg, None, manifest) == (False, "size_mismatch")
+    assert target.read_bytes() == b"old", "size 不符不得落盘"
+
+
+# ---- B6.3：失败退避 ----
+
+def test_backoff_ladder_caps_at_30min():
+    """退避阶梯 5min → 10min → 30min 封顶。"""
+    updater.reset_update_failure()
+    assert updater.note_update_failure("1") == 300
+    assert updater.note_update_failure("1") == 600
+    assert updater.note_update_failure("1") == 1800
+    assert updater.note_update_failure("1") == 1800, "不得无限增长"
+
+
+def test_update_failure_backoff_skips_same_version(tmp_path, monkeypatch):
+    """同一版本失败后进入退避：不再下载、不再刷日志（B6.3）。
+
+    坏包（sha256 不符）不会自愈，300s 轮询 + 每次上线都重试只会无限重试 + 日志刷屏。
+    """
+    target = tmp_path / "kk-agent-bo"
+    target.write_bytes(b"old")
+    calls = {"n": 0}
+
+    def fake_dl(url, log, insecure=False, max_bytes=None):
+        calls["n"] += 1
+        return b"tampered"           # 8 字节，与清单 size 对齐，只让 sha 不符
+
+    monkeypatch.setattr(updater, "download_binary", fake_dl)
+    monkeypatch.setattr(os, "execv", lambda *a: None)
+    cfg = {"token": "t", "update_url": "http://api", "agent_bin": str(target),
+           "update_insecure": False}
+    bad = {"version": "9.9.9", "sha256": "00" * 32, "size": 8, "url": "/x"}
+
+    assert updater.apply_manifest_receipt(cfg, None, bad) == (False, "sha256_mismatch")
+    assert calls["n"] == 1
+
+    # 退避窗口内：连下载都不发起
+    assert updater.apply_manifest_receipt(cfg, None, bad) == (False, "backoff")
+    assert calls["n"] == 1, "退避期内不得再下载"
+
+    # 版本号变化 → 立刻给一次机会（上传修好的包要能马上生效）
+    ok, reason = updater.apply_manifest_receipt(
+        cfg, None, {"version": "9.9.10", "sha256": "00" * 32, "size": 8, "url": "/x"})
+    assert reason == "sha256_mismatch" and calls["n"] == 2
+
+
+def test_update_backoff_clears_after_success(tmp_path, monkeypatch):
+    """成功后清零退避（换新版本成功即恢复正常节奏）。"""
+    target = tmp_path / "kk-agent-rs"
+    target.write_bytes(b"old")
+    monkeypatch.setattr(updater, "download_binary", lambda *a, **k: b"tampered")
+    monkeypatch.setattr(os, "execv", lambda *a: None)
+    cfg = {"token": "t", "update_url": "http://api", "agent_bin": str(target),
+           "update_insecure": False}
+    updater.apply_manifest(cfg, None,
+                           {"version": "9.9.9", "sha256": "00" * 32, "size": 8, "url": "/x"})
+    assert updater._fail_state["count"] == 1
+
+    good = b"\x7fELF-good"
+    monkeypatch.setattr(updater, "download_binary", lambda *a, **k: good)
+    man = {"version": "9.9.10", "sha256": hashlib.sha256(good).hexdigest(),
+           "size": len(good), "url": "/x"}
+    assert updater.apply_manifest(cfg, None, man) is True
+    assert updater._fail_state["count"] == 0, "成功后必须清零退避"
+
+
+def test_check_update_forwards_restart_hook(monkeypatch):
+    """check_update 必须把 on_before_restart 透传到 apply（B6.1 轮询路径）。"""
+    seen = {}
+    monkeypatch.setattr(updater, "fetch_latest",
+                        lambda *a, **k: {"version": "9.9.9", "url": "/x"})
+
+    def fake_apply(cfg, log, manifest, on_before_restart=None):
+        seen["hook"] = on_before_restart
+        return True
+
+    monkeypatch.setattr(updater, "apply_manifest", fake_apply)
+    hook = lambda: None
+    assert updater.check_update({}, None, hook) is True
+    assert seen["hook"] is hook

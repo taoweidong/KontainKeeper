@@ -113,9 +113,10 @@ def _run_update(tr, cid, cmd, cfg, log):
     """
 
     def before_restart():
-        # B6.1：让服务端能把「正在自更新」与「容器停了」区分开
+        # B6.1：让服务端能把「正在自更新」与「容器停了」区分开。
+        # 用 announce_update（等 PUBACK）而不是裸 publish：execv 会掐断发送队列。
         try:
-            tr.publish_status(False, "updating")
+            tr.announce_update()
         except Exception:
             pass
 
@@ -241,8 +242,12 @@ def run(stop=None, cfg=None, overrides=None):
                 next_hb = now + cfg["interval"] * random.uniform(0.9, 1.1)
 
             if not cfg["update_disabled"] and now >= next_update:
-                kk_updater.spawn_check(cfg, log)
-                next_update = now + cfg["update_interval"]
+                # B6.2 抖动：Agent 随镜像批量部署，500 台启动相位接近，无抖动会
+                # 同一时刻集体拉 8~12MB 二进制（服务端瞬时 ~5GB）并集体断连重连。
+                # 与心跳同款理由，只是幅度不同（检查本身便宜，不必那么保守）。
+                kk_updater.spawn_check(cfg, log,
+                                       on_before_restart=lambda: tr.announce_update())
+                next_update = now + cfg["update_interval"] * random.uniform(0.8, 1.2)
 
             stop.wait(0.5)
     finally:

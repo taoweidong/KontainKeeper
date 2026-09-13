@@ -235,6 +235,27 @@ class Transport:
     def publish_status(self, online, reason=""):
         return self._pub("status", self._status_payload(online, reason), QOS_CMD, True)
 
+    def announce_update(self):
+        """自更新前的优雅离线宣告（B6.1）：发 reason=updating 并**等它真正送达**。
+
+        为什么必须等到 PUBACK，而不是 publish 了就算：execv 会直接替换进程，
+        paho 发送队列里还没出网的帧会随进程一起消失 —— 只 publish 不等，服务端
+        可能既收不到 updating、又只看到 Broker 补发的 LWT（reason 为空），等于白做。
+
+        本方法是钩子，异常一律吞掉：宣告失败绝不允许阻断更新主流程。
+        """
+        try:
+            if not self.cli.is_connected():
+                return
+            payload = self._status_payload(False, "updating")
+            info = self.cli.publish(self.topic("status"), payload, qos=QOS_CMD, retain=True)
+            try:
+                info.wait_for_publish(1.0)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
     def publish_hb(self, metrics, custom=None):
         payload = json.dumps({
             "host": self.host,

@@ -37,6 +37,38 @@ _CHUNK = 256 * 1024
 # 串行化自更新（轮询检查与服务端推送可能并发触发），避免两次下载竞争同一二进制
 _update_lock = threading.Lock()
 
+# 更新失败的指数退避（B6.3）：5min → 10min → 30min 封顶。
+# 不加退避时，面对一个坏包（sha256 不符）或只读磁盘，轮询（300s）与每次上线都会
+# 重试同一版本 —— 无限重试 + 日志刷屏，500 台一起刷还会把服务端打满。
+# 成功或**版本号变化**即清零，所以上传修好的包会立刻得到一次机会，不受退避阻挡。
+FAIL_BACKOFF = (300, 600, 1800)
+_NO_BACKOFF = frozenset({"not_newer", "backoff"})   # 非失败：无更新 / 本身就在退避中
+_fail_state = {"count": 0, "until": 0.0, "ver": ""}
+
+
+def _in_backoff(now=None):
+    now = time.monotonic() if now is None else now
+    return now < _fail_state["until"]
+
+
+def note_update_failure(ver=""):
+    """记一次失败并返回本次退避秒数（模块级，供测试断言）。"""
+    n = _fail_state["count"] + 1
+    wait = FAIL_BACKOFF[min(n, len(FAIL_BACKOFF)) - 1]
+    _fail_state.update(count=n, until=time.monotonic() + wait, ver=str(ver or ""))
+    return wait
+
+
+def reset_update_failure():
+    _fail_state.update(count=0, until=0.0, ver="")
+
+
+def _note_result(ver, ok, reason):
+    if ok:
+        reset_update_failure()
+    elif reason not in _NO_BACKOFF:
+        note_update_failure(ver)
+
 
 class _Null:
     """log=None 时的无操作占位，避免调用方判空。"""
@@ -239,7 +271,22 @@ def apply_manifest_receipt(cfg, log, manifest, on_before_restart=None):
 
     升级是全平台唯一没有回执的操作——服务端不知道自己推的更新有没有生效，
     500 台里失败多少台无从得知。原因码进台账，让失败可查。
+
+    这里是**轮询与推送两条路径的唯一收口**（check_update 与 kind=update 都经此），
+    故失败退避（B6.3）的门禁与记账都放在这一层：同一版本在退避窗口内直接跳过，
+    不再下载、不再刷日志；一旦版本号变化或成功即清零。
     """
+    ver = str((manifest or {}).get("version") or "")
+    if ver and ver == _fail_state["ver"] and _in_backoff():
+        _log(log).debug("update to %s still in backoff, skip", ver)
+        return False, "backoff"
+    ok, reason = _apply_manifest(cfg, log, manifest, on_before_restart)
+    _note_result(ver, ok, reason)
+    return ok, reason
+
+
+def _apply_manifest(cfg, log, manifest, on_before_restart=None):
+    """执行一次完整的下载/校验/替换/重启；不含退避门禁（由外层负责）。"""
     log = _log(log)
     ver = manifest.get("version")
     if not ver or not version_lt(kk_config.AGENT_VER, ver):
@@ -268,6 +315,18 @@ def apply_manifest_receipt(cfg, log, manifest, on_before_restart=None):
         except Exception as e:
             log.warning("download failed: %s", e)
             return False, "http_error"
+        # 先比 size 再比 sha256（B6.4）：截断/半截响应在 size 上就露馅，
+        # 早一步拒绝，失败原因也更直观（sha256 不符看不出「短了多少」）。
+        declared = manifest.get("size")
+        if declared not in (None, ""):
+            try:
+                declared = int(declared)
+            except (TypeError, ValueError):
+                declared = None
+        if declared is not None and len(data) != declared:
+            log.warning("size mismatch: got %d expect %d, refuse to replace",
+                        len(data), declared)
+            return False, "size_mismatch"
         expected = str(manifest.get("sha256") or "")
         if expected and hashlib.sha256(data).hexdigest().lower() != expected.lower():
             log.warning("sha256 mismatch, refuse to replace")
@@ -292,8 +351,11 @@ def apply_manifest_receipt(cfg, log, manifest, on_before_restart=None):
     return True, ""
 
 
-def check_update(cfg, log):
-    """轮询入口：拉清单 → 有更新则应用。设计为在一次性 daemon 线程内调用。"""
+def check_update(cfg, log, on_before_restart=None):
+    """轮询入口：拉清单 → 有更新则应用。设计为在一次性 daemon 线程内调用。
+
+    on_before_restart 会透传到 apply_manifest（B6.1：execv 前宣告 reason=updating）。
+    """
     log = _log(log)
     if cfg.get("update_disabled"):
         return False
@@ -301,14 +363,15 @@ def check_update(cfg, log):
     if not info:
         return False
     try:
-        return apply_manifest(cfg, log, info)
+        return apply_manifest(cfg, log, info, on_before_restart)
     except Exception:
         log.exception("agent self-update failed")
         return False
 
 
-def spawn_check(cfg, log):
-    threading.Thread(target=check_update, args=(cfg, log), daemon=True, name="kk-update").start()
+def spawn_check(cfg, log, on_before_restart=None):
+    threading.Thread(target=check_update, args=(cfg, log, on_before_restart),
+                     daemon=True, name="kk-update").start()
 
 
 def spawn_apply(cfg, log, manifest):

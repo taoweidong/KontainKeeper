@@ -42,6 +42,11 @@ class FakeTransport:
         self.frames.append({"hb": metrics, "custom": custom})
         return True
 
+    def announce_update(self):
+        # B6.1：真实 Transport 会发 reason=updating 的离线帧并等 PUBACK
+        self.frames.append({"announce": "updating"})
+        return True
+
 
 def decode(frames):
     return b"".join(base64.b64decode(f["out_b64"]) for f in frames if "out_b64" in f)
@@ -174,6 +179,32 @@ def test_dispatch_update_failure_receipt_carries_reason(monkeypatch):
         threading.Event().wait(0.05)
     assert tr.frames[-1]["rc"] == 1
     assert b"sha256_mismatch" in decode(tr.frames)
+
+
+def test_dispatch_update_announces_offline_before_restart(monkeypatch):
+    """B6.1：execv 前必须宣告 reason=updating。
+
+    否则服务端只看到 Broker 补发的 LWT（reason 为空），运维分不清「正在自更新」
+    与「容器停了」。
+    """
+    seen = {}
+
+    def spy(cfg, log, manifest, on_before_restart=None):
+        seen["hook"] = on_before_restart
+        if on_before_restart:
+            on_before_restart()          # 真实 apply 在 execv 前调用钩子
+        return True, ""
+
+    monkeypatch.setattr(m.kk_updater, "apply_manifest_receipt", spy)
+    tr = FakeTransport()
+    dispatch = build_runner(tr)
+    dispatch({"id": "c-up-ann", "kind": "update", "version": "9.9.9", "sha256": "x"})
+    for _ in range(200):
+        if any(f.get("done") for f in tr.frames):
+            break
+        threading.Event().wait(0.05)
+    assert seen.get("hook") is not None, "更新必须带 on_before_restart 钩子"
+    assert any(f.get("announce") == "updating" for f in tr.frames), "缺少 reason=updating 宣告"
 
 
 def test_dispatch_collect_requires_items(monkeypatch):
