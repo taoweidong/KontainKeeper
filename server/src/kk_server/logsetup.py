@@ -151,8 +151,12 @@ def setup_logging(settings):
                                      retention=10, compression="gz", **common))
 
     # stdlib 拦截：uvicorn / paho / httpx 的记录统一进 loguru
+    # 根 logger 的级别要跟着 KK_LOG_LEVEL 走，而不是 loguru 官方配方里的 level=0：
+    # 级别过滤在 `isEnabledFor` 阶段就短路，比「先构造成 loguru 记录、再被 sink 按级别
+    # 丢掉」便宜得多 —— aiosqlite 这类库每一次 SQL 都会打一条 DEBUG。
     intercept = InterceptHandler()
-    logging.basicConfig(handlers=[intercept], level=0, force=True)
+    logging.basicConfig(handlers=[intercept],
+                        level=getattr(logging, level, logging.INFO), force=True)
     for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
         lg = logging.getLogger(name)
         lg.handlers = [intercept]
