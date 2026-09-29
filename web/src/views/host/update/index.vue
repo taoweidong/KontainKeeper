@@ -10,7 +10,7 @@
 为什么不在这里做上传：上传是写二进制，单独走 `/agent` 上传面；本页只读「待分发」是哪一个版本，
 避免把上传失败/校验失败/上传一半混进运维主流程。
 */
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 
@@ -22,8 +22,8 @@ import {
   type AgentCurrent,
   type UpdateRow
 } from "@/api/agent";
-import { ageText, statusLabel, statusType, tsText } from "@/utils/kk";
-import { setPoll, usePolls } from "@/utils/kkPoll";
+import { ageText, errText, statusLabel, statusType, tsText } from "@/utils/kk";
+import { usePolls } from "@/utils/kkPoll";
 
 defineOptions({ name: "HostUpdate" });
 
@@ -36,7 +36,17 @@ const interval = ref(10);
 const selection = ref<HostSummary[]>([]);
 const upgrading = ref(false);
 
-usePolls();
+// 作用域版 setPoll：卸载时只清本页注册的 key
+const { setPoll } = usePolls();
+
+/** 表格实例：勾选模型反向同步用（只依赖这两个方法，按结构收窄） */
+const tableRef = ref<{
+  clearSelection: () => void;
+  toggleRowSelection: (row: HostSummary, selected?: boolean) => void;
+}>();
+
+/** ?pods= 预填只应用一次；之后仅当 query 本身变化（watch）才重设，轮询刷新保留用户勾选 */
+let podsPrefilled = false;
 
 /** 把所有 skipped 原因映射成中文标签；后端 controller 里的 reason 集合 */
 const SKIP_REASON_LABEL: Record<string, string> = {
@@ -50,8 +60,9 @@ const SKIP_REASON_LABEL: Record<string, string> = {
 
 const hasLatest = computed(() => !!current.value?.version);
 
-async function load() {
-  loading.value = true;
+/** silent=true 供轮询复用：勾选态与数据原位更新，不闪整页 loading */
+async function load(silent = false) {
+  if (!silent) loading.value = true;
   try {
     const [cur, hosts, upds] = await Promise.all([
       getAgentCurrent(),
@@ -61,21 +72,54 @@ async function load() {
     current.value = cur;
     outdated.value = hosts.items.filter(h => h.agent_outdated);
     updates.value = upds.items;
-    // 从「主机总览」跳过来时 ?pods=web1,web2 预填 selection —— 跨页带选择是更顺手的体验
-    const qpods = String(route.query.pods || "").split(",").map(s => s.trim()).filter(Boolean);
-    if (qpods.length) {
-      selection.value = outdated.value.filter(h => qpods.includes(h.pod));
+    // 轮询刷新保留现有勾选：先把模型对齐到新数据（丢掉已不再落后的主机），再回填表格；
+    // 「?pods= 预填」只在首次加载与 query 本身变化（watch）时应用，不随轮询重设
+    reconcileSelection();
+    if (!podsPrefilled) {
+      podsPrefilled = true;
+      prefillFromQuery();
+    } else {
+      applySelection();
     }
   } catch (e: any) {
-    ElMessage.error("加载升级信息失败：" + (e?.response?.data?.detail ?? e?.message ?? e));
+    ElMessage.error("加载升级信息失败：" + errText(e));
   } finally {
     loading.value = false;
   }
 }
 
-function onSelectionChange(rows: HostSummary[]) {
+/** 用户勾选 / 表头全选 → 模型：两个事件的第一参数都是勾选后的行全集 */
+function onSelect(rows: HostSummary[]) {
   selection.value = rows;
 }
+
+/** 数据刷新后把模型对齐到新行对象：丢掉已不再落后的主机，展示与提交都不引用过期数据 */
+function reconcileSelection() {
+  const pods = new Set(selection.value.map(h => h.pod));
+  selection.value = outdated.value.filter(h => pods.has(h.pod));
+}
+
+/** 换数据后表格内部勾选态会被重置，按模型回填（row-key 用主机唯一标识 pod） */
+function applySelection() {
+  const table = tableRef.value;
+  if (!table) return;
+  table.clearSelection();
+  const pods = new Set(selection.value.map(h => h.pod));
+  for (const h of outdated.value) {
+    if (pods.has(h.pod)) table.toggleRowSelection(h, true);
+  }
+}
+
+/** 跨页带来的 ?pods= 预填（从主机总览「批量升级」跳转），只认当前落后清单里的主机 */
+function prefillFromQuery() {
+  const qpods = String(route.query.pods || "").split(",").map(s => s.trim()).filter(Boolean);
+  if (!qpods.length) return;
+  selection.value = outdated.value.filter(h => qpods.includes(h.pod));
+  applySelection();
+}
+
+/** 仅当 ?pods= 本身变化时才重设勾选；轮询 load() 不触发这里，用户手改的勾选不被冲掉 */
+watch(() => route.query.pods, () => prefillFromQuery());
 
 async function onUpgrade() {
   if (!selection.value.length) {
@@ -112,7 +156,7 @@ async function onUpgrade() {
     selection.value = [];
     await load();
   } catch (e: any) {
-    ElMessage.error("升级失败：" + (e?.response?.data?.detail ?? e?.message ?? e));
+    ElMessage.error("升级失败：" + errText(e));
   } finally {
     upgrading.value = false;
   }
@@ -122,16 +166,18 @@ async function onUpgrade() {
  *  —— 还是要在勾选栏勾一下才真正下发，避免误点把 500 台全推下去 */
 function selectAllOutdated() {
   selection.value = [...outdated.value];
+  applySelection(); // 模型与表格勾选态同步
   ElMessage.info(`已选 ${selection.value.length} 台落后主机；右下角「批量升级」确认后再下发`);
 }
 
 function clearSelection() {
   selection.value = [];
+  tableRef.value?.clearSelection(); // 模型与表格勾选态同步
 }
 
 onMounted(async () => {
   await load();
-  setPoll("host-update", load, interval.value * 1000);
+  setPoll("host-update", () => load(true), interval.value * 1000);
 });
 </script>
 
@@ -150,20 +196,23 @@ onMounted(async () => {
             </span>
           </div>
           <div class="kk-actions">
-            <el-select v-model="interval" style="width: 120px" @change="(v: any) => setPoll('host-update', load, (v as number) * 1000)">
+            <el-select v-model="interval" style="width: 120px" @change="(v: any) => setPoll('host-update', () => load(true), (v as number) * 1000)">
               <el-option label="5 秒" :value="5" />
               <el-option label="10 秒" :value="10" />
               <el-option label="30 秒" :value="30" />
             </el-select>
-            <el-button @click="load">刷新</el-button>
+            <el-button @click="load()">刷新</el-button>
           </div>
         </div>
       </template>
 
       <el-table
+        ref="tableRef"
         :data="outdated"
-        @selection-change="onSelectionChange"
+        row-key="pod"
         class="kk-fill-table"
+        @select="onSelect"
+        @select-all="onSelect"
       >
         <el-table-column type="selection" width="46" />
         <el-table-column label="主机" min-width="180">

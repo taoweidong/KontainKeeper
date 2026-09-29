@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 
 import { listAudit, parseDetail, type AuditRow } from "@/api/audit";
 import { exportAudit } from "@/api/exporting";
-import { downloadBlob, fileStamp, tsText } from "@/utils/kk";
+import { downloadBlob, errText, fileStamp, tsText } from "@/utils/kk";
 
 defineOptions({ name: "AuditLog" });
 
@@ -14,18 +14,6 @@ const total = ref(0);
 const keyword = ref("");
 const limit = ref(200);
 const offset = ref(0);
-
-/** 关键字仍走前端过滤：审计单页 1000 条上限，且后端未做该维度索引 */
-const filtered = computed(() => {
-  const kw = keyword.value.trim().toLowerCase();
-  if (!kw) return rows.value;
-  return rows.value.filter(
-    r =>
-      r.actor.toLowerCase().includes(kw) ||
-      r.action.toLowerCase().includes(kw) ||
-      (r.detail || "").toLowerCase().includes(kw)
-  );
-});
 
 const pageNo = computed({
   get: () => Math.floor(offset.value / limit.value) + 1,
@@ -37,15 +25,34 @@ const pageNo = computed({
 async function load() {
   loading.value = true;
   try {
-    const data = await listAudit({ limit: limit.value, offset: offset.value });
+    // 关键字下推到后端（store._audit_filters）：与导出共用同一套语义，所见即所得；
+    // 前端过滤会让 total/分页与导出范围对不上（评审 P1）
+    const data = await listAudit({
+      limit: limit.value,
+      offset: offset.value,
+      keyword: keyword.value.trim() || undefined
+    });
     rows.value = data.items;
     total.value = data.total;
   } catch (e: any) {
-    ElMessage.error("加载审计日志失败：" + (e?.message ?? e));
+    ElMessage.error("加载审计日志失败：" + errText(e));
   } finally {
     loading.value = false;
   }
 }
+
+// 300ms 防抖：输入停顿才触发查询，避免每敲一个字符打一次后端
+let kwTimer: ReturnType<typeof setTimeout> | null = null;
+watch(keyword, () => {
+  if (kwTimer) clearTimeout(kwTimer);
+  kwTimer = setTimeout(() => {
+    offset.value = 0;
+    load();
+  }, 300);
+});
+onBeforeUnmount(() => {
+  if (kwTimer) clearTimeout(kwTimer);
+});
 
 function onPageChange(p: number) {
   offset.value = (p - 1) * limit.value;
@@ -75,7 +82,7 @@ async function onExport() {
     });
     downloadBlob(blob, `审计日志_${fileStamp()}.csv`);
   } catch (e: any) {
-    ElMessage.error("导出失败：" + (e?.message ?? e));
+    ElMessage.error("导出失败：" + errText(e));
   } finally {
     exporting.value = false;
   }
@@ -108,7 +115,7 @@ onMounted(load);
             <el-option label="最近 200 条" :value="200" />
             <el-option label="最近 500 条" :value="500" />
           </el-select>
-          <el-button :loading="loading" @click="load">刷新</el-button>
+          <el-button :loading="loading" @click="load()">刷新</el-button>
           <el-button type="primary" :loading="exporting" @click="onExport">
             导出 CSV
           </el-button>
@@ -117,7 +124,7 @@ onMounted(load);
     </template>
 
     <div class="kk-page__body">
-      <el-table v-loading="loading" :data="filtered" size="small" class="kk-fill-table">
+      <el-table v-loading="loading" :data="rows" size="small" class="kk-fill-table">
       <el-table-column prop="id" label="#" width="80" />
       <el-table-column label="时间" width="170">
         <template #default="{ row }">{{ tsText(row.ts) }}</template>
@@ -162,12 +169,4 @@ onMounted(load);
   </el-card>
 </template>
 
-<style scoped>
-.kk-pager {
-  display: flex;
-  justify-content: flex-end;
-  padding-top: 10px;
-}
-</style>
-
-<!-- 通用类（kk-toolbar/kk-actions/kk-kv/kk-sub）统一在 style/kk.scss -->
+<!-- 通用类（kk-toolbar/kk-actions/kk-kv/kk-pager/kk-sub）统一在 style/kk.scss -->

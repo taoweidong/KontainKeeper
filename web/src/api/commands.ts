@@ -15,7 +15,9 @@ export type CommandRow = {
   id: string;
   pod: string;
   kind: string;
-  argv: string[] | Record<string, any> | null;
+  /** 列表接口不解析 argv，原样返回入库文本：可能是 JSON 文本或原始命令串；
+   *  单条接口（GET /commands/{id}）才 json.loads 成数组/结构体 */
+  argv: string | string[] | Record<string, any> | null;
   timeout: number;
   status: "pending" | "sent" | "running" | "done" | "failed" | "timeout" | "lost";
   created_by: string;

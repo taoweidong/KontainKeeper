@@ -34,6 +34,15 @@ export const mbText = (mb?: number | null): string => {
 export const numText = (v?: number | null, digits = 1): string =>
   v === null || v === undefined ? "-" : Number(v).toFixed(digits);
 
+/** 命令执行耗时（毫秒 → 秒，两位小数）：执行历史与总览最近命令共用一种口径 */
+export const elapsedText = (ms?: number | null): string =>
+  ms === null || ms === undefined ? "-" : `${numText(ms / 1000, 2)} s`;
+
+/** 统一的后端错误取词：优先取 FastAPI detail（后端文案是中文），其次 message。
+ *  各页曾各自内联 `e?.response?.data?.detail ?? e?.message ?? e`，错误文案口径不一。 */
+export const errText = (e: any): string =>
+  e?.response?.data?.detail ?? e?.message ?? String(e);
+
 /** 命令状态 → Element Plus 标签类型 */
 export const statusType = (s: string): "success" | "danger" | "info" | "warning" | "primary" => {
   switch (s) {

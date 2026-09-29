@@ -10,6 +10,7 @@ import { ElMessage } from "element-plus";
 
 import { createCommand, listCollectItems } from "@/api/commands";
 import { listHosts, type HostSummary } from "@/api/containers";
+import { errText } from "@/utils/kk";
 import { confirmDispatch } from "@/utils/kkConfirm";
 import CommandHistory from "../components/CommandHistory.vue";
 import CommandWorkbench from "../components/CommandWorkbench.vue";
@@ -45,10 +46,6 @@ async function loadItems() {
   } catch {
     items.value = ["cpu", "mem", "disk", "disk_io", "net", "proc", "user", "sys"];
   }
-}
-
-function errText(e: any): string {
-  return e?.response?.data?.detail ?? e?.message ?? String(e);
 }
 
 async function submitCollect() {

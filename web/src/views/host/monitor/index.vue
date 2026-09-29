@@ -6,8 +6,8 @@ import { ElMessage } from "element-plus";
 import { listHosts, type HostSummary } from "@/api/containers";
 import { createCommand, listCollectItems } from "@/api/commands";
 import { exportHosts } from "@/api/exporting";
-import { ageText, downloadBlob, fileStamp, mbText, numText, tsText } from "@/utils/kk";
-import { setPoll, usePolls } from "@/utils/kkPoll";
+import { ageText, downloadBlob, errText, fileStamp, mbText, numText, tsText } from "@/utils/kk";
+import { usePolls } from "@/utils/kkPoll";
 
 defineOptions({ name: "HostMonitor" });
 
@@ -33,6 +33,9 @@ const dialog = reactive({
 });
 const selection = ref<HostSummary[]>([]);
 
+// 作用域版 setPoll：卸载时只清本页注册的 key（此前漏调 usePolls，切页后 host-monitor 轮询不会停）
+const { setPoll } = usePolls();
+
 const filtered = computed(() => {
   const kw = keyword.value.trim().toLowerCase();
   return rows.value.filter(r => {
@@ -44,8 +47,9 @@ const filtered = computed(() => {
   });
 });
 
-async function load() {
-  loading.value = true;
+/** silent=true 供轮询复用：表格数据原位更新，不闪整页 loading */
+async function load(silent = false) {
+  if (!silent) loading.value = true;
   try {
     const data = await listHosts("summary");
     rows.value = data.items;
@@ -53,7 +57,7 @@ async function load() {
     alerts.value = data.alerts;
     lastLoadedAt.value = Math.floor(Date.now() / 1000);
   } catch (e: any) {
-    ElMessage.error("加载主机列表失败：" + (e?.message ?? e));
+    ElMessage.error("加载主机列表失败：" + errText(e));
   } finally {
     loading.value = false;
   }
@@ -61,7 +65,7 @@ async function load() {
 
 function restartTimer() {
   // 0 = 不自动刷新；setPoll 对同名 key 是覆盖，不会叠加定时器
-  setPoll("host-monitor", load, interval.value * 1000);
+  setPoll("host-monitor", () => load(true), interval.value * 1000);
 }
 
 watch(interval, restartTimer);
@@ -78,7 +82,7 @@ async function onExport() {
   try {
     downloadBlob(await exportHosts(), `主机清单_${fileStamp()}.csv`);
   } catch (e: any) {
-    ElMessage.error("导出失败：" + (e?.message ?? e));
+    ElMessage.error("导出失败：" + errText(e));
   } finally {
     exporting.value = false;
   }
@@ -90,10 +94,21 @@ async function openCollect() {
     return;
   }
   if (!collectItems.value.length) {
-    collectItems.value = (await listCollectItems()).items;
+    try {
+      collectItems.value = (await listCollectItems()).items;
+    } catch (e: any) {
+      ElMessage.error("加载采集项失败：" + errText(e));
+      return; // 采集项拿不到就不开弹窗，避免勾选区空白
+    }
   }
   dialog.items = ["cpu", "mem", "disk"];
   dialog.visible = true;
+}
+
+/** 行级「采集」：单台主机等价于「勾选这一台 → 批量采集」的快捷路径 */
+function collectOne(row: HostSummary) {
+  selection.value = [row];
+  openCollect();
 }
 
 async function submitCollect() {
@@ -112,7 +127,7 @@ async function submitCollect() {
     dialog.visible = false;
     router.push({ name: "CommandCollect" });
   } catch (e: any) {
-    ElMessage.error("下发失败：" + (e?.response?.data?.detail ?? e?.message ?? e));
+    ElMessage.error("下发失败：" + errText(e));
   } finally {
     dialog.submitting = false;
   }
@@ -185,7 +200,7 @@ onMounted(async () => {
               <el-option label="30 秒" :value="30" />
               <el-option label="不自动刷新" :value="0" />
             </el-select>
-            <el-button :loading="loading" @click="load">刷新</el-button>
+            <el-button :loading="loading" @click="load()">刷新</el-button>
             <el-button type="primary" :loading="exporting" @click="onExport">
               导出清单
             </el-button>
@@ -255,16 +270,7 @@ onMounted(async () => {
         <el-table-column label="操作" width="150" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="gotoDetail(row.pod)">详情</el-button>
-            <el-button
-              link
-              type="primary"
-              @click="
-                selection = [row];
-                openCollect();
-              "
-            >
-              采集
-            </el-button>
+            <el-button link type="primary" @click="collectOne(row)">采集</el-button>
           </template>
         </el-table-column>
         <template #empty>

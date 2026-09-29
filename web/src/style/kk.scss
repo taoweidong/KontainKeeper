@@ -205,6 +205,13 @@
   border-radius: 4px;
 }
 
+/* 分页条：右对齐 + 与表格留出间距（执行历史 / 审计共用，原各页 scoped 重复定义） */
+.kk-pager {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 10px;
+}
+
 /* 审计页：明细键值对 */
 .kk-kv {
   display: inline-block;

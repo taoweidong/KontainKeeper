@@ -6,8 +6,8 @@ import { ElMessage } from "element-plus";
 import { listHosts, type HostSummary } from "@/api/containers";
 import { getHealth, getStats, type HealthResult, type StatsResult } from "@/api/system";
 import { listCommands, type CommandRow } from "@/api/commands";
-import { ageText, durText, statusLabel, statusType, tsText } from "@/utils/kk";
-import { setPoll, usePolls } from "@/utils/kkPoll";
+import { ageText, durText, elapsedText, statusLabel, statusType, tsText } from "@/utils/kk";
+import { usePolls } from "@/utils/kkPoll";
 import { useRenderIcon } from "@/components/ReIcon/src/hooks";
 import MonitorIcon from "~icons/ri/dashboard-2-line";
 import CommandIcon from "~icons/ri/terminal-box-line";
@@ -24,8 +24,8 @@ const alerts = ref(0);
 const stats = ref<StatsResult | null>(null);
 const health = ref<HealthResult | null>(null);
 const recentCmds = ref<CommandRow[]>([]);
-// 卸载时统一清轮询（漏一处就是「切页后仍在刷接口」）
-usePolls();
+// 卸载时统一清轮询（漏一处就是「切页后仍在刷接口」）；作用域版只清本页注册的 key
+const { setPoll } = usePolls();
 
 const offline = computed(() => hosts.value.length - online.value);
 
@@ -66,8 +66,9 @@ const alertHosts = computed(() =>
   hosts.value.filter(h => h.disk_alert).slice(0, 5).map(h => h.pod)
 );
 
-async function load() {
-  loading.value = true;
+/** silent=true 供轮询复用：数据原位更新，不闪整页 loading（交互流畅度，评审 P3） */
+async function load(silent = false) {
+  if (!silent) loading.value = true;
   try {
     const [hostData, statsData, cmdData, healthData] = await Promise.all([
       listHosts("summary"),
@@ -121,8 +122,8 @@ function goHost(pod: string) {
 
 onMounted(() => {
   load();
-  // 汇总页 10s 轮询：给个「页面活着」的信号即可，不必更密
-  setPoll("welcome", load, 10 * 1000);
+  // 汇总页 10s 轮询：给个「页面活着」的信号即可，不必更密；静默刷新不闪 loading
+  setPoll("welcome", () => load(true), 10 * 1000);
 });
 </script>
 
@@ -183,7 +184,7 @@ onMounted(() => {
             <div class="panel-header">
               <span>最近命令</span>
               <el-button link type="primary" @click="go('/command/shell')">
-                命令中心 →
+                进命令中心
               </el-button>
             </div>
           </template>
@@ -212,9 +213,7 @@ onMounted(() => {
               </template>
             </el-table-column>
             <el-table-column label="耗时" width="90">
-              <template #default="{ row }">
-                {{ row.elapsed_ms !== null && row.elapsed_ms !== undefined ? `${row.elapsed_ms}ms` : "-" }}
-              </template>
+              <template #default="{ row }">{{ elapsedText(row.elapsed_ms) }}</template>
             </el-table-column>
             <template #empty>暂无命令记录，去命令中心下发第一条</template>
           </el-table>
@@ -256,7 +255,7 @@ onMounted(() => {
             <div class="stat-sub" style="margin-top: 8px">
               共 {{ offline }} 台离线，
               <el-link type="primary" :underline="false" @click="go('/hosts/monitor')">
-                查看全部 →
+                查看全部
               </el-link>
             </div>
           </template>

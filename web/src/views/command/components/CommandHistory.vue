@@ -18,8 +18,8 @@ import {
   type CommandRow
 } from "@/api/commands";
 import { exportCommands } from "@/api/exporting";
-import { downloadBlob, fileStamp, numText, statusLabel, statusType, tsText } from "@/utils/kk";
-import { clearPolls, setPoll, usePolls } from "@/utils/kkPoll";
+import { downloadBlob, elapsedText, errText, fileStamp, statusLabel, statusType, tsText } from "@/utils/kk";
+import { usePolls } from "@/utils/kkPoll";
 
 defineOptions({ name: "CommandHistory" });
 
@@ -41,11 +41,8 @@ const exporting = ref(false);
 
 const out = reactive({ visible: false, title: "", text: "", loading: false, id: "" });
 
-usePolls();
-
-function errText(e: any): string {
-  return e?.response?.data?.detail ?? e?.message ?? String(e);
-}
+// 作用域版 setPoll/clearPoll：卸载只清本组件注册的 key，不再误清其他页面的轮询
+const { setPoll, clearPoll } = usePolls();
 
 async function loadCommands(silent = false) {
   if (!silent) loading.value = true;
@@ -76,7 +73,7 @@ async function loadBatches() {
 
 /** 自适应轮询：有未终态命令时 3s，否则 10s */
 function restartTimer() {
-  if (!autoRefresh.value) return clearPolls();
+  if (!autoRefresh.value) return clearPoll(POLL_KEY);
   const hasActive = rows.value.some(r =>
     ["pending", "sent", "running"].includes(r.status)
   );
@@ -193,6 +190,8 @@ async function onExport() {
 
 function argvPreview(argv: CommandRow["argv"]): string {
   if (!argv) return "-";
+  // 列表接口不解析 argv：字符串（命令原文或 JSON 文本）直接展示，不再 JSON 化
+  if (typeof argv === "string") return argv;
   if (Array.isArray(argv)) return argv.join(" ");
   if (typeof argv === "object") {
     const o = argv as Record<string, any>;
@@ -258,7 +257,7 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
           </el-select>
           <el-checkbox
             v-model="autoRefresh"
-            @change="v => (v ? restartTimer() : clearPolls())"
+            @change="v => (v ? restartTimer() : clearPoll(POLL_KEY))"
           >
             自动刷新
           </el-checkbox>
@@ -303,9 +302,7 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
         <template #default="{ row }">{{ row.rc === null ? "-" : row.rc }}</template>
       </el-table-column>
       <el-table-column label="耗时" width="90">
-        <template #default="{ row }">
-          {{ row.elapsed_ms === null ? "-" : numText(row.elapsed_ms / 1000, 2) + " s" }}
-        </template>
+        <template #default="{ row }">{{ elapsedText(row.elapsed_ms) }}</template>
       </el-table-column>
       <el-table-column label="输出" min-width="180" show-overflow-tooltip>
         <template #default="{ row }">
@@ -354,12 +351,6 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
 </template>
 
 <style scoped>
-.kk-pager {
-  display: flex;
-  justify-content: flex-end;
-  padding-top: 10px;
-}
-
 .kk-out-scroll {
   height: 100%;
 }

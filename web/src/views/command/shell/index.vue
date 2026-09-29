@@ -15,6 +15,7 @@ import { ElMessage } from "element-plus";
 
 import { createCommand } from "@/api/commands";
 import { listHosts, type HostSummary } from "@/api/containers";
+import { errText } from "@/utils/kk";
 import { confirmDispatch } from "@/utils/kkConfirm";
 import CommandHistory from "../components/CommandHistory.vue";
 import CommandWorkbench from "../components/CommandWorkbench.vue";
@@ -44,12 +45,8 @@ async function loadHosts() {
   try {
     hosts.value = (await listHosts("summary")).items;
   } catch (e: any) {
-    ElMessage.error("加载主机列表失败：" + (e?.message ?? e));
+    ElMessage.error("加载主机列表失败：" + errText(e));
   }
-}
-
-function errText(e: any): string {
-  return e?.response?.data?.detail ?? e?.message ?? String(e);
 }
 
 /** 输入状态同步到 query（replace 不污染后退栈）：刷新与分享不丢 */
@@ -133,7 +130,9 @@ onMounted(async () => {
             <el-input
               v-model="shellForm.cmdline"
               placeholder="与在主机上直接敲命令一致：cd /root && pwd、ps aux | grep node 均可"
-              @keyup.enter="submitShell"
+              @keydown.enter.exact.prevent="submitShell"
+              @keydown.ctrl.enter.prevent="submitShell"
+              @keydown.meta.enter.prevent="submitShell"
             />
             <div class="kk-sub">
               整条命令经 sh -c 执行，支持管道 / 重定向 / && / 变量展开；
@@ -146,7 +145,9 @@ onMounted(async () => {
             v-model="shellForm.argvText"
             type="textarea"
             :rows="3"
-            placeholder="每行一个参数，例如：&#10;/bin/ls&#10;-lh&#10;/var/log"
+            placeholder="每行一个参数，例如：&#10;/bin/ls&#10;-lh&#10;/var/log&#10;（Ctrl / Cmd + Enter 直接下发）"
+            @keydown.ctrl.enter.prevent="submitShell"
+            @keydown.meta.enter.prevent="submitShell"
           />
         </el-form-item>
         <el-form-item label="超时">

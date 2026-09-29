@@ -18,6 +18,7 @@ import { exportMetrics } from "@/api/exporting";
 import {
   ageText,
   downloadBlob,
+  errText,
   fileStamp,
   mbText,
   numText,
@@ -25,7 +26,7 @@ import {
   statusType,
   tsText
 } from "@/utils/kk";
-import { setPoll, usePolls } from "@/utils/kkPoll";
+import { usePolls } from "@/utils/kkPoll";
 
 defineOptions({ name: "HostDetail" });
 
@@ -34,7 +35,8 @@ echarts.use([LineChart, GridComponent, TooltipComponent, LegendComponent, Canvas
 const route = useRoute();
 const router = useRouter();
 const pod = computed(() => String(route.params.pod || ""));
-usePolls();
+// 作用域版 setPoll：卸载时只清本页注册的 key
+const { setPoll } = usePolls();
 
 const loading = ref(false);
 const detail = ref<HostDetail | null>(null);
@@ -60,8 +62,13 @@ const descCols = computed(() => (winWidth.value >= 1200 ? 4 : 2));
 function renderChart(series: Array<{ ts: number; cpu: number | null; mem_mb: number | null }>) {
   if (!chartEl.value) return;
   if (!chart.value) chart.value = echarts.init(chartEl.value);
+  // x 轴刻度随窗口变化：跨天窗口（近 7 天）必须带「月-日」，否则一屏全是重复的钟点
+  const fmt: Intl.DateTimeFormatOptions =
+    hours.value > 24
+      ? { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }
+      : { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false };
   const times = series.map(p =>
-    new Date(p.ts * 1000).toLocaleTimeString("zh-CN", { hour12: false })
+    new Date(p.ts * 1000).toLocaleString("zh-CN", fmt)
   );
   chart.value.setOption({
     tooltip: { trigger: "axis" },
@@ -98,17 +105,18 @@ async function loadMetrics() {
     const data = await getHostMetrics(pod.value, hours.value);
     renderChart(data.series);
   } catch (e: any) {
-    ElMessage.error("加载指标序列失败：" + (e?.message ?? e));
+    ElMessage.error("加载指标序列失败：" + errText(e));
   }
 }
 
-async function load() {
+/** silent=true 供轮询复用：详情与曲线原位更新，不闪整页 loading */
+async function load(silent = false) {
   if (!pod.value) return;
-  loading.value = true;
+  if (!silent) loading.value = true;
   try {
     detail.value = await getHost(pod.value);
   } catch (e: any) {
-    ElMessage.error("加载主机详情失败：" + (e?.message ?? e));
+    ElMessage.error("加载主机详情失败：" + errText(e));
   } finally {
     loading.value = false;
   }
@@ -131,7 +139,7 @@ async function onExportMetrics() {
       `指标_${pod.value}_${hours.value}h_${fileStamp()}.csv`
     );
   } catch (e: any) {
-    ElMessage.error("导出失败：" + (e?.message ?? e));
+    ElMessage.error("导出失败：" + errText(e));
   } finally {
     exporting.value = false;
   }
@@ -151,7 +159,7 @@ async function onUpgradeOne() {
     }
     await load();
   } catch (e: any) {
-    ElMessage.error("升级失败：" + (e?.response?.data?.detail ?? e?.message ?? e));
+    ElMessage.error("升级失败：" + errText(e));
   } finally {
     upgrading.value = false;
   }
@@ -177,7 +185,7 @@ function gotoCommand() {
 onMounted(async () => {
   await load();
   // 详情与图表 30s：曲线不需要秒级新鲜度
-  setPoll("host-detail", load, 30000);
+  setPoll("host-detail", () => load(true), 30000);
   window.addEventListener("resize", onResize);
 });
 
@@ -213,7 +221,7 @@ onBeforeUnmount(() => {
               <el-option label="近 24 小时" :value="24" />
               <el-option label="近 7 天" :value="168" />
             </el-select>
-            <el-button @click="load">刷新</el-button>
+            <el-button @click="load()">刷新</el-button>
             <el-button @click="gotoCommand">在此主机执行命令</el-button>
             <!-- 仅当本机落后于最新版本时显示升级按钮：避免「点了却显示已是最新」的无效路径 -->
             <el-button
@@ -257,8 +265,9 @@ onBeforeUnmount(() => {
 
       <div ref="chartEl" class="kk-chart" />
 
+      <!-- 与总览页同族的响应式栅格（:xs/:lg）：1366 笔记本窄屏不再挤压 -->
       <el-row :gutter="16">
-        <el-col :span="12">
+        <el-col :xs="24" :lg="12">
           <h4 class="kk-h4">磁盘</h4>
           <el-table :data="disks" size="small" max-height="220">
             <el-table-column prop="mount" label="挂载点" min-width="120" />
@@ -277,7 +286,7 @@ onBeforeUnmount(() => {
             </el-table-column>
           </el-table>
         </el-col>
-        <el-col :span="12">
+        <el-col :xs="24" :lg="12">
           <h4 class="kk-h4">网卡速率（MB/s）</h4>
           <el-table :data="net" size="small" max-height="220">
             <el-table-column prop="nic" label="网卡" min-width="120" />
@@ -297,7 +306,7 @@ onBeforeUnmount(() => {
       </el-row>
 
       <el-row :gutter="16" class="kk-mt">
-        <el-col :span="14">
+        <el-col :xs="24" :lg="14">
           <h4 class="kk-h4">Top 进程（按 CPU）</h4>
           <el-table :data="procs" size="small" max-height="260">
             <el-table-column prop="pid" label="PID" width="80" />
@@ -311,7 +320,7 @@ onBeforeUnmount(() => {
             </el-table-column>
           </el-table>
         </el-col>
-        <el-col :span="10">
+        <el-col :xs="24" :lg="10">
           <h4 class="kk-h4">登录用户</h4>
           <el-table :data="users" size="small" max-height="260">
             <el-table-column prop="name" label="用户" width="110" />
