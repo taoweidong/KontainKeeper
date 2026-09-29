@@ -49,6 +49,10 @@ SWEEP_INTERVAL = 30
 # 心跳丢失宽限：status 的 retained online 只有在 Broker 崩溃且没发 LWT 时才会失真，
 # 用「N 倍心跳周期」兜底把这种僵尸在线判成离线。
 OFFLINE_GRACE = 180
+# 同类安全审计的最小落库间隔（秒）：ip_rejected / interval_violation 这类事件的
+# 频率由**外部来源**控制，逐帧落库等于把审计表交给攻击者灌（P0：audit 曾无保留
+# 策略，两者叠加就是磁盘 DoS）。同 key 60s 一条足够溯源，stats 计数仍逐帧累加。
+AUDIT_THROTTLE = 60
 
 
 class MqttBridge:
@@ -68,6 +72,8 @@ class MqttBridge:
         # （E2E 实测：200KB 输出 5 块只落库 2-4 块且 truncated=0）。
         # asyncio.Lock 按 await 顺序唤醒，task 启动序=帧到达序，加锁即恢复有序。
         self._result_locks = {}
+        # 上次各类限速审计的落库时间（key -> ts）：只在事件循环线程读写，无需加锁
+        self._audit_ts = {}
         # C5 可观测性：面板只能从这些计数看出「链路是不是活的」——
         # 心跳在涨说明 Agent 在报，cmd_failed 在涨说明发布侧出了问题。
         self.stats = {"status": 0, "hb": 0, "result": 0, "rejected": 0,
@@ -78,6 +84,8 @@ class MqttBridge:
                       # 发现「某批机器被误配成 1s 上报」的唯一手段
                       "interval_violation": 0,
                       "last_msg_ts": 0, "started_at": int(time.time())}
+        # _result_locks 的最近使用时间（cid -> ts）：sweep 周期回收永不到终态的条目
+        self._result_lock_ts = {}
 
         self.cli = mqtt.Client(
             mqtt.CallbackAPIVersion.VERSION2,
@@ -195,9 +203,25 @@ class MqttBridge:
         if not task.cancelled() and task.exception():
             log.error("桥接处理帧失败: %s", task.exception())
 
+    def _audit_throttled(self, key):
+        """外部可控的高频审计事件限速：同 key 在 AUDIT_THROTTLE 秒内只落第一条。
+
+        返回 True 表示本次应跳过落库。key 必须取有界维度（actor/action/host），
+        不能带攻击者可随机的 id，否则这个 dict 自己就成了无界增长点。
+        """
+        now = int(time.time())
+        last = self._audit_ts.get(key, 0)
+        self._audit_ts[key] = now
+        if len(self._audit_ts) > 4096:   # 双保险：key 维度写错时兜底收缩
+            cutoff = now - AUDIT_THROTTLE * 4
+            self._audit_ts = {k: v for k, v in self._audit_ts.items() if v > cutoff}
+        return now - last < AUDIT_THROTTLE
+
     # ---- 三类上行帧（事件循环线程）----
     async def _on_ip_rejected(self, host, body):
         """白名单外上报的审计落库（v3 接入管控，替代原 token 拒绝审计）。"""
+        if self._audit_throttled(("ip_rejected", host, str(body.get("ip") or ""))):
+            return
         await self.store.add_audit("mqtt", "ip_rejected",
                              {"host": host, "ip": str(body.get("ip") or ""),
                               "kind": "status" if "online" in body else "hb"})
@@ -205,8 +229,9 @@ class MqttBridge:
     async def _on_status(self, host, body):
         if int(body.get("proto_ver") or 0) != self.proto_ver:
             self.stats["rejected"] += 1
-            await self.store.add_audit("mqtt", "proto_mismatch",
-                                 {"host": host, "proto_ver": body.get("proto_ver")})
+            if not self._audit_throttled(("proto_mismatch", host)):
+                await self.store.add_audit("mqtt", "proto_mismatch",
+                                     {"host": host, "proto_ver": body.get("proto_ver")})
             log.bind(host=host).warning(
                 "协议版本不匹配 got=%s want=%s，忽略该帧",
                 body.get("proto_ver"), self.proto_ver)
@@ -231,7 +256,8 @@ class MqttBridge:
         if not await self.store.get_container(host):
             # 没上线过的主机直接发心跳：多半是伪造或 status 帧丢了，不入库
             self.stats["rejected"] += 1
-            await self.store.add_audit("mqtt", "hb_unknown_host", {"host": host})
+            if not self._audit_throttled(("hb_unknown_host", host)):
+                await self.store.add_audit("mqtt", "hb_unknown_host", {"host": host})
             return
         await self.store.record_hb(host, body)
         self.stats["hb"] += 1
@@ -252,9 +278,11 @@ class MqttBridge:
             return
         if interval and interval < floor:
             self.stats["interval_violation"] += 1
-            await self.store.add_audit("mqtt", "interval_violation",
-                                       {"host": host, "interval": interval,
-                                        "min": floor})
+            # 误配 1s 上报时这里是每秒一条审计：不限速就与 ip_rejected 同型的灌库路径
+            if not self._audit_throttled(("interval_violation", host)):
+                await self.store.add_audit("mqtt", "interval_violation",
+                                           {"host": host, "interval": interval,
+                                            "min": floor})
             log.bind(host=host).warning("上报间隔低于下限 interval=%ss min=%ss",
                                         interval, floor)
 
@@ -271,17 +299,23 @@ class MqttBridge:
         lock = self._result_locks.get(cid)
         if lock is None:
             lock = self._result_locks[cid] = asyncio.Lock()
+        # 最近使用时间：永不回 done 的命令（unknown/mismatch/半路失联）靠 sweep 兜底
+        # 回收，否则 _result_locks 随机 id 灌进来只增不减（评审 P2）
+        self._result_lock_ts[cid] = int(time.time())
         async with lock:
             cmd = await self.store.get_command(cid)
             if cmd is None:
                 self.stats["rejected"] += 1
-                await self.store.add_audit("mqtt", "result_unknown_cmd", {"host": host, "id": cid})
+                if not self._audit_throttled(("result_unknown_cmd", host)):
+                    await self.store.add_audit("mqtt", "result_unknown_cmd",
+                                               {"host": host, "id": cid})
                 return
             if cmd["pod"] != host:
                 # 归属校验：A 主机不能替 B 主机回传结果（评审 P0-3）
                 self.stats["rejected"] += 1
-                await self.store.add_audit("mqtt", "result_mismatch",
-                                           {"expect": cmd["pod"], "got": host, "id": cid})
+                if not self._audit_throttled(("result_mismatch", host)):
+                    await self.store.add_audit("mqtt", "result_mismatch",
+                                               {"expect": cmd["pod"], "got": host, "id": cid})
                 log.bind(host=host, cmd=cid).warning(
                     "丢弃跨主机结果 expect=%s", cmd["pod"])
                 return
@@ -291,6 +325,7 @@ class MqttBridge:
             # 水位去重挡掉，单帧处理也不再有并发交错
             if body.get("done"):
                 self._result_locks.pop(cid, None)
+                self._result_lock_ts.pop(cid, None)
 
     async def _on_update_result(self, host, cid, body):
         """自更新回执（A6.2）：更新台账，失败另写审计。
@@ -378,6 +413,10 @@ class MqttBridge:
         latest = await self.store.get_agent_latest()
         if not latest or not version_lt(agent_ver or "", latest.get("version", "")):
             return
+        # in_flight 去重（评审 P1）：retained status 在服务端每次重连都会重放，
+        # 不查在途台账的话，每次重连都会对过时主机重复建台账、重复推二进制
+        if host in await self.store.in_flight_pods([host]):
+            return
         return await self.dispatch_upgrade(host, agent_ver, latest, online=True)
 
     def _update_mode(self):
@@ -455,6 +494,14 @@ class MqttBridge:
         # 结果是丢了回执的台账永远停在 pending、把该主机的 in_flight 去重永久卡死。
         upd = await self.store.sweep_update_timeouts(
             queued_ttl=max(3600, int(getattr(self.s, "update_queue_ttl", 7 * 86400) or 0)))
+        # 10 分钟没有新帧的 result 锁视为死命令残留：正常分块流最多间隔数秒，
+        # 保守取值只为绝不误收活跃锁。pop 不会销毁正在持有的 Lock 对象，
+        # 极端迟到帧只是重建一把新锁，仍有水位去重兜底
+        now = int(time.time())
+        stale_cids = [c for c, ts in self._result_lock_ts.items() if now - ts > 600]
+        for c in stale_cids:
+            self._result_locks.pop(c, None)
+            self._result_lock_ts.pop(c, None)
         self.stats["sweeps"] += 1
         self.stats["swept_timeouts"] += n
         self.stats["swept_offline"] += stale

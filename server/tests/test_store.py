@@ -442,3 +442,15 @@ async def test_list_containers_pagination(store):
     import pytest as _pytest
     with _pytest.raises(ValueError):
         await store.list_containers("bogus")
+
+
+async def test_cleanup_prunes_audit_beyond_retention(store):
+    """评审 P0：审计表必须有保留期——ip_rejected 这类外部可控写入否则只增不减。"""
+    now = int(time.time())
+    await store.add_audit("mqtt", "ip_rejected", {"host": "old"})
+    await store.exec_sql("UPDATE kk_audit SET ts = :t", {"t": now - 91 * 86400})
+    await store.add_audit("mqtt", "command_create", {"keep": 1})   # 新记录不被清
+    stats = await store.cleanup(now, audit_days=90)
+    assert stats["audit_deleted"] == 1
+    rows = await store.list_audit(limit=10)
+    assert [r["action"] for r in rows] == ["command_create"]

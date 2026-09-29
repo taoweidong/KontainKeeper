@@ -655,14 +655,39 @@ class Store:
             detail=json.dumps(detail, ensure_ascii=False) if detail else "",
             ts=int(time.time())))
 
-    async def list_audit(self, limit=200, offset=None):
-        stmt = select(audit).order_by(audit.c.id.desc()).limit(limit)
+    @staticmethod
+    def _audit_filters(actor=None, action=None, keyword=None):
+        """审计筛选条件的唯一构造点：列表、计数、导出三处共用同一套语义。
+
+        与 _command_filters 同理：条件若留在控制器里先取后滤，命中行会被
+        LIMIT 截掉，「导出=所见」就破功了（评审 P1）。
+        """
+        conds = []
+        if actor:
+            conds.append(audit.c.actor == actor)
+        if action:
+            conds.append(audit.c.action == action)
+        if keyword:
+            like = "%" + str(keyword) + "%"
+            conds.append(or_(audit.c.detail.like(like), audit.c.actor.like(like),
+                             audit.c.action.like(like)))
+        return conds
+
+    async def list_audit(self, limit=200, offset=None, actor=None, action=None,
+                         keyword=None):
+        stmt = select(audit)
+        for cond in self._audit_filters(actor=actor, action=action, keyword=keyword):
+            stmt = stmt.where(cond)
+        stmt = stmt.order_by(audit.c.id.desc()).limit(limit)
         if offset:
             stmt = stmt.offset(int(offset))
         return await self._all(stmt)
 
-    async def count_audit(self):
-        row = await self._one(select(func.count().label("n")).select_from(audit))
+    async def count_audit(self, actor=None, action=None, keyword=None):
+        stmt = select(func.count().label("n")).select_from(audit)
+        for cond in self._audit_filters(actor=actor, action=action, keyword=keyword):
+            stmt = stmt.where(cond)
+        row = await self._one(stmt)
         return row["n"] if row else 0
 
     # ---- 管理员与会话 ----
@@ -791,11 +816,13 @@ class Store:
         return n
 
     async def cleanup(self, now=None, raw_days=2, cmd_days=30, hourly_days=90, out_days=7,
-                      update_days=90):
+                      update_days=90, audit_days=90):
         """存储回收：只增不减的表在这里收敛（修 P1-6）。
 
         两条不同的保留长度是刻意的：命令状态行要留 30 天（审计可追溯），
         但 4MB 的命令输出跟着留一个月纯属浪费——输出单独按 7 天清，状态行保持完整。
+        审计表此前不在回收之列（评审 P0）：ip_rejected / interval_violation 是
+        外部来源可控的高频写入，只增不减会被撑到磁盘告急。
         """
         now = int(now or time.time())
         stats = {"hours_aggregated": await self._aggregate_hours(now, raw_days)}
@@ -814,6 +841,9 @@ class Store:
         # 台账与命令同型只增不减；升级是低频操作，行数远小于心跳，保留 90 天
         stats["updates_deleted"] = await self._delete_batched(
             updates, updates.c.created_at < now - update_days * 86400, updates.c.id)
+        # 审计保留 90 天：够溯源，也不给「持续灌拒绝帧」留无限增长的空间
+        stats["audit_deleted"] = await self._delete_batched(
+            audit, audit.c.ts < now - audit_days * 86400, audit.c.id)
         # sweeper 漏掉的僵死命令盖成 lost 并补 finished_at：不补时间戳的 lost 行
         # 永远落在上面那条 DELETE 的窗口之外，正是 P1-6。
         stats["commands_lost"] = await self._run(

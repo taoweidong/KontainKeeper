@@ -562,3 +562,31 @@ async def test_in_flight_update_dedupe(bridge):
     row = await bridge.store.in_flight_update("up-6")
     assert row and row["id"] == "up-up-6-1"
     assert await bridge.store.in_flight_update("up-404") is None
+
+
+# ---- 评审 P0/P1 回归：外部可控审计限速与 auto 推送去重 ----
+
+
+async def test_ip_rejected_audit_throttled(wbridge):
+    """同 (host, ip) 的拒绝帧 60s 内只落一条审计：外部可控频率不得灌爆审计表。"""
+    import asyncio
+    wbridge.loop = asyncio.get_running_loop()
+    for _ in range(5):
+        _frame(wbridge, "status", status_frame("bad-host", ip=BAD_IP))
+    await asyncio.sleep(0.05)
+    rows = [a for a in await wbridge.store.list_audit(limit=50)
+            if a["action"] == "ip_rejected"]
+    assert len(rows) == 1, "限速后同 key 60s 内只落一条"
+    assert wbridge.stats["rejected"] == 5, "stats 计数逐帧累加，限速只作用于审计落库"
+
+
+async def test_auto_push_skips_in_flight_host(bridge):
+    """评审 P1：retained status 重放/反复上线不得对在途主机重复建台账、重复推帧。"""
+    bridge.s.update_mode = "auto"
+    await bridge.store.set_agent_latest({"version": "99.0.0", "sha256": "ab", "size": 8})
+    await bridge._on_status("dup-1", status_frame("dup-1", ver="0.0.1"))
+    first = [m for m in bridge.cli.msgs if m["topic"] == "kk/v1/dup-1/cmd"]
+    assert first, "落后的 Agent 首次上线应收到推送"
+    await bridge._on_status("dup-1", status_frame("dup-1", ver="0.0.1"))
+    again = [m for m in bridge.cli.msgs if m["topic"] == "kk/v1/dup-1/cmd"]
+    assert len(again) == len(first), "在途主机再次上线不得重复推送"

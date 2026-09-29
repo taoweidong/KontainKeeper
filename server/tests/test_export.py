@@ -161,3 +161,30 @@ async def test_export_metrics_hourly_source(api):
                              params={"pod": "web-01", "hours": 48})
     _, rows = parse(r.text)
     assert len(rows) == 1 and rows[0][1] == "5.0"
+
+
+async def test_export_audit_keyword_hits_beyond_limit(api):
+    """筛选下推到 SQL（评审 P1）：命中行在 LIMIT 之外也必须导出，先取后滤会截断。"""
+    await _seed(api.store)
+    for i in range(5):
+        await api.store.add_audit("mqtt", "noise", {"n": i})
+    await api.store.add_audit("mqtt", "gold", {"needle": 1})
+    r = await api.client.get("/api/export/audit",
+                             params={"keyword": "needle", "limit": 3})
+    rows = parse(r.text)[1]
+    assert len(rows) == 1 and rows[0][3] == "gold"
+
+
+async def test_audit_endpoint_offset_and_keyword(api):
+    """/api/audit：负 offset 不得 500（PG/MySQL 下会炸）；keyword 下推后 total 与 items 同条件。"""
+    for i in range(3):
+        await api.store.add_audit("mqtt", "ip_rejected", {"host": "h%d" % i})
+    await api.store.add_audit("admin", "command_create", {"argv": ["ls"]})
+    r = await api.client.get("/api/audit", params={"offset": -5})
+    assert r.status_code == 200
+    r = await api.client.get("/api/audit", params={"keyword": "command_create"})
+    body = r.json()
+    assert body["total"] == 1 and len(body["items"]) == 1
+    r = await api.client.get("/api/audit", params={"keyword": "ip_rejected"})
+    body = r.json()
+    assert body["total"] == 3 and len(body["items"]) == 3

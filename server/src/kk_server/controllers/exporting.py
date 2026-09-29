@@ -130,16 +130,12 @@ async def export_audit(request: Request, actor: str = "", action: str = "",
     await current_user(request)
     store = request.app.state.store
     limit = _limit(limit)
-    rows = await store.list_audit(limit=limit)
+    # 筛选下推到 SQL（store._audit_filters）：先取最近 N 条再内存过滤的话，
+    # 命中行会被 LIMIT 截掉，导出就不再是页面所见（评审 P1）
+    rows = await store.list_audit(limit=limit, actor=actor or None,
+                                  action=action or None, keyword=keyword or None)
     out = []
     for r in rows:
-        if actor and r.get("actor") != actor:
-            continue
-        if action and r.get("action") != action:
-            continue
-        if keyword and keyword not in (r.get("detail") or "") \
-                and keyword not in (r.get("actor") or ""):
-            continue
         out.append([r.get("id"), _ts(r.get("ts")), r.get("actor"),
                     r.get("action"), r.get("detail")])
     return _csv_response(["id", "ts", "actor", "action", "detail"],

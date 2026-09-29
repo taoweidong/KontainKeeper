@@ -156,8 +156,10 @@ async def list_commands(request: Request, pod: Optional[str] = None, limit: int 
     await current_user(request)
     store = request.app.state.store
     limit = min(max(limit, 1), 500)
+    # 负 offset 直传会让 PG/MySQL 500（containers 已有正确写法，这里对齐）
+    off = offset if offset and offset > 0 else None
     items, total = await asyncio.gather(
-        store.list_commands(pod=pod or None, limit=limit, offset=offset,
+        store.list_commands(pod=pod or None, limit=limit, offset=off,
                             batch=batch or None, status=status or None,
                             kind=kind or None, keyword=keyword or None),
         store.count_commands(pod=pod or None, batch=batch or None, status=status or None,
