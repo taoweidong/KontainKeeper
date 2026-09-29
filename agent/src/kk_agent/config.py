@@ -1,5 +1,6 @@
 """kk-agent 配置：全部来自环境变量（沿用项目约定：配置只走 KK_* 环境变量）。"""
 import os
+import re
 import socket
 import sys
 
@@ -7,6 +8,11 @@ AGENT_VER = "0.3.0"
 PROTO_VER = 3  # MQTT 主题布局与帧格式（v3 = 去 token，上行帧携带 ip 供白名单校验）
 
 DEFAULT_TOPIC_PREFIX = "kk/v1"
+
+# 主机名直接拼进 MQTT 主题（transport 的 base = prefix/host），必须排除主题
+# 通配符与层级分隔符：含 +/# 会让本 Agent 订阅到通配符主题、收到**其他主机**
+# 的命令并执行；含 / 会破坏主题层级（安全评审 T2）。首字符限字母数字。
+_HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,118}$")
 
 
 def _env_bool(env, key, default=False):
@@ -24,8 +30,11 @@ def load(env=None, **overrides):
 
     here = os.path.dirname(os.path.abspath(__file__))
     cfg = {
-        # ---- MQTT 连接（匿名 Broker：不再携带任何凭据）----
+        # ---- MQTT 连接（默认匿名 Broker；启用 Broker 鉴权时配用户名/口令，
+        #      与服务端 KK_MQTT_USERNAME 同一套账目，见 docs/deployment.md）----
         "server": env.get("KK_SERVER", "").strip(),
+        "mqtt_username": env.get("KK_MQTT_USERNAME", "").strip(),
+        "mqtt_password": env.get("KK_MQTT_PASSWORD", ""),
         "topic_prefix": env.get("KK_TOPIC_PREFIX", DEFAULT_TOPIC_PREFIX).strip(),
         "keepalive": max(10, _int("KK_KEEPALIVE", 60)),
         "tls_ca": env.get("KK_TLS_CA", "").strip(),
@@ -82,4 +91,9 @@ def load(env=None, **overrides):
     # agent_bin 缺省时不在配置里填 sys.executable——那会让自更新误把 Python 解释器
     # 当成待替换的二进制（见 updater.apply_manifest）。缺省即表示「不自替换」。
     cfg.update(overrides)
+    # 校验放在 overrides 合并之后：测试与嵌入式调用可能经 overrides 传入主机名
+    if not _HOST_RE.match(cfg["host"]):
+        raise ValueError(
+            "主机名 %r 含 MQTT 主题非法字符（只允许字母数字与 . _ -，且以字母数字开头）；"
+            "请设置 KK_HOST_NAME 为合法值" % cfg["host"])
     return cfg

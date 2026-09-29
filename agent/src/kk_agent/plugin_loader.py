@@ -14,6 +14,12 @@ import traceback
 
 # name -> (mtime, module, quarantined)
 _loaded = {}
+# _loaded 的并发守卫：心跳线程与 kind=collect 命令线程会同时进 collect_all。
+# 没有锁时同一文件可能被双重 exec_module，更糟的是隔离标志可被竞写覆盖
+# （一处写 (mtime, mod, False) 解除隔离、另一处写 (mtime, mod, True) 隔离），
+# 已隔离的卡死插件会被放行、逐心跳重新泄漏线程（评审 P1）。锁只包状态读写
+# 与 exec_module，collect() 本身在锁外跑，不拖慢并发采集。
+_lock = threading.Lock()
 
 
 def _collect_with_timeout(mod, timeout):
@@ -53,26 +59,29 @@ def collect_all(plugin_dir, log=None, timeout=5.0):
             mtime = os.path.getmtime(path)
         except OSError:
             continue
-        ent = _loaded.get(name)
-        if ent is None or ent[0] != mtime:
-            try:
-                spec = importlib.util.spec_from_file_location("kk_plugin_" + name, path)
-                mod = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(mod)
-                _loaded[name] = (mtime, mod, False)  # 重载即解除隔离
-            except Exception:
-                _loaded.pop(name, None)
-                if log:
-                    log.warning("plugin %s load failed: %s", name, traceback.format_exc(limit=2))
-                continue
-        cur_mtime, mod, quarantined = _loaded[name]
+        with _lock:
+            ent = _loaded.get(name)
+            if ent is None or ent[0] != mtime:
+                try:
+                    spec = importlib.util.spec_from_file_location("kk_plugin_" + name, path)
+                    mod = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(mod)
+                    _loaded[name] = (mtime, mod, False)  # 重载即解除隔离
+                except Exception:
+                    _loaded.pop(name, None)
+                    if log:
+                        log.warning("plugin %s load failed: %s", name, traceback.format_exc(limit=2))
+                    continue
+                ent = _loaded[name]
+            cur_mtime, mod, quarantined = ent
         if quarantined:
             continue  # 已隔离的卡死插件：不再占用心跳线程
         if not hasattr(mod, "collect"):
             continue
         data, hung, exc = _collect_with_timeout(mod, timeout)
         if hung:
-            _loaded[name] = (cur_mtime, mod, True)
+            with _lock:
+                _loaded[name] = (cur_mtime, mod, True)
             if log:
                 log.warning("plugin %s collect timed out (%ss), quarantined until reload",
                             name, timeout)
@@ -87,4 +96,5 @@ def collect_all(plugin_dir, log=None, timeout=5.0):
 
 
 def loaded_names():
-    return sorted(_loaded.keys())
+    with _lock:
+        return sorted(_loaded.keys())

@@ -50,9 +50,10 @@ class TransportError(Exception):
 def parse_broker(url, default_port=1883):
     """解析 mqtt://host[:port] → dict。mqtts:// 启用 TLS。
 
-    v3 起不再支持 URL 内嵌凭据（Broker 匿名模式，权限管理由服务端
-    KK_AGENT_IPS 白名单承担）；带 user:pass@ 的旧写法显式报错，
-    避免凭据被当成主机名解析出难以理解的连接错误。
+    URL 内不再支持 user:pass@ 内嵌凭据：Broker 鉴权走独立的
+    KK_MQTT_USERNAME / KK_MQTT_PASSWORD 环境变量（可选，配合 Broker 端
+    password_file + ACL，见 docs/deployment.md「启用 MQTT 鉴权」），
+    带内嵌凭据的旧写法显式报错，避免被当成主机名解析出难以理解的连接错误。
     """
     s = (url or "").strip()
     secure = s.startswith("mqtts://")
@@ -63,8 +64,8 @@ def parse_broker(url, default_port=1883):
     rest = s[len("mqtt://"):]
     if "@" in rest:
         raise TransportError(
-            "KK_SERVER 不再支持内嵌凭据（v3 起 Broker 匿名模式）：直接写地址即可，"
-            "如 mqtt://broker:1883")
+            "KK_SERVER 不支持内嵌凭据：Broker 鉴权请改用 KK_MQTT_USERNAME / "
+            "KK_MQTT_PASSWORD 环境变量，地址直接写 mqtt://broker:1883")
     if rest.startswith("["):
         host, _, port = rest[1:].partition("]")   # IPv6 字面量 [::1]:1883
         port = port.lstrip(":")
@@ -131,6 +132,10 @@ class Transport:
             protocol=PROTO,
             clean_session=False,  # 持久会话：离线命令由 Broker 排队
         )
+        # 可选 Broker 鉴权（默认匿名）：配置了用户名才启用，匿名部署零改动
+        if cfg.get("mqtt_username"):
+            self.cli.username_pw_set(cfg["mqtt_username"],
+                                     cfg.get("mqtt_password") or "")
         if broker["secure"]:
             ca = cfg.get("tls_ca") or None
             if ca:

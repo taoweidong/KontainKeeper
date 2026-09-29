@@ -44,23 +44,30 @@ _update_lock = threading.Lock()
 FAIL_BACKOFF = (300, 600, 1800)
 _NO_BACKOFF = frozenset({"not_newer", "backoff"})   # 非失败：无更新 / 本身就在退避中
 _fail_state = {"count": 0, "until": 0.0, "ver": ""}
+# 退避账本的并发守卫：轮询线程（spawn_check）与 kind=update 命令线程都会读写
+# _fail_state，无锁时读改交错会让退避计数错乱、提前重试坏版本（评审 P1）。
+# RLock 是为了 _in_backoff 可以在已持锁的检查块里复用。
+_fail_lock = threading.RLock()
 
 
 def _in_backoff(now=None):
     now = time.monotonic() if now is None else now
-    return now < _fail_state["until"]
+    with _fail_lock:
+        return now < _fail_state["until"]
 
 
 def note_update_failure(ver=""):
     """记一次失败并返回本次退避秒数（模块级，供测试断言）。"""
-    n = _fail_state["count"] + 1
-    wait = FAIL_BACKOFF[min(n, len(FAIL_BACKOFF)) - 1]
-    _fail_state.update(count=n, until=time.monotonic() + wait, ver=str(ver or ""))
+    with _fail_lock:
+        n = _fail_state["count"] + 1
+        wait = FAIL_BACKOFF[min(n, len(FAIL_BACKOFF)) - 1]
+        _fail_state.update(count=n, until=time.monotonic() + wait, ver=str(ver or ""))
     return wait
 
 
 def reset_update_failure():
-    _fail_state.update(count=0, until=0.0, ver="")
+    with _fail_lock:
+        _fail_state.update(count=0, until=0.0, ver="")
 
 
 def _note_result(ver, ok, reason):
@@ -277,7 +284,9 @@ def apply_manifest_receipt(cfg, log, manifest, on_before_restart=None):
     不再下载、不再刷日志；一旦版本号变化或成功即清零。
     """
     ver = str((manifest or {}).get("version") or "")
-    if ver and ver == _fail_state["ver"] and _in_backoff():
+    with _fail_lock:
+        skip = bool(ver) and ver == _fail_state["ver"] and time.monotonic() < _fail_state["until"]
+    if skip:
         _log(log).debug("update to %s still in backoff, skip", ver)
         return False, "backoff"
     ok, reason = _apply_manifest(cfg, log, manifest, on_before_restart)
