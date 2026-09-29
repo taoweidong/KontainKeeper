@@ -23,7 +23,7 @@ agent/src/kk_agent/    transport.py(MQTT) / collector.py(psutil) / executor.py /
 server/src/kk_server/  models/(store,tables,version) / services/(mqtt_bridge,security) /
                        controllers/(auth,containers,commands,audit,stats,agent_update,health) /
                        main.py(create_app 工厂，python -m kk_server 运行)
-web/src/               api/(业务 API 层) / views/(五个业务页) / router/modules/kk.ts(静态路由)
+web/src/               api/(业务 API 层) / views/(六个业务页) / router/modules/kk.ts(静态路由)
 proto/messages.md      双端通信协议契约（v3 MQTT：匿名 Broker + IP 白名单），改协议必读
 scripts/               build.sh(管理镜像) / mqtt_e2e.py(Broker 冒烟) / bench_agent.py / loadtest.py
 deploy/mosquitto/      匿名 Broker 配置（mosquitto.conf，开发/生产同源）
@@ -181,8 +181,8 @@ def collect():
 cd web && pnpm typecheck && pnpm build
 ```
 
-- **Broker 可达**时 202 passed；**不可达**时 198 passed + 4 skipped
-  （端到端集成用例自动跳过，不会误报失败）——跑全量前先起 §3 的 Mosquitto。
+- **Broker 可达**时全量 passed；**不可达**时仅 4 条端到端集成用例 skipped
+  （自动跳过，不会误报失败）——跑全量前先起 §3 的 Mosquitto。具体数字以 pytest 汇总为准。
 - `agent/tests` 覆盖 MQTT 传输（主题/QoS/retain/离线队列）、psutil 采集、
   命令执行、插件热加载、自更新；Windows 上直接读真机指标，无需伪造 /proc。
 - `server/tests` 用 `httpx.AsyncClient` + `ASGITransport` 直打 `create_app`，
@@ -248,7 +248,7 @@ cd agent && ./build/build_binary.sh     # 产出 agent/dist/kk-agent（Windows �
 ## 10. 提交前检查清单
 
 ```bash
-.venv/Scripts/python.exe -m pytest agent/tests server/tests -q   # 全绿（或 198+4 skip）
+.venv/Scripts/python.exe -m pytest agent/tests server/tests -q   # 全绿（无 Broker 时仅 4 条集成用例 skip）
 cd web && pnpm typecheck && pnpm build                          # 前端通过
 ```
 

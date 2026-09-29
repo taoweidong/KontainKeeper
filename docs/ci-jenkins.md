@@ -91,8 +91,8 @@
 `server/tests/test_integration.py` 在没有 Broker 的环境会**整条 skip**（设计如此，保证本地无 Broker 时单测全绿）：
 
 ```
-不可达时：198 passed + 4 skipped
-可达时  ：202 passed
+不可达时：全量 passed，仅 4 条集成用例 skipped
+可达时  ：全量 passed（0 skipped）
 ```
 
 也就是说，一个「跑通了 CI」但没起 Broker 的流水线，是**用 4 条 skipped 换来的假绿**——
@@ -102,7 +102,7 @@
 只绑 `127.0.0.1`，避免与节点上可能存在的开发 Broker 抢 1883），并在这些阶段结束时收掉。
 集成用例读的是 `KK_IT_MQTT_URL`，流水线已自动设为 `mqtt://127.0.0.1:18830`。
 
-**验收口径：③ 阶段必须是 202 passed，出现任何 skipped 都应视为配置问题。**
+**验收口径：③ 阶段必须 0 failed、0 skipped——出现 skipped 说明 Broker 没起来，是配置问题。**
 
 ## 4. 首次接入清单
 
@@ -194,7 +194,7 @@ git add server/src/kk_server/web && git commit -m "chore(web): 同步前端构�
 # 0) 依赖
 uv sync --all-packages
 
-# 1) 后端测试（带真 Broker，期望 202 passed）
+# 1) 后端测试（带真 Broker，期望 0 failed 0 skipped）
 docker run -d --name kk-ci-broker -p 127.0.0.1:18830:1883 \
   -v "$PWD/deploy/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" eclipse-mosquitto:2
 KK_IT_MQTT_URL=mqtt://127.0.0.1:18830 .venv/bin/python -m pytest agent/tests server/tests -q
@@ -223,7 +223,7 @@ scripts/ci_smoke.sh kontainkeeper-server:local agent/dist/kk-agent
 
 | B5 子项 | 状态 |
 |---|---|
-| 单测 job（含真 Broker，236 passed） | ✅ 已落地（③④） |
+| 单测 job（含真 Broker，0 failed 0 skipped） | ✅ 已落地（③④） |
 | 服务端镜像构建与部署 | ✅ 已落地（⑦⑩⑪）——**超出 B5 原范围，属本次新增** |
 | 镜像级部署冒烟 | ✅ 新增（⑧，`scripts/ci_smoke.sh`） |
 | 前端产物漂移检查 | ✅ 新增（⑤） |

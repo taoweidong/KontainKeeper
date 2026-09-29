@@ -115,7 +115,7 @@ server/                  服务端（独立 UV 项目，FastAPI）
   Dockerfile             生产镜像
 web/                     Vue3 前端（独立 pnpm 工程，pure-admin-thin 底座）
   src/api/               业务 API 层（containers/commands/audit/system）
-  src/views/             五个业务页（host/monitor、host/detail、command/shell、command/collect、audit）
+  src/views/             六个业务页（host/monitor、host/detail、host/update、command/shell、command/collect、audit）
 proto/                   双端通信协议契约（v3：匿名 Broker + IP 白名单）
 scripts/                 构建与部署脚本
 deploy/                  Mosquitto 生产/开发配置 + Agent 容器叠加片段
@@ -229,7 +229,7 @@ curl -H "Authorization: Bearer <ADMIN_TOKEN>" \
 uv sync --all-packages
 .venv/Scripts/python.exe -m pytest agent/tests -q     # Agent 单元测试
 .venv/Scripts/python.exe -m pytest server/tests -q    # Server 单测 + 端到端集成
-.venv/Scripts/python.exe -m pytest agent/tests server/tests -q   # 全量 202 条：Broker 可达时 202 passed；不可达时 198 passed + 4 skipped（集成用例）
+.venv/Scripts/python.exe -m pytest agent/tests server/tests -q   # 全量 290+ 条（以 pytest 汇总为准）：Broker 可达时全 passed；不可达时仅 4 条集成用例 skipped（集成用例）
 
 cd web && pnpm typecheck && pnpm build                # 前端类型检查与构建
 ```
@@ -239,8 +239,9 @@ cd web && pnpm typecheck && pnpm build                # 前端类型检查与构
 黑名单、审计、REST 接口契约（ASGI Transport）、以及**真实服务端 + 真实 Agent 线程**的端到端集成
 （需 Broker，端口不可达时自动 skip）。
 
-> 已知验证边界：SQLite 走完整实测；PostgreSQL / MySQL 只做了 DDL 与语句的跨方言编译校验，
-> **未连过真实库**，上线前需补真库跑测。
+> 已知验证边界：SQLite 走完整实测；PostgreSQL / MySQL 由 CI 夜测做真库冒烟
+> （`scripts/db_smoke.py`，Jenkinsfile ⑬ 矩阵跑 PG:16 / MySQL:8，覆盖建表/扩列/基础读写），
+> 上线前仍建议按真实规模在预发环境验证。
 
 ## 安全说明
 

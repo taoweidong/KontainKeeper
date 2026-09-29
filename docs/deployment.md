@@ -203,8 +203,39 @@ uv run kk-server                            # 监听 0.0.0.0:8443
 - **SQLite**（默认）：单文件、零运维，适合 ≤ 数百台规模；数据卷挂 `/data` 即可。
 - **PostgreSQL / MySQL**：设置 `KK_DB_URL`，并在安装时带对应 extras
   （`--extra postgres` / `--extra mysql`）。三库方言差异已收在代码
-  `Store._upsert` / `_ensure_schema` 两处；但注意 PG/MySQL 目前只做过方言编译校验，
-  **未连真实库跑过测试**，上线前请先在预发环境验证。
+  `Store._upsert` / `_ensure_schema` 两处；CI 夜测已有真库冒烟
+  （`scripts/db_smoke.py`，Jenkinsfile ⑬ 矩阵跑 PG:16 / MySQL:8）覆盖建表/扩列/基础读写，
+  上线前仍建议按真实规模在预发环境验证。
+
+### 4.7 启用 MQTT 鉴权（可选加固）
+
+默认模式是**匿名 Broker + 服务端 `KK_AGENT_IPS` 白名单**（v3 设计，安全边界依赖网络层
+对 1883 的可达控制）。若需要 Broker 层的硬边界（安全评审 P0 建议），叠加鉴权配置：
+
+1. 生成密码文件（两个账号；`deploy/mosquitto/auth/aclfile` 已按最小权限写好：
+   下行 cmd 主题仅服务端账号可发布）：
+
+   ```bash
+   docker run --rm -v "$PWD/deploy/mosquitto/auth:/auth" eclipse-mosquitto:2 \
+     mosquitto_passwd -c /auth/passwd kk-server      # 服务端账号，交互输入口令
+   docker run --rm -v "$PWD/deploy/mosquitto/auth:/auth" eclipse-mosquitto:2 \
+     mosquitto_passwd -b /auth/passwd kk-agent <AGENT口令>
+   ```
+
+2. `.env` 增加服务端凭据：`KK_MQTT_USERNAME=kk-server`、`KK_MQTT_PASSWORD=...`；
+3. 叠加启动：
+
+   ```bash
+   docker compose -f docker-compose.prod.yml -f docker-compose.secure-mqtt.yml --env-file .env up -d
+   ```
+
+4. Agent 侧凭据随镜像烧入：构建时带 `KK_MQTT_USERNAME=kk-agent` 与
+   `KK_MQTT_PASSWORD`（`scripts/build.sh` 会写入镜像 ENV）。注意镜像 ENV 对容器内
+   用户可读（与 `KK_SERVER` 同级），是该方案的已知取舍；更严格做法是运行时经编排
+   系统注入环境变量。
+
+启用后匿名接入被 Broker 直接拒绝，cmd 主题只有服务端账号能发布——安全评审定性为
+「全网 RCE」的匿名下行通道即被关闭。不叠加本配置时行为与原匿名模式完全一致。
 
 ## 5. 前端（管理界面）
 

@@ -21,8 +21,8 @@ web/ Vue3 前端（REST 轮询 + ECharts，构建产物由 kk-server 托管）
 
 - `agent/src/kk_agent/` — 主机内客户端（**独立 UV 项目**）。**不再是纯标准库**：采集用 `psutil`（跨平台、8 个采集项），传输用 `paho-mqtt`（重连退避/保活/out-queue），可编译为单文件二进制嵌入镜像，常驻 RSS 口径 **25–35MB**。模块：`transport.py`（MQTT，替代已删的 `ws.py`+`conn.py`）、`collector.py`（psutil，含 `collect_items()` 按项采集）、`executor.py`、`updater.py`（自更新 sha256/HMAC）、`main.py`（事件循环）。
 - `server/src/kk_server/` — FastAPI 服务端，MVC 分层：`models/`（SQLAlchemy 2 Core + async engine，SQLite/PG/MySQL 三库通用）→ `services/`（`mqtt_bridge.py` 无状态桥接、命令黑名单 security）→ `controllers/`（REST `/api/*`）→ `web/`（Vue3 构建产物，随包打包、服务端直接托管）；`main.py` 的 `create_app` 只做装配。**没有 WS 入口**（`agent_ws.py`/`hub.py` 已删）。
-- `web/` — **独立 pnpm 工程**（Vue3 + TS + Element Plus + Vite + Pinia + ECharts，底座 pure-admin-thin v6.2.0）。`src/api/` 业务 API 层、`src/views/` 五个业务页（host/monitor 总览、host/detail 详情、command/shell 命令面板、command/collect 采集面板、audit 审计）、`src/router/modules/kk.ts` 静态路由。`web/dist/` 被 .gitignore 忽略，产物需人工同步到 `server/src/kk_server/web/`。
-- `proto/messages.md` — 双端通信协议契约（**v3 = 去 token：匿名 Broker + 服务端 `KK_AGENT_IPS` 白名单，上行帧携带自报 `ip`**）。改协议必须同步：`agent/src/kk_agent/config.py` 的 `PROTO_VER`、`server/src/kk_server/__init__.py` 的 `PROTO_VER`、协议文档、双端测试。
+- `web/` — **独立 pnpm 工程**（Vue3 + TS + Element Plus + Vite + Pinia + ECharts，底座 pure-admin-thin v6.2.0）。`src/api/` 业务 API 层、`src/views/` 六个业务页（host/monitor 总览、host/detail 详情、host/update 版本与更新、command/shell 命令面板、command/collect 采集面板、audit 审计）、`src/router/modules/kk.ts` 静态路由。`web/dist/` 被 .gitignore 忽略，产物需人工同步到 `server/src/kk_server/web/`。
+- `proto/messages.md` — 双端通信协议契约（**v3 = 去 token：匿名 Broker + 服务端 `KK_AGENT_IPS` 白名单，上行帧携带自报 `ip`**；可选 Broker 鉴权加固走双端 `KK_MQTT_USERNAME/PASSWORD`，见 deployment.md）。改协议必须同步：`agent/src/kk_agent/config.py` 的 `PROTO_VER`、`server/src/kk_server/__init__.py` 的 `PROTO_VER`、协议文档、双端测试。
 - `agent/tests/`、`server/tests/`、`scripts/build.sh`（把 agent 叠加进 vscode-server 镜像）。
 - `Jenkinsfile` — **CI/CD 流水线**（测试 → Agent 二进制 → 服务端镜像 → 镜像冒烟 → 推送 → 部署 → 部署验证），
   走 Jenkins 而非 GitHub Actions（仓库无 `.github/workflows/`）。配套 `scripts/ci_smoke.sh`（镜像级部署冒烟，
@@ -35,7 +35,7 @@ web/ Vue3 前端（REST 轮询 + ECharts，构建产物由 kk-server 托管）
 # 后端（仓库根目录；uv run 会去下载 Python 3.12 而失败，务必用 .venv 直调）
 .venv/Scripts/python.exe -m pytest agent/tests -q      # Agent 单测
 .venv/Scripts/python.exe -m pytest server/tests -q      # Server 单测 + 集成
-.venv/Scripts/python.exe -m pytest agent/tests server/tests -q   # 全量 236 条：Broker 可达时 236 passed；不可达时 232 passed + 4 skipped（集成用例）
+.venv/Scripts/python.exe -m pytest agent/tests server/tests -q   # 全量 290+ 条（以 pytest 汇总为准）：Broker 可达时全 passed；不可达时仅 4 条集成用例 skipped
 # 汇总别用 `| tail -3`：失败行在进度条之前，会被截掉（曾因此漏看红灯两轮）。
 # 要看清结果用 --junitxml 再解析 tests/failures/errors/skipped 计数。
 .venv/Scripts/python.exe -m kk_server                   # 起服务端（默认 admin/admin123）
@@ -46,13 +46,13 @@ pnpm typecheck   # TS 类型检查
 pnpm build       # 产物输出到 web/dist/
 ```
 
-依赖：`uv sync --all-packages`（服务端 + dev）；`--extra postgres` / `--extra mysql` 按需装驱动。前端 `pnpm install`。无 lint 配置，前端有 typecheck。
+依赖：`uv sync --all-packages`（服务端 + dev）；`--extra postgres` / `--extra mysql` 按需装驱动。前端 `pnpm install`。前端有 typecheck 与 eslint/prettier 配置（`web/eslint.config.js`）。
 
 ```bash
 # CI/CD（定义在根 Jenkinsfile，节点要求与凭据见 docs/ci-jenkins.md）
 docker run -d --name kk-ci-broker -p 127.0.0.1:18830:1883 \
   -v "$PWD/deploy/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" eclipse-mosquitto:2
-KK_IT_MQTT_URL=mqtt://127.0.0.1:18830 .venv/Scripts/python.exe -m pytest agent/tests server/tests -q  # 有 Broker 才是 236 passed
+KK_IT_MQTT_URL=mqtt://127.0.0.1:18830 .venv/Scripts/python.exe -m pytest agent/tests server/tests -q  # 有 Broker 才是全 passed（无 Broker 时 4 条集成用例 skipped）
 KK_MQTT_URL=mqtt://127.0.0.1:18830 .venv/Scripts/python.exe scripts/mqtt_e2e.py                      # Broker 语义冒烟（LWT/离线队列）
 docker build -f server/Dockerfile -t kontainkeeper-server:local .                                    # 上下文必须是仓库根
 bash scripts/ci_smoke.sh kontainkeeper-server:local agent/dist/kk-agent                              # 镜像级部署冒烟
@@ -74,7 +74,7 @@ bash scripts/ci_smoke.sh kontainkeeper-server:local agent/dist/kk-agent         
 - **自更新窗口的离线语义（B6）**：execv 前 Agent 必须调 `Transport.announce_update()`（发 `reason=updating` 且**等 PUBACK**，否则帧随进程替换一起丢），服务端把它落进 `containers.status_reason`；空 reason 的 LWT 在 120s 内不覆盖它（`store.set_online`）。更新轮询带 ±20% 抖动，同版本失败按 5/10/30min 退避（成功或版本变化清零，门禁在 `apply_manifest_receipt`，轮询与推送两条路径共用）。
 - Agent 上线（status）即可在 API 看到主机，但**指标要等首帧心跳**；集成测试的等待条件必须同时检查 `metrics.mem_mb` 非空。
 - 插件热加载按 mtime 比较，Windows 文件时间粒度粗：测试写文件后需显式 `os.utime` 递增时间戳。
-- 前端**轮询**定时器统一走 `web/src/utils/kkPoll.ts` 的 `usePolls()` + `setPoll(key, fn, ms)`（按 key 覆盖、卸载自动 `clearPolls()`），不要直接 `setInterval` 散落各处；长按等**交互计时器**不在此列（`directives/longpress`），别顺手套上去。菜单**完全静态**（`getAsyncRoutes()` 返回 `[]`，走 `router/modules/`），否则 prod 下 fake server 缺失会导致菜单空白。`pnpm build` 要求 `web/mock/` 目录存在（空目录即可）。
+- 前端**轮询**定时器统一走 `web/src/utils/kkPoll.ts`：`const { setPoll, clearPoll } = usePolls()`（按 key 覆盖、回调在途防重入、卸载只清本作用域注册的 key），不要直接 `setInterval` 散落各处，也不要用模块级全局 `setPoll/clearPolls`（会误清别的页）；长按等**交互计时器**不在此列（`directives/longpress`），别顺手套上去。菜单**完全静态**（`getAsyncRoutes()` 返回 `[]`，走 `router/modules/`），否则 prod 下 fake server 缺失会导致菜单空白。`pnpm build` 要求 `web/mock/` 目录存在（空目录即可）。
 - 安全红线：命令黑名单（`KK_CMD_BLACKLIST`）+ 审计（`store.add_audit`）不能绕过；Agent 接入管控靠上行帧自报 `ip` 按服务端 `KK_AGENT_IPS` 白名单校验（白名单校验收在 `MqttBridge._on_message` 一处入口，REST 自更新接口走 `deps.agent_ip_auth` 的真实源 IP），`KK_ENV=production` 未配白名单直接拒绝启动。
 - **日志（A7，单一日志后端 loguru）**：双端只允许经适配层取日志（Agent `kk_agent.logutil.get_logger`、Server `kk_server.logsetup.get_logger`），**新代码不得 `import logging`**（stdlib 仅允许出现在 server 的 `InterceptHandler` 内，有静态回归用例锁住）；调用风格继续 `%s` 懒格式化，适配层内部才做 `msg % args`，**不写 f-string 拼消息**；需要主机/命令/批次维度时用 `log.bind(...)`（会渲染成 `host=… cmd=…` 并进 JSON 的 `extra`），不要拼进消息串；生产红线 `diagnose=False`，日志不得含口令/token/环境变量。
 - **`KK_LOG` 一个文件只有一个写入者（A7.4）**：`KK_LOG` 由 Agent 进程独占（loguru 文件 sink 负责轮转/保留），`entrypoint-wrapper.sh` 不再把 Agent 输出重定向到该路径（supervisor 消息走 `KK_SUPERVISOR_LOG`）；服务端 `KK_LOG` 留空即只写 stdout，由 docker 采集——两侧 compose 都设了 `logging.max-size: 50m / max-file: 5`。

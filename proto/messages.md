@@ -66,7 +66,11 @@ v1 的 WebSocket close code（`4400/4401/4402/4403/4404`）**已随 WS 删除**�
   `KK_ENV=production` 时未配置直接拒绝启动。
 - MQTT 经 Broker 中转拿不到发布者真实 TCP 源 IP，白名单基于 Agent **自报值**：
   `KK_ADVERTISE_IP` 显式覆盖 > UDP connect 自动探测出口地址。适合内网可信环境；
-  需要更强边界时在网络层限制 1883 端口可达范围（匿名 Broker 下唯一不可伪造的隔离）。
+  需要更强边界时在网络层限制 1883 端口可达范围，**或启用 Broker 鉴权（推荐，见下）**。
+- 可选加固——Broker 鉴权：Broker 端启用 `password_file` + `acl_file`（下行 cmd 主题
+  只允许服务端账号发布，关闭匿名下行通道）后，双端配 `KK_MQTT_USERNAME` /
+  `KK_MQTT_PASSWORD`（Agent TLS 另有 `KK_TLS_CA`）。凭据不影响主题布局与帧格式，
+  改过 `KK_TOPIC_PREFIX` 需同步 aclfile；启用步骤见 docs/deployment.md「启用 MQTT 鉴权」。
 
 ## 3. Agent → Server
 
