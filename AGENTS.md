@@ -69,7 +69,7 @@ bash scripts/ci_smoke.sh kontainkeeper-server:local agent/dist/kk-agent         
 - **`create_all` 只建表不加列**：新增列必须登记 `tables._ADD_COLUMNS`，由 `setup()` 的 `_ensure_schema` 自动 ALTER（SQLite 查 `PRAGMA table_info`，其余查 `information_schema` 且 MySQL 要 `DATABASE()` 限定 schema）。
 - **Windows 开发机兼容**：采集基于 psutil（跨平台，不解析 /proc、不注入 fs_root），`agent/tests` 直接读真机/容器指标即可，无需伪造 /proc 树；命令执行的进程树回收按平台分路——POSIX 用 `os.killpg`、Windows 用 `taskkill /F /T`（`executor.py`）。注：`resource` 模块仅 Unix 有，Agent 已不依赖它。
 - **命令执行语义**：前端 cmdline 恒 `use_shell=true`（整条命令经 `sh -c`，内网灵活优先，管道/重定向/glob 全支持）；argv 数组直 exec 不经 shell。服务端 API 层对 `use_shell=false` 的 cmdline 仍走 shlex.split——Windows 上含空格路径（如 `D:\Program Files\...`）会被拆坏，调 API 时优先 argv 数组。
-- **服务端入口是工厂** `kk_server.main:create_app`，没有模块级 `app`；运行走 `python -m kk_server`。测试用 uvicorn.Server 线程 + `create_app(env)`，或用 `httpx.AsyncClient` + `ASGITransport`（`test_api.py` 的做法，不依赖真实端口）。
+- **服务端入口是工厂** `kk_server.main:create_app`，没有模块级 `app`；运行走 `python -m kk_server`。测试用 uvicorn.Server 线程 + `create_app(env)`（**必须 `log_config=None` 且不传 `log_level`**：uvicorn 的 dictConfig/setLevel 会进程内残留、令 test_logsetup 假失败，见 A7.3 与 test_integration 夹具注释），或用 `httpx.AsyncClient` + `ASGITransport`（`test_api.py` 的做法，不依赖真实端口）。
 - 心跳间隔下限 1s（`agent/src/kk_agent/config.load`），集成测试依赖它在数秒内积累多个序列点；别把下限调回去。
 - **自更新窗口的离线语义（B6）**：execv 前 Agent 必须调 `Transport.announce_update()`（发 `reason=updating` 且**等 PUBACK**，否则帧随进程替换一起丢），服务端把它落进 `containers.status_reason`；空 reason 的 LWT 在 120s 内不覆盖它（`store.set_online`）。更新轮询带 ±20% 抖动，同版本失败按 5/10/30min 退避（成功或版本变化清零，门禁在 `apply_manifest_receipt`，轮询与推送两条路径共用）。
 - Agent 上线（status）即可在 API 看到主机，但**指标要等首帧心跳**；集成测试的等待条件必须同时检查 `metrics.mem_mb` 非空。

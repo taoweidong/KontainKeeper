@@ -160,6 +160,7 @@ def setup_logging(settings):
     for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
         lg = logging.getLogger(name)
         lg.handlers = [intercept]
+        lg.setLevel(logging.NOTSET)  # 清掉进程内此前运行 uvicorn 可能留下的显式级别
         lg.propagate = False         # 已挂拦截器，避免再冒泡到 root 重复一遍
 
     _CONFIGURED = True

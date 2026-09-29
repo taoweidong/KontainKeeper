@@ -103,8 +103,12 @@ def stack(tmp_path):
         "KK_TOPIC_PREFIX": prefix,
         "KK_MQTT_CLIENT_ID": "kk-server-it-" + prefix,
     }
+    # log_config=None 与生产入口 main() 对齐（A7.3）：uvicorn 的默认 dictConfig 会清掉
+    # logsetup 挂在 uvicorn.* 上的 InterceptHandler；且 log_level 非空时 uvicorn 还会
+    # setLevel() 把这些 logger 钉死在显式级别上（级别过滤先于 handler，WARNING 被静默丢）。
+    # 两者都是进程内残留，会让其后运行的 test_logsetup 假失败。
     server = uvicorn.Server(uvicorn.Config(create_app(env), host="127.0.0.1",
-                                          port=port, log_level="error"))
+                                           port=port, log_config=None))
     st = threading.Thread(target=server.run, daemon=True)
     st.start()
     for _ in range(100):
