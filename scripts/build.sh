@@ -5,6 +5,8 @@
 # 用法:
 #   KK_SERVER=mqtt://mosquitto:1883 \
 #     BASE_IMAGE=myregistry/vscode-server:1.2 ./scripts/build.sh myregistry/vscode-server-managed:1.2
+# 可选 MQTT 鉴权（Broker 启用 password_file/ACL 时，见 docs/deployment.md §4.7）：
+#   KK_MQTT_USERNAME=kk-agent KK_MQTT_PASSWORD=... 同上 ...
 #
 # 入口透传方式（docker 原生机制，不经 shell 解析）：
 #   原镜像 ENTRYPOINT/CMD 在构建期解析为 JSON 数组，写入生成 Dockerfile 的
@@ -12,10 +14,12 @@
 #   元素作为其参数透传。运行时 wrapper 后台监管 Agent、前台 exec "$@"，
 #   容器生命周期 = 原 IDE 生命周期，用户看到的启动行为不变。
 #
-# 安全说明（v3）：Agent 零凭据接入（匿名 Broker），接入管控由服务端
+# 安全说明（v3）：Agent 默认零凭据接入（匿名 Broker），接入管控由服务端
 #   KK_AGENT_IPS 白名单承担——只有白名单内 IP 的主机上报会被接受。
 #   多网卡/NAT 环境自报 IP 不准时，运行时通过 `docker run -e KK_ADVERTISE_IP=x.x.x.x`
 #   显式覆盖；本脚本只把 KK_SERVER 地址等非敏感配置烧入镜像。
+#   启用 Broker 鉴权时 KK_MQTT_USERNAME/KK_MQTT_PASSWORD 也会写入镜像 ENV——
+#   镜像 ENV 对容器内用户可读（与 KK_SERVER 同级），是该方案的已知取舍。
 set -euo pipefail
 
 : "${KK_SERVER:?need KK_SERVER}"
@@ -67,6 +71,12 @@ cp "$REPO_ROOT/agent/deploy/entrypoint-wrapper.sh" "$WORK/kk-entrypoint"
   echo "COPY kk-entrypoint /usr/local/bin/kk-entrypoint"
   echo "RUN chmod +x /usr/local/bin/kk-entrypoint /opt/kk-agent/kk-agent && mkdir -p /var/log"
   echo "ENV KK_SERVER=\"$KK_SERVER\" \\"
+  if [ -n "${KK_MQTT_USERNAME:-}" ]; then
+    echo "    KK_MQTT_USERNAME=\"$KK_MQTT_USERNAME\" \\"
+  fi
+  if [ -n "${KK_MQTT_PASSWORD:-}" ]; then
+    echo "    KK_MQTT_PASSWORD=\"$KK_MQTT_PASSWORD\" \\"
+  fi
   echo "    KK_AGENT_BIN=/opt/kk-agent/kk-agent \\"
   echo "    KK_PLUGIN_DIR=/opt/kk-agent/plugins \\"
   echo "    KK_LOG=/var/log/kk-agent.log"
@@ -78,4 +88,8 @@ echo ">> generated entrypoint config:"
 sed 's/^/     /' <<<"$ENTRYPOINT_LINE"
 docker build -t "$OUT_IMAGE" "$WORK"
 echo ">> done: $OUT_IMAGE"
-echo ">> Agent 零凭据接入：确认服务端 KK_AGENT_IPS 白名单已包含本机出口 IP 即可上报。"
+if [ -n "${KK_MQTT_USERNAME:-}" ]; then
+  echo ">> Broker 鉴权模式：Agent 以账号 $KK_MQTT_USERNAME 接入，确认 Broker password_file 已含该账号、aclfile 放行其主题。"
+else
+  echo ">> Agent 零凭据接入：确认服务端 KK_AGENT_IPS 白名单已包含本机出口 IP 即可上报。"
+fi

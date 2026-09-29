@@ -1,0 +1,16 @@
+# KontainKeeper MQTT ACL —— 配合 mosquitto-secure.conf 使用（两个账号的最小权限）
+#
+# 设计要点：下行 cmd 主题只允许 kk-server 发布——匿名 Broker 下「任何可达 1883
+# 的主机都能向 cmd 主题发布命令」正是评审定性为全网 RCE 的攻击路径，ACL 在
+# Broker 层把它关死；Agent 账号只许上报自己的三类上行帧、订阅自己的命令。
+#
+# 主题前缀默认 kk/v1：改过 KK_TOPIC_PREFIX 的话本文件要同步改。
+
+user kk-server
+topic readwrite kk/v1/#
+
+user kk-agent
+topic write kk/v1/+/status
+topic write kk/v1/+/hb
+topic write kk/v1/+/result
+topic read kk/v1/+/cmd

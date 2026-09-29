@@ -1,0 +1,26 @@
+# 启用 MQTT 鉴权（可选加固，评审 P0-S1）——叠加在 docker-compose.prod.yml 之上：
+#
+#   docker compose -f docker-compose.prod.yml -f docker-compose.secure-mqtt.yml --env-file .env up -d
+#
+# 前置步骤：
+#   1. 按 deploy/mosquitto/mosquitto-secure.conf 头部说明生成
+#      deploy/mosquitto/auth/passwd（kk-server 与 kk-agent 两个账号）；
+#   2. .env 中设置 KK_MQTT_USERNAME / KK_MQTT_PASSWORD（kk-server 侧凭据，
+#      用户名必须是 aclfile 里的 kk-server）；
+#   3. Agent 侧凭据在构建管理镜像时烧入：KK_MQTT_USERNAME=kk-agent +
+#      KK_MQTT_PASSWORD 传给 scripts/build.sh（见 deployment.md §4.7）。
+#
+# 不启用本叠加文件时，默认仍为匿名 Broker + 服务端 KK_AGENT_IPS 白名单模式，
+# 行为与此前完全一致。
+
+services:
+  mosquitto:
+    volumes:
+      - ./deploy/mosquitto/mosquitto-secure.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./deploy/mosquitto/auth:/mosquitto/config/auth:ro
+      - mosquitto-data:/mosquitto/data
+
+  kk-server:
+    environment:
+      KK_MQTT_USERNAME: ${KK_MQTT_USERNAME:?启用 MQTT 鉴权后必须设置 KK_MQTT_USERNAME（aclfile 中的 kk-server）}
+      KK_MQTT_PASSWORD: ${KK_MQTT_PASSWORD:?启用 MQTT 鉴权后必须设置 KK_MQTT_PASSWORD}
