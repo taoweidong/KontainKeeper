@@ -22,6 +22,7 @@ import hashlib
 import hmac
 import json
 import os
+import shutil
 import sys
 import threading
 import time
@@ -199,6 +200,22 @@ def _is_binary_target(target):
     return True
 
 
+def push_update_allowed(cfg):
+    """MQTT 推送路径的签名策略（QR-P0-1）。HTTP 轮询路径不经此检查。
+
+    推送更新等价于远程替换二进制，而 v3 的 Broker 默认匿名开放——任何能往
+    cmd 主题发消息的客户端都能触发。因此推送路径默认要求签名：
+
+    - 配了 KK_UPDATE_HMAC_KEY：放行，_verify_signature 会强制验签
+      （清单没签或签错都过不去）；
+    - 未配 key：没有任何可验签的凭据，默认拒绝；内网可信部署显式置
+      KK_UPDATE_ALLOW_UNSIGNED=1 才放行。
+    """
+    if (cfg.get("update_hmac_key") or "").strip():
+        return True
+    return bool(cfg.get("update_allow_unsigned"))
+
+
 def _verify_signature(data, manifest, cfg, log):
     """校验 sha256（防损坏）+ 可选 HMAC 签名（防伪造）。返回是否放行。"""
     log = _log(log)
@@ -239,10 +256,19 @@ def download_binary(url, log, insecure=False, max_bytes=MAX_BIN_BYTES):
     return bytes(buf)
 
 
+_BAK_SUFFIX = ".kkbak"   # 旧二进制备份（execv 失败回滚用，QR-A2）
+
+
 def verify_and_replace(data, target):
-    """写临时文件 → fsync → 原子替换 target。失败清理临时文件。"""
+    """写临时文件 → fsync → 备份旧二进制 → 原子替换 target。失败清理临时文件。
+
+    备份（QR-A2）：execv 阶段失败时 _apply_manifest 用 .kkbak 还原旧二进制，
+    否则「进程还跑着旧代码、磁盘已是新二进制」，下次重启即变砖。备份固定单槽位，
+    下次更新覆盖；还原时被消费，不会堆积。
+    """
     d = os.path.dirname(os.path.abspath(target))
     tmp = os.path.join(d, ".kk-agent.update.%d" % os.getpid())
+    bak = target + _BAK_SUFFIX
     try:
         with open(tmp, "wb") as f:
             f.write(data)
@@ -250,14 +276,32 @@ def verify_and_replace(data, target):
             os.fsync(f.fileno())
         if os.name == "posix":
             os.chmod(tmp, 0o755)
+        if os.path.exists(target):
+            shutil.copy2(target, bak)   # 先留后路，再做不可逆替换
         os.replace(tmp, target)  # 同文件系统内原子替换
     except BaseException:
         try:
             os.remove(tmp)
         except OSError:
             pass
+        try:
+            os.remove(bak)   # 替换没有发生，备份是冗余残留
+        except OSError:
+            pass
         raise
     return True
+
+
+def restore_backup(target):
+    """execv 失败后还原旧二进制；返回是否还原成功（失败时磁盘仍是新二进制）。"""
+    bak = target + _BAK_SUFFIX
+    if not os.path.exists(bak):
+        return False
+    try:
+        os.replace(bak, target)
+        return True
+    except OSError:
+        return False
 
 
 def apply_manifest(cfg, log, manifest, on_before_restart=None):
@@ -337,11 +381,14 @@ def _apply_manifest(cfg, log, manifest, on_before_restart=None):
                         len(data), declared)
             return False, "size_mismatch"
         expected = str(manifest.get("sha256") or "")
-        if expected and hashlib.sha256(data).hexdigest().lower() != expected.lower():
+        if not expected:
+            log.warning("manifest missing sha256, refuse to replace")
+            return False, "no_sha256"
+        if hashlib.sha256(data).hexdigest().lower() != expected.lower():
             log.warning("sha256 mismatch, refuse to replace")
             return False, "sha256_mismatch"
         if not _verify_signature(data, manifest, cfg, log):
-            # sha256 已在上面单独判过，走到这里只剩签名问题
+            # sha256 已在上面单独判过（含缺失），走到这里只剩签名问题
             return False, "hmac_mismatch"
         try:
             verify_and_replace(data, target)
@@ -356,7 +403,19 @@ def _apply_manifest(cfg, log, manifest, on_before_restart=None):
                 on_before_restart()
             except Exception as e:
                 log.warning("on_before_restart hook failed: %s", e)
-        os.execv(target, [target] + sys.argv[1:])
+        try:
+            os.execv(target, [target] + sys.argv[1:])
+        except OSError:
+            # execv 失败（ENOEXEC/架构不符等）：磁盘已是新二进制而进程仍跑旧代码，
+            # 不还原的话下次重启就是变砖（QR-A2）。还原后按正常失败回执退出，
+            # 退避账本照常记账，避免立刻重试同一个坏包。
+            log.exception("execv failed, restoring previous binary")
+            if restore_backup(target):
+                log.info("previous binary restored after execv failure")
+            else:
+                log.error("restore failed: %s is the NEW binary; verify it manually "
+                          "before restarting this host", target)
+            return False, "exec_error"
     return True, ""
 
 

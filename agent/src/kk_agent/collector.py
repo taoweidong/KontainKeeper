@@ -96,10 +96,15 @@ def disk_metrics(paths=None):
 
 
 def disk_io_metrics(state):
-    """磁盘 IO 速率（MB/s、IOPS）。依赖上次累计值差分。"""
+    """磁盘 IO 速率（MB/s、IOPS）。依赖上次累计值差分。
+
+    返回恒为 (out, state) 二元组：psutil 拿不到计数器（Windows 性能计数器
+    不可用等）时返回 ({}, None)——此前这里 `return {}` 会击穿解包契约，
+    异常被 collect_items 吞掉后 disk_io 永久静默缺失（QR-A4）。
+    """
     cur = _safe(psutil.disk_io_counters)
     if cur is None:
-        return {}
+        return {}, None
     now = time.time()
     prev = state.get("disk_io")
     state_out = (now, cur.read_bytes, cur.write_bytes, cur.read_count, cur.write_count)
@@ -107,10 +112,12 @@ def disk_io_metrics(state):
     if prev:
         dt = now - prev[0]
         if dt > 0:
-            out["disk_read_mb"] = round((cur.read_bytes - prev[1]) / MB / dt, 2)
-            out["disk_write_mb"] = round((cur.write_bytes - prev[2]) / MB / dt, 2)
-            out["disk_read_iops"] = round((cur.read_count - prev[3]) / dt, 1)
-            out["disk_write_iops"] = round((cur.write_count - prev[4]) / dt, 1)
+            # max(0, ...) 与 net 侧同理：计数器重置/回绕（磁盘重插、容器迁移）
+            # 会算出负速率，钳到 0（QR-A13）
+            out["disk_read_mb"] = round(max(0, cur.read_bytes - prev[1]) / MB / dt, 2)
+            out["disk_write_mb"] = round(max(0, cur.write_bytes - prev[2]) / MB / dt, 2)
+            out["disk_read_iops"] = round(max(0, cur.read_count - prev[3]) / dt, 1)
+            out["disk_write_iops"] = round(max(0, cur.write_count - prev[4]) / dt, 1)
     return out, state_out
 
 
@@ -214,7 +221,7 @@ def _item_disk(_state, cfg):
 
 def _item_disk_io(state, _cfg):
     out, st = disk_io_metrics(state)
-    return out, {"disk_io": st}
+    return out, ({"disk_io": st} if st else None)
 
 
 def _item_net(state, _cfg):

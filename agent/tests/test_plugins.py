@@ -83,3 +83,49 @@ def test_collect_exception_not_quarantined(tmp_path):
     # 未被隔离的证明：换成好内容（mtime 再变）无需「解隔离」逻辑即出数
     _write(f, GOOD)
     assert pl.collect_all(str(d)) == {"bad": {"v": 1}}
+
+
+# ---- QR-A3：加载阶段超时隔离 ----
+
+LOADHANG = "import time\ntime.sleep(30)\ndef collect():\n    return {'v': 1}\n"
+
+
+def test_load_timeout_quarantines_hung_import(tmp_path):
+    """exec_module 卡死必须被超时隔离，绝不能占住加载锁拖死心跳与命令线程。
+
+    旧实现把 exec_module 放在 _lock 内且无超时：插件顶层 sleep/网络调用会让锁被
+    永久占住，collect_all 的所有调用方（心跳线程、命令池）全体饿死。
+    """
+    d = tmp_path / "plugins"
+    d.mkdir()
+    f = d / "loadhang.py"
+    _write(f, LOADHANG)
+
+    t0 = time.monotonic()
+    out = pl.collect_all(str(d), timeout=0.5)
+    assert time.monotonic() - t0 < 5, "加载卡死必须在超时后放行，而不是陪跑 30s"
+    assert out == {}
+
+    # 第二轮：已隔离，直接跳过（不再等待顶层 sleep）
+    t0 = time.monotonic()
+    assert pl.collect_all(str(d), timeout=0.5) == {}
+    assert time.monotonic() - t0 < 2
+
+    # 作者修复插件（mtime 变化）→ 重载解除隔离，恢复正常出数
+    _write(f, GOOD)
+    assert pl.collect_all(str(d), timeout=5) == {"loadhang": {"v": 1}}
+
+
+def test_load_failure_leaves_no_half_initialized_module(tmp_path):
+    """加载失败不得把半初始化 module 留在表里（后续轮次拿 None 去调 collect）。"""
+    d = tmp_path / "plugins"
+    d.mkdir()
+    # 独立命名：_loaded 是模块级状态，同文件其他用例可能已加载过 "bad"
+    f = d / "loadfail.py"
+    _write(f, "raise RuntimeError('import boom')\n")
+    for _ in range(2):
+        assert pl.collect_all(str(d), timeout=5) == {}
+        _write(f, "raise RuntimeError('import boom')\n")
+    assert "loadfail" not in pl.loaded_names(), "失败的加载不能进入已加载表"
+    _write(f, GOOD)
+    assert pl.collect_all(str(d), timeout=5) == {"loadfail": {"v": 1}}

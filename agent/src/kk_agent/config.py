@@ -80,6 +80,10 @@ def load(env=None, **overrides):
         # 可选 HMAC-SHA256 签名校验（纯标准库实现，防伪造更新）
         "update_hmac_key": env.get("KK_UPDATE_HMAC_KEY", ""),
         "update_require_sig": _env_bool(env, "KK_UPDATE_REQUIRE_SIG"),
+        # 推送更新的未签名清单是否放行（QR-P0-1）：配了 KK_UPDATE_HMAC_KEY 时
+        # 本键无意义（签名强制）；未配 key 时推送路径默认拒绝未签名清单，
+        # 内网可信部署显式置 1 才放行。HTTP 轮询路径不受此键影响。
+        "update_allow_unsigned": _env_bool(env, "KK_UPDATE_ALLOW_UNSIGNED"),
         "agent_bin": env.get("KK_AGENT_BIN", "").strip(),
         # shell 模式（允许管道/重定向）开关，服务器运维场景常用；置 0 可彻底关闭
         "allow_shell": env.get("KK_ALLOW_SHELL", "1").strip().lower() not in ("0", "false", "no", "off"),

@@ -9,6 +9,7 @@
 资源策略不变：空闲零线程、采集/命令在 daemon 工作线程跑、常驻开销以 MB 计。
 """
 import base64
+import collections
 import json
 import random
 import signal
@@ -24,6 +25,9 @@ from . import updater as kk_updater
 from .transport import RC_SEND_FAILED, Transport, TransportError
 
 CHUNK = 48 * 1024  # 命令输出分块大小（base64 前）
+# 命令 id 去重窗口（QR-A1）：QoS1 持久会话是至少一次投递，PUBACK 竞态窗口内
+# Broker 会重发同一命令。有界 LRU 防 cid 无限累积；512 覆盖 max_queued 的量级。
+DEDUP_MAX = 512
 
 
 def _fail_frame(cmd_id, seq, total, res):
@@ -108,10 +112,22 @@ def _run_update(tr, cid, cmd, cfg, log):
     此前 kind=update 是唯一不回传 result 的 kind，服务端无从知道 500 台里
     升了多少、失败多少、卡在哪一步。
 
-    成功回执由 apply_manifest_receipt 在 execv 之前发出（进程被替换后来不及发帧）；
-    失败回执在这里发，out 里带原因码。
+    结果帧只在失败时出现：成功路径以 execv 结束、进程被替换，来不及发「成功」
+    回执——真正的成功终态由服务端按「状态帧佐证版本到达」判定
+    （store.finish_updates_reaching），不是漏发。
     """
     log = log.bind(component="updater")
+    if not kk_updater.push_update_allowed(cfg):
+        # QR-P0-1：推送路径默认要求签名。匿名 Broker 下未签名推送 = 任何能连
+        # Broker 的客户端都能替换二进制；拒绝原因随结果帧进服务端更新台账，
+        # 运维配 KK_UPDATE_HMAC_KEY 或 KK_UPDATE_ALLOW_UNSIGNED=1 后重推即可。
+        log.warning("push update rejected: unsigned manifest without "
+                    "KK_UPDATE_HMAC_KEY (set KK_UPDATE_ALLOW_UNSIGNED=1 on the "
+                    "agent to allow, or configure the key on both ends)")
+        res = {"rc": 1, "out": b"unsigned_push_rejected",
+               "timed_out": False, "elapsed_ms": 0}
+        send_result(tr, cid, res)
+        return res
 
     def before_restart():
         # B6.1：让服务端能把「正在自更新」与「容器停了」区分开。
@@ -131,12 +147,20 @@ def _run_update(tr, cid, cmd, cfg, log):
 
 def make_dispatcher(tr, runner, cfg, log, state_box):
     """构造 MQTT 命令回调。运行在 paho 网络线程，必须快速返回。"""
+    seen_cids = collections.OrderedDict()   # 有界 LRU：cid -> True
 
     def dispatch(cmd):
         cid = cmd.get("id")
         kind = cmd.get("kind") or "shell"
         if not cid:
             return
+        if cid in seen_cids:
+            # QoS1 重发去重（QR-A1）：首跑的结果帧已在途，重放结果只会污染台账
+            log.warning("command %s redelivered by broker (QoS1), dropped", cid)
+            return
+        seen_cids[cid] = True
+        while len(seen_cids) > DEDUP_MAX:
+            seen_cids.popitem(last=False)
         if kind == "shell":
             runner.submit(cmd)
         elif kind == "collect":
@@ -144,6 +168,14 @@ def make_dispatcher(tr, runner, cfg, log, state_box):
         elif kind == "plugin_reload":
             runner.submit_fn(cid, lambda: _run_plugin_reload(cfg, log))
         elif kind == "update":
+            if cfg.get("update_disabled"):
+                # QR-P0-1：KK_UPDATE_DISABLED 必须同时关掉轮询与推送两条路，
+                # 否则运维显式关了更新，推送式升级仍能把 Agent 整个换掉。
+                # 回执带原因码，服务端台账可辨。
+                log.warning("update command %s rejected: KK_UPDATE_DISABLED is set", cid)
+                send_result(tr, cid, {"rc": 1, "out": b"update_disabled",
+                                      "timed_out": False, "elapsed_ms": 0})
+                return
             # 服务端推送式自更新：命令载荷即版本清单，形态校验在 updater 内做。
             # 走 runner 而不是裸线程：更新要回执（A6.2），失败原因必须能送到服务端
             runner.submit_fn(cid, lambda: _run_update(tr, cid, cmd, cfg, log))

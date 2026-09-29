@@ -6,6 +6,8 @@ import hashlib
 import os
 import sys
 
+import pytest
+
 from kk_agent import config as kk_config
 from kk_agent import updater as updater
 
@@ -458,3 +460,95 @@ def test_check_update_forwards_restart_hook(monkeypatch):
     hook = lambda: None
     assert updater.check_update({}, None, hook) is True
     assert seen["hook"] is hook
+
+
+# ---- QR-P0-1 / QR-A2：推送签名策略与 execv 失败回滚 ----
+
+def test_push_update_allowed_policy():
+    """推送路径默认要求签名：配 key 或显式 KK_UPDATE_ALLOW_UNSIGNED=1 才放行。"""
+    assert updater.push_update_allowed({"update_hmac_key": "s3cret"}) is True
+    assert updater.push_update_allowed({"update_allow_unsigned": True}) is True
+    assert updater.push_update_allowed({}) is False
+    assert updater.push_update_allowed({"update_hmac_key": " ",
+                                        "update_allow_unsigned": False}) is False
+
+
+def test_apply_manifest_execv_failure_restores_old_binary(tmp_path, monkeypatch):
+    """QR-A2：execv 失败必须还原旧二进制并按失败回执退出。
+
+    不还原的话磁盘已是新二进制而进程仍跑旧代码，下次重启即变砖；
+    且回执可送达（exec_error 计入退避账本，不重试同一坏包）。
+    """
+    data = b"\x7fELF-new-binary"
+    target = tmp_path / "kk-agent-test"
+    target.write_bytes(b"old-binary-bytes")
+    monkeypatch.setattr(updater, "download_binary", lambda *a, **k: data)
+
+    def boom(p, argv):
+        raise OSError("Exec format error")
+    monkeypatch.setattr(os, "execv", boom)
+
+    cfg = {"token": "t", "update_url": "http://api", "agent_bin": str(target),
+           "update_insecure": False}
+    manifest = {"version": "9.9.9", "sha256": hashlib.sha256(data).hexdigest(),
+                "size": len(data), "url": "/x"}
+    ok, reason = updater.apply_manifest_receipt(cfg, None, manifest)
+    assert ok is False and reason == "exec_error"
+    assert target.read_bytes() == b"old-binary-bytes", "旧二进制必须被还原"
+    assert not os.path.exists(str(target) + updater._BAK_SUFFIX), "还原后备份应被消费"
+
+
+def test_apply_manifest_execv_failure_without_backup_still_receipts(tmp_path, monkeypatch):
+    """备份缺失（如 verify_and_replace 旧版本升级而来）时 execv 失败也要回执，
+    且如实报告磁盘状态，而不是假装无事发生。"""
+    data = b"\x7fELF-new"
+    target = tmp_path / "kk-agent-test"
+    target.write_bytes(b"old")
+    monkeypatch.setattr(updater, "download_binary", lambda *a, **k: data)
+    monkeypatch.setattr(os, "execv", lambda *a: (_ for _ in ()).throw(OSError("noexec")))
+    # 备份先被人为拿走：模拟还原失败的极端路径
+    monkeypatch.setattr(updater, "restore_backup", lambda t: False)
+    cfg = {"token": "t", "update_url": "http://api", "agent_bin": str(target),
+           "update_insecure": False}
+    ok, reason = updater.apply_manifest_receipt(cfg, None, {
+        "version": "9.9.9", "sha256": hashlib.sha256(data).hexdigest(),
+        "size": len(data), "url": "/x"})
+    assert ok is False and reason == "exec_error"
+
+
+def test_verify_and_replace_replace_failure_cleans_backup(tmp_path, monkeypatch):
+    """替换本身失败：目标保持原样，冗余备份也要清掉（不留陈旧 .kkbak）。"""
+    target = tmp_path / "kk-agent-test"
+    target.write_bytes(b"old")
+
+    def boom(src, dst):
+        raise OSError("cross-device link")
+    monkeypatch.setattr(os, "replace", boom)
+    with pytest.raises(OSError):
+        updater.verify_and_replace(b"new", str(target))
+    assert target.read_bytes() == b"old"
+    assert not os.path.exists(str(target) + updater._BAK_SUFFIX)
+
+
+def test_verify_and_replace_keeps_backup_for_execv_rollback(tmp_path):
+    """QR-A2 正向：替换成功后 .kkbak 必须在场（execv 阶段回滚的原料）。"""
+    target = tmp_path / "kk-agent-test"
+    target.write_bytes(b"old-binary")
+    assert updater.verify_and_replace(b"new-binary", str(target)) is True
+    assert target.read_bytes() == b"new-binary"
+    with open(str(target) + updater._BAK_SUFFIX, "rb") as f:
+        assert f.read() == b"old-binary"
+
+
+def test_apply_manifest_missing_sha256_reports_no_sha256(tmp_path, monkeypatch):
+    """缺 sha256 的清单拒绝原因必须是 no_sha256，而不是误标 hmac_mismatch（QR-A10）。"""
+    target = tmp_path / "kk-agent-test"
+    target.write_bytes(b"old")
+    monkeypatch.setattr(updater, "download_binary", lambda *a, **k: b"data")
+    monkeypatch.setattr(os, "execv", lambda *a: None)
+    cfg = {"token": "t", "update_url": "http://api", "agent_bin": str(target),
+           "update_insecure": False}
+    ok, reason = updater.apply_manifest_receipt(
+        cfg, None, {"version": "9.9.9", "size": 4, "url": "/x"})
+    assert ok is False and reason == "no_sha256"
+    assert target.read_bytes() == b"old"

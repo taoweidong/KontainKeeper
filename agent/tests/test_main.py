@@ -14,12 +14,19 @@ from kk_agent import executor as kk_executor
 
 
 CFG = {"interval": 60, "plugin_dir": "", "top_n": 5, "disk_paths": [],
-       "host": "web-01", "allow_shell": True, "plugin_timeout": 5}
+       "host": "web-01", "allow_shell": True, "plugin_timeout": 5,
+       # QR-P0-1：推送更新默认拒绝未签名清单；本文件的更新用例只关心回执链路，
+       # 显式放行（未签名拒绝与 KK_UPDATE_DISABLED 门控各有专属用例）
+       "update_allow_unsigned": True}
 
 
 class _NullLog:
     def __getattr__(self, _name):
         return lambda *a, **k: None
+
+    def bind(self, *a, **k):
+        # 与 loguru 语义一致：bind 返回可继续调用的 logger
+        return self
 
 
 class FakeTransport:
@@ -101,14 +108,16 @@ def test_send_result_reports_give_up_when_terminal_also_fails():
 
 # ---- 命令分派 ----
 
-def build_runner(tr, allow_shell=True):
+def build_runner(tr, allow_shell=True, cfg_overrides=None):
     """与 run() 内同样的接法搭好 Runner + dispatcher。"""
     def emit(cid, res):
         m.send_result(tr, cid, res)
 
     runner = kk_executor.Runner(emit, max_out=4 * 1024 * 1024, max_workers=2,
                                 allow_shell=allow_shell, log=_NullLog())
-    return m.make_dispatcher(tr, runner, dict(CFG), _NullLog(), m.StateBox())
+    cfg = dict(CFG)
+    cfg.update(cfg_overrides or {})
+    return m.make_dispatcher(tr, runner, cfg, _NullLog(), m.StateBox())
 
 
 def test_dispatch_shell_command_returns_result_end_to_end():
@@ -304,3 +313,72 @@ def test_submit_heartbeat_skips_when_busy_and_clears_after(monkeypatch):
         threading.Event().wait(0.05)
     assert not busy.is_set()
     assert tr.frames and "hb" in tr.frames[0]
+
+
+# ---- QR-P0-1 / QR-A1：更新门控、未签名拒绝与 QoS1 去重 ----
+
+def wait_done(tr, limit=200):
+    for _ in range(limit):
+        if tr.frames and tr.frames[-1].get("done"):
+            return True
+        threading.Event().wait(0.05)
+    return False
+
+
+def test_dispatch_update_respects_update_disabled():
+    """QR-P0-1：KK_UPDATE_DISABLED 必须同时关掉推送路径，回执带 update_disabled。
+
+    此前该开关只挡轮询（main 的调度循环与 check_update），kind=update 命令
+    照常执行——运维显式关了更新，推送式升级仍能把 Agent 整个换掉。
+    """
+    tr = FakeTransport()
+    dispatch = build_runner(tr, cfg_overrides={"update_disabled": True})
+    dispatch({"id": "c-dis", "kind": "update", "version": "9.9.9", "sha256": "abc"})
+    assert wait_done(tr)
+    assert tr.frames[-1]["rc"] == 1
+    assert b"update_disabled" in decode(tr.frames)
+
+
+def test_dispatch_update_rejects_unsigned_by_default():
+    """QR-P0-1：未配 HMAC key 且未显式 KK_UPDATE_ALLOW_UNSIGNED=1 时拒绝未签名推送。
+
+    匿名 Broker 下未签名推送等价于任何能连 Broker 的客户端都能远程替换二进制。
+    """
+    tr = FakeTransport()
+    dispatch = build_runner(tr, cfg_overrides={"update_allow_unsigned": False})
+    dispatch({"id": "c-uns", "kind": "update", "version": "9.9.9", "sha256": "abc"})
+    assert wait_done(tr)
+    assert tr.frames[-1]["rc"] == 1
+    assert b"unsigned_push_rejected" in decode(tr.frames)
+
+
+def test_dispatch_update_accepts_signed_when_key_configured(monkeypatch):
+    """配了 KK_UPDATE_HMAC_KEY 时推送放行（签名本体校验在 updater 内，另有用例）。"""
+    seen = {}
+
+    def spy(cfg, log, manifest, on_before_restart=None):
+        seen["ok"] = True
+        return True, ""
+
+    monkeypatch.setattr(m.kk_updater, "apply_manifest_receipt", spy)
+    tr = FakeTransport()
+    dispatch = build_runner(tr, cfg_overrides={"update_hmac_key": "s3cret",
+                                               "update_allow_unsigned": False})
+    dispatch({"id": "c-key", "kind": "update", "version": "9.9.9", "sha256": "abc"})
+    assert wait_done(tr)
+    assert seen.get("ok") is True
+    assert tr.frames[-1]["rc"] == 0
+
+
+def test_dispatcher_dedups_redelivered_command():
+    """QR-A1：QoS1 持久会话重发同 id 命令只执行一次（shell 副作用不可幂等）。"""
+    tr = FakeTransport()
+    dispatch = build_runner(tr)
+    cmd = {"id": "c-dup", "kind": "shell",
+           "argv": [sys.executable, "-c", "print('kk-dedup')"], "timeout": 20}
+    dispatch(cmd)
+    dispatch(cmd)   # Broker 重发：必须被丢弃，不进执行池
+    assert wait_done(tr)
+    threading.Event().wait(0.3)   # 给「去重失效时的第二跑」留完成窗口
+    done_frames = [f for f in tr.frames if f.get("done")]
+    assert len(done_frames) == 1, "同一命令 id 只允许一条终态帧"

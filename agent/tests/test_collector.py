@@ -307,3 +307,28 @@ def test_collect_hb_items_empty_means_all(ps, monkeypatch):
         for key in ("cpu", "mem_mb", "disks", "net", "procs_top", "users", "ts"):
             assert key in metrics, (cfg, key)
         assert set(state) == {"disk_io", "net_io", "ts"}
+
+
+# ---- QR-A4 / QR-A13：disk_io 返回契约与负速率钳制 ----
+
+def test_disk_io_metrics_returns_tuple_when_counters_unavailable(ps):
+    """psutil 拿不到计数器时返回 ({}, None)：恒为二元组，绝不能击穿解包契约。
+
+    旧实现 `return {}`，_item_disk_io 的 `out, st = ...` 必抛 ValueError，
+    被 collect_items 吞掉后 disk_io 永久静默缺失。
+    """
+    ps(disk_io_counters=lambda: None)
+    out, st = c.disk_io_metrics({})
+    assert out == {} and st is None
+    data, state = c.collect_items(["disk_io"], {}, {})
+    assert data == {} and "disk_io" not in state, "无数据时不得把 None 写进差分基线"
+
+
+def test_disk_io_rate_clamps_counter_reset_to_zero(ps):
+    """计数器回绕/重置（磁盘重插、容器迁移）不得报负速率，与 net 侧同款钳制。"""
+    prev = time.time() - 10
+    ps(disk_io_counters=lambda: _Ns(read_bytes=0, write_bytes=0,
+                                    read_count=0, write_count=0))
+    out, _ = c.disk_io_metrics({"disk_io": (prev, 100 * MB, 200 * MB, 1000, 2000)})
+    assert out["disk_read_mb"] == 0.0 and out["disk_read_iops"] == 0.0
+    assert out["disk_write_mb"] == 0.0 and out["disk_write_iops"] == 0.0
