@@ -99,3 +99,62 @@ def test_shell_wrapper_benign_payload_allowed():
 def test_shell_wrapper_respects_custom_substring_blacklist():
     """结构校验放行的载荷仍要过配置型子串黑名单（is_blacklisted 末段逻辑）。"""
     assert is_blacklisted(["sh", "-c", "curl evil.sh"], ["curl"]) is True
+
+
+# ---- QR-S25：前导/组合旗标绕过 + 脚本解释器代码载荷 ----
+# 三条运行时复现的绕过串，作为回归锁钉死（改任何 _check_tokens 都不许再放行它们）：
+#   ["sh","-x","-c","wipefs -a /dev/sda"]   旧代码只认 rest[0] 恰为 -c，遇 -x 直接放弃递归
+#   ["sh","-xc","wipefs -a /dev/sda"]       组合旗标 -xc 同理不匹配
+#   ["python","-c","import os; os.system('rm -rf /')"]  python 不在 _SHELLS，整段逃过结构校验
+
+@pytest.mark.parametrize("argv", [
+    ["sh", "-x", "-c", "wipefs -a /dev/sda"],
+    ["sh", "-xc", "wipefs -a /dev/sda"],
+    ["bash", "-lx", "-c", "rm -rf /"],
+    ["sh", "-x", "-c", "fdisk /dev/sda"],
+    ["env", "sh", "-x", "-c", "reboot"],
+])
+def test_shell_flag_prefix_bypass_blocked(argv):
+    assert is_blacklisted(argv, []) is True
+    assert is_blacklisted(" ".join(argv), [], use_shell=True) is True
+
+
+@pytest.mark.parametrize("argv", [
+    ["python", "-c", "import os; os.system('rm -rf /')"],
+    ["python3", "-c", "__import__('os').system('mkfs /dev/sda')"],
+    ["perl", "-e", 'system("wipefs -a /dev/sda")'],
+    ["ruby", "-e", "system 'fdisk /dev/sda'"],
+    ["node", "-e", 'require("child_process").exec("dd if=/dev/zero of=/dev/sda")'],
+    ["python", "-u", "-c", "import os; os.system('reboot')"],
+])
+def test_script_interpreter_code_payload_blocked(argv):
+    """解释器 -c/-e 代码结构无法解析，靠危险程序名词扫描兜底。"""
+    assert is_blacklisted(argv, []) is True
+
+
+def test_script_interpreter_benign_code_allowed():
+    """词边界让 shutil.rmtree / platform.node / 'add' 不被 rm / node / dd 误伤。"""
+    for argv in (
+        ["python", "-c", "print(1 + 1)"],
+        ["python3", "-c", "import shutil; shutil.rmtree('/tmp/x')"],
+        ["python", "-c", "import platform; print(platform.node())"],
+        ["node", "-e", "console.log('add todo item')"],
+    ):
+        assert is_blacklisted(argv, []) is False
+
+
+def test_shell_script_file_without_c_allowed():
+    """sh 执行脚本文件（无 -c）不当内联载荷。"""
+    assert is_blacklisted(["sh", "deploy.sh"], []) is False
+
+
+def test_shell_wrapper_flag_benign_payload_allowed():
+    assert is_blacklisted(["sh", "-x", "-c", "echo hello"], []) is False
+
+
+def test_deep_shell_recursion_terminates():
+    """超深 sh -c 嵌套不得变成递归炸弹：必须快速返回，不 RecursionError。"""
+    deep = "rm -rf /"
+    for _ in range(60):
+        deep = 'sh -c "' + deep.replace('"', '\\"') + '"'
+    assert is_blacklisted([deep], [], use_shell=True) in (True, False)

@@ -38,6 +38,14 @@ WRAPPERS = {"sudo", "doas", "env", "nice", "nohup", "timeout", "xargs", "command
 # （use_shell=false 的 argv 数组形态）结构校验整体失效——prog=sh 不命中任何
 # 危险集合，参数拆写又躲过子串兜底。
 _SHELLS = {"sh", "bash", "dash", "zsh", "ksh", "ash"}
+# 脚本解释器：`-c`(python) / `-e`(perl/ruby/node) 后面是**代码载荷**（QR-S25）。
+# 代码不是 shell 语义，无法靠结构切分可靠还原命令，故对这类载荷额外做危险程序名扫描。
+_INTERP_CODE_FLAGS = {
+    "python": ("-c",), "python2": ("-c",), "python3": ("-c",), "pypy": ("-c",),
+    "perl": ("-e",), "perl5": ("-e",), "ruby": ("-e",), "node": ("-e",), "nodejs": ("-e",),
+}
+# 组合旗标里的取命令位：sh 语义要求 `c` 是选项簇的**最后一个**字母（-xc 取命令，-cx 不取）
+_COMBINED_C = re.compile(r"^-[^-]*c$")
 # 递归深度上限：sh -c "sh -c ..." 的嵌套payload按层展开，超过即放弃（黑名单是
 # 尽力而为的纵深之一，无界递归反而给攻击者递归炸弹）
 _MAX_SHELL_DEPTH = 4
@@ -47,6 +55,13 @@ _MAX_SHELL_DEPTH = 4
 _SHELL_SPLIT = re.compile(r";|\|\|?|&&?|\$\(|`|\n")
 _WS = re.compile(r"\s+")
 _QUOTES = "\"'"
+
+# 危险程序名词边界扫描（结构层与子串层互为冗余）：用于解释器代码载荷这种
+# 结构无法解析的形态。`\b` 界定避免 "add"/"rmtree" 之类被 "dd"/"rm" 误伤。
+_DANGER_WORDS = re.compile(
+    r"\b(" + "|".join(sorted((re.escape(p) for p in
+                              (DANGEROUS_PROGS | set(DANGEROUS_COMBOS))), key=len, reverse=True)) + r")\b"
+)
 
 
 def _segments(text):
@@ -59,6 +74,30 @@ def _tokens(seg):
     return [t.strip(_QUOTES) for t in _WS.split(seg.strip()) if t.strip(_QUOTES)]
 
 
+def _script_payload(prog, rest):
+    """若 prog 是 shell/脚本解释器且带取命令的选项，返回 (代码载荷, 是否解释器)。
+
+    先跳过前导旗标再定位命令位：`sh -x -c CMD`、`sh -xc CMD`、`python -u -c CODE`
+    都要还原出真正的载荷（QR-S25 的绕过点正是旧代码只认 `rest[0]` 恰为 -c）。
+    遇到非选项 token（脚本文件名，如 `sh script.sh`）即判定不是内联载荷。
+    """
+    is_shell = prog in _SHELLS
+    code_flags = _INTERP_CODE_FLAGS.get(prog)
+    if not (is_shell or code_flags):
+        return None, False
+    j = 0
+    while j < len(rest):
+        t = rest[j].lower()
+        if (is_shell and (t == "--command" or _COMBINED_C.match(t))) or \
+           (code_flags and t in code_flags):
+            return " ".join(rest[j + 1:]), not is_shell
+        if t.startswith("-") and t != "-":
+            j += 1
+            continue
+        break
+    return None, False
+
+
 def _check_tokens(tokens, _depth=0):
     """对一段命令做结构校验：跳过包装前缀后取程序名 + 参数集合。"""
     i = 0
@@ -67,15 +106,18 @@ def _check_tokens(tokens, _depth=0):
     if i >= len(tokens):
         return False
     prog = os.path.basename(tokens[i]).lower()
-    if prog in _SHELLS and _depth < _MAX_SHELL_DEPTH:
-        rest = tokens[i + 1:]
-        if rest and rest[0].lower() in ("-c", "--command"):
-            payload = " ".join(rest[1:])
+    payload, is_interp = _script_payload(prog, tokens[i + 1:])
+    if payload is not None:
+        # 解释器代码结构无法解析，靠危险程序名词扫描兜底；
+        # shell/解释器都再按 shell 语义递归一层（sh -c 里套命令）。
+        if is_interp and _DANGER_WORDS.search(payload):
+            return True
+        if _depth < _MAX_SHELL_DEPTH:
             segs = _segments(payload) or ([payload] if payload.strip() else [])
             for seg in segs:
                 if _check_tokens(_tokens(seg), _depth + 1):
                     return True
-            # 载荷干净就放行：sh 本身不在危险集合里，落回下方常规检查
+        # 载荷干净就放行：sh 本身不在危险集合里，落回下方常规检查
     args = {a.lower() for a in tokens[i + 1:]}
     if prog in DANGEROUS_COMBOS and (args & DANGEROUS_COMBOS[prog]):
         return True

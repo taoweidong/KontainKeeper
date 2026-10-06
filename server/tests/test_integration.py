@@ -340,6 +340,12 @@ def test_blacklist_blocks_bypass_variants(stack):
         "busybox rm -rf /",
         "chmod -R 777 /",
         "dd if=/dev/zero of=/x",
+        # QR-S25：前导/组合旗标绕过（旧实现只认 rest[0] 恰为 -c，整段逃过结构校验）。
+        # 解释器 -c 载荷的绕过在 test_security 的 argv 矩阵里锁死：shell 单串形态会
+        # 先按 `;` 预切分，把 python 代码打碎，故这里只放能在 shell 语义下存活的旗标绕过。
+        "sh -x -c 'wipefs -a /dev/sda'",
+        "sh -xc 'wipefs -a /dev/sda'",
+        "env sh -x -c reboot",
     ]:
         status, body = http(port, "POST", "/api/commands", token=tok,
                             body={"pods": [host], "cmdline": cmdline})
