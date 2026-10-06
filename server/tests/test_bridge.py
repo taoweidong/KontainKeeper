@@ -441,38 +441,46 @@ async def _mk_bridge(tmp_path, env_extra=None):
 async def test_interval_violation_audited(tmp_path):
     """低于下限 → 审计 + stats 计数，但**照常落库**（检测不阻断，避免丢指标）。"""
     b, store = await _mk_bridge(tmp_path, {"KK_INTERVAL_MIN": "10"})
-    await b._on_status("web-01", status_frame("web-01"))
-    await b._on_hb("web-01", hb_frame("web-01", 1))
+    try:
+        await b._on_status("web-01", status_frame("web-01"))
+        await b._on_hb("web-01", hb_frame("web-01", 1))
 
-    rows = await store.metrics_series("web-01", hours=24)
-    assert len(rows[0]) == 1, "违规心跳也必须落库"
-    audit = await store.list_audit(limit=10)
-    hit = [a for a in audit if a["action"] == "interval_violation"]
-    assert hit and hit[0]["detail"]
-    assert b.stats["interval_violation"] == 1
+        rows = await store.metrics_series("web-01", hours=24)
+        assert len(rows[0]) == 1, "违规心跳也必须落库"
+        audit = await store.list_audit(limit=10)
+        hit = [a for a in audit if a["action"] == "interval_violation"]
+        assert hit and hit[0]["detail"]
+        assert b.stats["interval_violation"] == 1
+    finally:
+        await store.close()   # 不关库 GC 时 Connection.__del__ 会炸到后面的用例
 
 
 async def test_interval_within_limit_no_audit(tmp_path):
     """等于或高于下限不告警：阈值边界不能差一。"""
     b, store = await _mk_bridge(tmp_path, {"KK_INTERVAL_MIN": "10"})
-    await b._on_status("web-02", status_frame("web-02"))
-    await b._on_hb("web-02", hb_frame("web-02", 10))
-    await b._on_hb("web-02", hb_frame("web-02", 60))
-    assert b.stats["interval_violation"] == 0
-    assert not [a for a in await store.list_audit(limit=10)
-                if a["action"] == "interval_violation"]
+    try:
+        await b._on_status("web-02", status_frame("web-02"))
+        await b._on_hb("web-02", hb_frame("web-02", 10))
+        await b._on_hb("web-02", hb_frame("web-02", 60))
+        assert b.stats["interval_violation"] == 0
+        assert not [a for a in await store.list_audit(limit=10)
+                    if a["action"] == "interval_violation"]
+    finally:
+        await store.close()
 
 
 async def test_interval_check_disabled_when_unset(tmp_path):
     """KK_INTERVAL_MIN 未配 = 不检查（原死配置的默认行为保持不变）。"""
     b, store = await _mk_bridge(tmp_path)
-    assert b.s.interval_min is None
-    await b._on_status("web-03", status_frame("web-03"))
-    await b._on_hb("web-03", hb_frame("web-03", 1))
-    assert b.stats["interval_violation"] == 0
-    assert not [a for a in await store.list_audit(limit=10)
-                if a["action"] == "interval_violation"]
-    await store.close()
+    try:
+        assert b.s.interval_min is None
+        await b._on_status("web-03", status_frame("web-03"))
+        await b._on_hb("web-03", hb_frame("web-03", 1))
+        assert b.stats["interval_violation"] == 0
+        assert not [a for a in await store.list_audit(limit=10)
+                    if a["action"] == "interval_violation"]
+    finally:
+        await store.close()
 
 
 # ---- A6.2：自更新台账与结果回执 ----
@@ -590,3 +598,57 @@ async def test_auto_push_skips_in_flight_host(bridge):
     await bridge._on_status("dup-1", status_frame("dup-1", ver="0.0.1"))
     again = [m for m in bridge.cli.msgs if m["topic"] == "kk/v1/dup-1/cmd"]
     assert len(again) == len(first), "在途主机再次上线不得重复推送"
+
+
+# ---- QR-P0-1 / QR-T1：签名下发与运行面失败路径 ----
+
+async def test_publish_update_carries_signature(bridge):
+    """QR-P0-1：清单带 sig 时推送帧必须原样携带（Agent 推送路径强制验签）。"""
+    import json as _json
+    latest = {"version": "9.9.9", "sha256": "ab" * 32, "size": 10, "sig": "d" * 64}
+    assert await bridge.publish_update("h1", "up-h1-sig", latest) is True
+    payload = _json.loads(bridge.cli.msgs[-1]["payload"])
+    assert payload["kind"] == "update" and payload["sig"] == "d" * 64
+
+
+async def test_publish_update_without_signature_omits_field(bridge):
+    """未配签名时帧不带 sig 字段：Agent 侧按未签名清单走各自的策略门。"""
+    import json as _json
+    assert await bridge.publish_update("h1", "up-h1-nosig",
+                                       {"version": "9.9.9", "sha256": "x", "size": 1}) is True
+    payload = _json.loads(bridge.cli.msgs[-1]["payload"])
+    assert "sig" not in payload
+
+
+async def test_dispatch_command_publish_raise_counts_failed(bridge):
+    """QR-T1：publish 抛异常必须计 cmd_failed 且返回 False，不能静默吞。"""
+    def boom(topic, payload, qos=0, retain=False):
+        raise RuntimeError("broker gone")
+    bridge.cli.publish = boom
+    ok = bridge.dispatch_command({"id": "c-x", "pod": "h1", "kind": "shell",
+                                  "argv": "[]", "timeout": 5})
+    assert ok is False
+    assert bridge.stats["cmd_failed"] == 1
+
+
+async def test_dispatch_upgrade_marks_failed_when_publish_raises(bridge):
+    """QR-T1：推送抛异常时台账必须收敛 failed（publish_failed），不能永远 pending。"""
+    def boom(topic, payload, qos=0, retain=False):
+        raise RuntimeError("queue full")
+    bridge.cli.publish = boom
+    uid = await bridge.dispatch_upgrade(
+        "h1", "0.1.0", {"version": "9.9.9", "sha256": "x", "size": 1})
+    row = await bridge.store.get_update(uid)
+    assert row["status"] == "failed" and row["reason"] == "publish_failed"
+
+
+async def test_dispatch_without_loop_rejects_frames(bridge):
+    """QR-T1：loop 未绑定（装配漏了 lifespan）必须显式拒帧并计数，不能静默丢数据。"""
+    import json as _json
+    import types as _types
+    before = bridge.stats["rejected"]
+    msg = _types.SimpleNamespace(
+        topic="kk/v1/h1/status",
+        payload=_json.dumps({"online": True, "ip": ""}).encode())
+    bridge._on_message(None, None, msg)
+    assert bridge.stats["rejected"] == before + 1

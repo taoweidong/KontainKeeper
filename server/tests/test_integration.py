@@ -24,6 +24,9 @@ pytest.importorskip("uvicorn")
 
 BROKER_URL = os.environ.get("KK_IT_MQTT_URL", "mqtt://127.0.0.1:1883")
 
+# 首次探测不可达后置 True：同进程内后续用例直接 skip，不再各自空转（QR-T3）
+_BROKER_UNREACHABLE = False
+
 
 def broker_reachable(timeout=2):
     try:
@@ -37,11 +40,20 @@ def broker_reachable(timeout=2):
 
 def require_broker():
     """可达性必须在用例真正开跑时判：WSL 冷启动头几秒会瞬时拒绝连接，
-    放在模块级 skipif 里会被误判成「没有 Broker」而整条静默跳过。"""
+    放在模块级 skipif 里会被误判成「没有 Broker」而整条静默跳过。
+
+    探测结果做**进程级缓存**（QR-T3）：无 Broker 时夹具是 function 级 × 多条用例，
+    每次都空转 10×(2s 超时 + 1s sleep) 最多两分钟才 skip；首次判定不可达后
+    本进程内直接 skip。首次有 10 次重试，仍保住 WSL 冷启动窗口的可靠性。
+    """
+    global _BROKER_UNREACHABLE
+    if _BROKER_UNREACHABLE:
+        pytest.skip("需要本地 Mosquitto（%s 不可达）；见 scripts/mqtt_e2e.py 文档头" % BROKER_URL)
     for _ in range(10):
         if broker_reachable():
             return
         time.sleep(1)
+    _BROKER_UNREACHABLE = True
     pytest.skip("需要本地 Mosquitto（%s 不可达）；见 scripts/mqtt_e2e.py 文档头" % BROKER_URL)
 
 

@@ -12,3 +12,4 @@ def register(app):
     app.include_router(audit.router)
     app.include_router(stats.router)
     app.include_router(agent_update.router)
+    app.include_router(agent_update.agent_router)

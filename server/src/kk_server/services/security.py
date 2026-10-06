@@ -33,6 +33,15 @@ DANGEROUS_PROGS = {
 WRAPPERS = {"sudo", "doas", "env", "nice", "nohup", "timeout", "xargs", "command",
             "busybox"}
 
+# shell 解释器（QR-P0-2）：prog 命中且下一 token 是 -c 时，载荷才是**真正的命令**，
+# 必须按 shell 语义递归校验。不处理的话 `argv=["sh","-c","rm -r -f /usr"]`
+# （use_shell=false 的 argv 数组形态）结构校验整体失效——prog=sh 不命中任何
+# 危险集合，参数拆写又躲过子串兜底。
+_SHELLS = {"sh", "bash", "dash", "zsh", "ksh", "ash"}
+# 递归深度上限：sh -c "sh -c ..." 的嵌套payload按层展开，超过即放弃（黑名单是
+# 尽力而为的纵深之一，无界递归反而给攻击者递归炸弹）
+_MAX_SHELL_DEPTH = 4
+
 # shell 串联/命令替换分隔符：把 `a; b && c | d` 拆成多段逐段校验
 # （`\|\|?` 覆盖单竖线与双竖线，漏掉单竖线会让 `cat f | dd ...` 整段逃过校验）
 _SHELL_SPLIT = re.compile(r";|\|\|?|&&?|\$\(|`|\n")
@@ -50,7 +59,7 @@ def _tokens(seg):
     return [t.strip(_QUOTES) for t in _WS.split(seg.strip()) if t.strip(_QUOTES)]
 
 
-def _check_tokens(tokens):
+def _check_tokens(tokens, _depth=0):
     """对一段命令做结构校验：跳过包装前缀后取程序名 + 参数集合。"""
     i = 0
     while i < len(tokens) and tokens[i].lower() in WRAPPERS:
@@ -58,6 +67,15 @@ def _check_tokens(tokens):
     if i >= len(tokens):
         return False
     prog = os.path.basename(tokens[i]).lower()
+    if prog in _SHELLS and _depth < _MAX_SHELL_DEPTH:
+        rest = tokens[i + 1:]
+        if rest and rest[0].lower() in ("-c", "--command"):
+            payload = " ".join(rest[1:])
+            segs = _segments(payload) or ([payload] if payload.strip() else [])
+            for seg in segs:
+                if _check_tokens(_tokens(seg), _depth + 1):
+                    return True
+            # 载荷干净就放行：sh 本身不在危险集合里，落回下方常规检查
     args = {a.lower() for a in tokens[i + 1:]}
     if prog in DANGEROUS_COMBOS and (args & DANGEROUS_COMBOS[prog]):
         return True

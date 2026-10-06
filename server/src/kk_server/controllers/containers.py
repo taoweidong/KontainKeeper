@@ -3,12 +3,13 @@ import asyncio
 import json
 import time
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from .deps import current_user
 from ..models.version import version_lt
 
-router = APIRouter(prefix="/api")
+# 会话鉴权在 router 级收口（QR-S2）：新增端点默认受保护，不再依赖人工逐行调用
+router = APIRouter(prefix="/api", dependencies=[Depends(current_user)])
 
 ONLINE_GRACE = 180  # 在线宽限：max(3×interval, 180s)，兜住 Broker 来不及发 LWT 的极端情况
 
@@ -82,7 +83,6 @@ def _outdated(agent_ver, latest_ver):
 @router.get("/containers")
 async def list_containers(request: Request, view: str = "full",
                           limit: int = 0, offset: int = 0):
-    await current_user(request)
     if view not in ("full", "summary"):
         raise HTTPException(status_code=400, detail="view 需为 full 或 summary")
     store = request.app.state.store
@@ -114,7 +114,6 @@ async def list_containers(request: Request, view: str = "full",
 
 @router.get("/containers/{pod}")
 async def container_detail(pod: str, request: Request):
-    await current_user(request)
     store = request.app.state.store
     row = await store.get_container(pod)
     if not row:
@@ -128,7 +127,6 @@ async def container_detail(pod: str, request: Request):
 
 @router.get("/containers/{pod}/metrics")
 async def container_metrics(pod: str, request: Request, hours: int = 24):
-    await current_user(request)
     hours = min(max(hours, 1), 24 * 90)
     series, source = await request.app.state.store.metrics_series(pod, hours)
     return {"pod": pod, "hours": hours, "source": source, "series": series}

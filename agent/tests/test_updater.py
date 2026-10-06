@@ -148,7 +148,10 @@ def test_source_mode_never_touches_interpreter(monkeypatch, tmp_path):
                         lambda *a, **k: called.__setitem__("dl", called["dl"] + 1) or b"x")
     monkeypatch.setattr(sys, "frozen", False, raising=False)
     monkeypatch.setattr(os, "execv", lambda *a: called.__setitem__("execv", True))
-    exe_before = open(sys.executable, "rb").read(16) if os.path.exists(sys.executable) else None
+    exe_before = None
+    if os.path.exists(sys.executable):
+        with open(sys.executable, "rb") as f:
+            exe_before = f.read(16)   # with 包裹：裸 open 的句柄 GC 时会炸 ResourceWarning
 
     cfg = {"token": "t", "update_url": "http://api", "agent_bin": "", "update_insecure": False}
     manifest = {"version": "9.9.9", "sha256": "x", "size": 1, "url": "/x"}
@@ -156,7 +159,8 @@ def test_source_mode_never_touches_interpreter(monkeypatch, tmp_path):
     assert called["dl"] == 0, "形态未确认前不得下载"
     assert "execv" not in called
     if exe_before is not None:
-        assert open(sys.executable, "rb").read(16) == exe_before, "解释器必须原封不动"
+        with open(sys.executable, "rb") as f:
+            assert f.read(16) == exe_before, "解释器必须原封不动"
 
 
 def test_refuses_to_replace_interpreter_even_when_forced(monkeypatch, tmp_path):
@@ -267,6 +271,7 @@ def test_download_binary_real_http():
         assert data == payload
     finally:
         srv.shutdown()
+        srv.server_close()   # 不关监听套接字，GC 时 ResourceWarning 会炸到后面的用例
 
 
 def test_download_binary_enforces_size_cap():
@@ -296,6 +301,7 @@ def test_download_binary_enforces_size_cap():
             assert "too large" in str(e)
     finally:
         srv.shutdown()
+        srv.server_close()   # 不关监听套接字，GC 时 ResourceWarning 会炸到后面的用例
 
 
 # ---- A6.1：下载 url 解析（绝对即用 / 相对才回落）----

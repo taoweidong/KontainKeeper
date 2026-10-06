@@ -188,3 +188,15 @@ async def test_audit_endpoint_offset_and_keyword(api):
     r = await api.client.get("/api/audit", params={"keyword": "ip_rejected"})
     body = r.json()
     assert body["total"] == 3 and len(body["items"]) == 3
+
+
+async def test_export_writes_audit(api):
+    """QR-S7：导出属批量数据外带，每个端点都要落一条审计可追溯。"""
+    for url in ("/api/export/hosts", "/api/export/commands"):
+        r = await api.client.get(url)
+        assert r.status_code == 200
+    rows = await api.store.list_audit(limit=20)
+    exports = [x for x in rows if x["action"] == "export"]
+    assert len(exports) >= 2, "hosts 与 commands 导出都必须留痕"
+    kinds = {x["detail"] for x in exports}
+    assert any('"hosts"' in d for d in kinds) and any('"commands"' in d for d in kinds)

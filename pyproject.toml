@@ -21,3 +21,10 @@ dev = [
 # auto 模式：async def 测试与夹具直接跑，不必每个函数挂 @pytest.mark.asyncio
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+# 警告即失败（QR-T5）：未关闭的连接、废弃 API 一律当场暴露，不许静默积累。
+# 已知第三方噪音按条放行，不许出现一揽子 ignore。
+filterwarnings = [
+    "error",
+    # starlette 对 fastapi.testclient 的弃用提示（引导装 httpx2，升级 fastapi 后消失）
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
+]

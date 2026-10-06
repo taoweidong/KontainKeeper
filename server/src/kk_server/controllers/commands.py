@@ -10,15 +10,17 @@ import json
 import shlex
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
 from ..config import COLLECT_ITEMS, COMMAND_KINDS
 from ..services.security import is_blacklisted
-from .deps import current_user
+from .deps import CurrentUser, current_user
 
-router = APIRouter(prefix="/api")
+# 会话鉴权在 router 级收口（QR-S2）：新增端点默认受保护，需要主体身份的
+# 端点再用 CurrentUser 别名取值
+router = APIRouter(prefix="/api", dependencies=[Depends(current_user)])
 
 # collect 的 argv 列存这个结构；items 上限防误传
 MAX_ITEMS = len(COLLECT_ITEMS)
@@ -37,7 +39,6 @@ class CommandBody(BaseModel):
 @router.get("/collect/items")
 async def list_collect_items(request: Request):
     """前端「指标项 × 主机」勾选面板的数据源。"""
-    await current_user(request)
     return {"items": COLLECT_ITEMS}
 
 
@@ -84,8 +85,7 @@ def _build_payload(body: CommandBody):
 
 
 @router.post("/commands")
-async def create_commands(body: CommandBody, request: Request):
-    user = await current_user(request)
+async def create_commands(body: CommandBody, request: Request, user: CurrentUser):
     store, bridge = request.app.state.store, request.app.state.bridge
 
     payload = _build_payload(body)
@@ -140,7 +140,6 @@ async def list_batches(request: Request, limit: int = 20):
 
     必须在 /commands/{cid} 之前注册，否则 "batches" 会被当成命令 id 吃掉。
     """
-    await current_user(request)
     return {"items": await request.app.state.store.batch_summary(limit=min(limit, 100))}
 
 
@@ -153,7 +152,6 @@ async def list_commands(request: Request, pod: Optional[str] = None, limit: int 
 
     响应只加 total/offset/limit 字段，`items` 结构不变，既有前端解析不受影响。
     """
-    await current_user(request)
     store = request.app.state.store
     limit = min(max(limit, 1), 500)
     # 负 offset 直传会让 PG/MySQL 500（containers 已有正确写法，这里对齐）
@@ -169,7 +167,6 @@ async def list_commands(request: Request, pod: Optional[str] = None, limit: int 
 
 @router.get("/commands/{cid}")
 async def get_command(cid: str, request: Request):
-    await current_user(request)
     row = await request.app.state.store.get_command(cid)
     if not row:
         raise HTTPException(status_code=404, detail="命令不存在")
@@ -186,7 +183,6 @@ async def get_command(cid: str, request: Request):
 @router.get("/commands/{cid}/out")
 async def get_command_out(cid: str, request: Request, format: str = "text"):
     """完整输出单独走这个接口：列表只给 out_tail，避免大字段拖慢轮询。"""
-    await current_user(request)
     if format not in ("text", "base64"):
         raise HTTPException(status_code=400, detail="format 需为 text 或 base64")
     out = await request.app.state.store.command_output(cid, as_text=(format == "text"))

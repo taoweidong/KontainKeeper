@@ -62,18 +62,27 @@ def _capture(level="TRACE"):
     return records, sid
 
 
-def test_setup_logging_idempotent_across_create_app(fresh_logsetup, tmp_path):
+async def test_setup_logging_idempotent_across_create_app(fresh_logsetup, tmp_path):
     """create_app 被反复调用，sink 数不得增长（否则日志重复 N 遍）。"""
     env = {"KK_DB_PATH": str(tmp_path / "idem.db")}
-    create_app(env)
-    first = list(fresh_logsetup._SINK_IDS)
-    assert first, "stdout sink 必须挂上"
-    create_app(env)
-    assert fresh_logsetup._SINK_IDS == first
+    app1 = create_app(env)
+    app2 = None
+    try:
+        first = list(fresh_logsetup._SINK_IDS)
+        assert first, "stdout sink 必须挂上"
+        app2 = create_app(env)
+        assert fresh_logsetup._SINK_IDS == first
 
-    # 直接调 setup_logging 同样幂等（两条入口都走同一道门）
-    fresh_logsetup.setup_logging(_stub())
-    assert fresh_logsetup._SINK_IDS == first
+        # 直接调 setup_logging 同样幂等（两条入口都走同一道门）
+        fresh_logsetup.setup_logging(_stub())
+        assert fresh_logsetup._SINK_IDS == first
+    finally:
+        # create_app 自建的 store（engine/aiosqlite 连接）必须显式关闭：
+        # 否则 GC 时 Connection.__del__ 会以 PytestUnraisableExceptionWarning
+        # 炸到后面的用例（QR-T5 开启 filterwarnings=error 后必须守此纪律）
+        await app1.state.store.close()
+        if app2 is not None:
+            await app2.state.store.close()
 
 
 def test_stdlib_logs_are_intercepted(fresh_logsetup):

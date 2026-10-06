@@ -15,12 +15,13 @@ import json
 import time
 from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 
-from .deps import current_user
+from .deps import CurrentUser, current_user
 
-router = APIRouter(prefix="/api/export")
+# 会话鉴权在 router 级收口（QR-S2）；导出属批量数据外带，每个端点落一条审计（QR-S7）
+router = APIRouter(prefix="/api/export", dependencies=[Depends(current_user)])
 
 MAX_ROWS = 20000
 # CSV 注入防护：Excel 会把以这些字符开头的单元格当公式执行。
@@ -82,17 +83,19 @@ def _csv_response(header, rows, filename):
 
 
 @router.get("/commands")
-async def export_commands(request: Request, pod: str = "", kind: str = "",
-                          status: str = "", batch: str = "", since: int = 0,
-                          until: int = 0, keyword: str = "", limit: int = 2000,
-                          include_tail: int = 0):
-    await current_user(request)
+async def export_commands(request: Request, user: CurrentUser, pod: str = "",
+                          kind: str = "", status: str = "", batch: str = "",
+                          since: int = 0, until: int = 0, keyword: str = "",
+                          limit: int = 2000, include_tail: int = 0):
     store = request.app.state.store
     limit = _limit(limit)
     rows = await store.list_commands(
         pod=pod or None, kind=kind or None, status=status or None, batch=batch or None,
         since=since or None, until=until or None, keyword=keyword or None,
         limit=limit, tail=True)
+    await store.add_audit(user, "export", {
+        "kind": "commands", "rows": len(rows), "pod": pod, "status": status,
+        "batch": batch, "keyword": keyword})
     header = ["id", "pod", "kind", "argv", "status", "rc", "timed_out", "truncated",
               "elapsed_ms", "created_at", "finished_at", "created_by", "out_purged"]
     if include_tail:
@@ -125,15 +128,16 @@ def _argv_text(raw):
 
 
 @router.get("/audit")
-async def export_audit(request: Request, actor: str = "", action: str = "",
-                       keyword: str = "", limit: int = 5000):
-    await current_user(request)
+async def export_audit(request: Request, user: CurrentUser, actor: str = "",
+                       action: str = "", keyword: str = "", limit: int = 5000):
     store = request.app.state.store
     limit = _limit(limit)
     # 筛选下推到 SQL（store._audit_filters）：先取最近 N 条再内存过滤的话，
     # 命中行会被 LIMIT 截掉，导出就不再是页面所见（评审 P1）
     rows = await store.list_audit(limit=limit, actor=actor or None,
                                   action=action or None, keyword=keyword or None)
+    await store.add_audit(user, "export", {
+        "kind": "audit", "rows": len(rows), "actor": actor, "action": action})
     out = []
     for r in rows:
         out.append([r.get("id"), _ts(r.get("ts")), r.get("actor"),
@@ -143,14 +147,14 @@ async def export_audit(request: Request, actor: str = "", action: str = "",
 
 
 @router.get("/hosts")
-async def export_hosts(request: Request, view: str = "summary"):
-    await current_user(request)
+async def export_hosts(request: Request, user: CurrentUser, view: str = "summary"):
     store = request.app.state.store
     if view not in ("full", "summary"):
         raise HTTPException(status_code=400, detail="view 需为 full 或 summary")
     # 资产盘点场景：不分页，一次性导出全量摘要列
     rows = await store.list_containers("summary", limit=MAX_ROWS)
     online = await store.online_set()
+    await store.add_audit(user, "export", {"kind": "hosts", "rows": len(rows)})
     now = int(time.time())
     out = []
     for r in rows:
@@ -166,14 +170,16 @@ async def export_hosts(request: Request, view: str = "summary"):
 
 
 @router.get("/metrics")
-async def export_metrics(request: Request, pod: str = "", hours: int = 24):
-    await current_user(request)
+async def export_metrics(request: Request, user: CurrentUser, pod: str = "",
+                         hours: int = 24):
     if not pod:
         raise HTTPException(status_code=400, detail="pod 为必填")
     store = request.app.state.store
     hours = min(max(int(hours or 24), 1), 24 * 90)
     # 与 metrics_series 同源：>24h 自动走 hourly 聚合表，导出与曲线语义一致
     series, _ = await store.metrics_series(pod, hours)
+    await store.add_audit(user, "export", {
+        "kind": "metrics", "rows": len(series), "pod": pod, "hours": hours})
     out = [[_ts(r.get("ts")), r.get("cpu"), r.get("mem_mb")] for r in series]
     return _csv_response(["ts", "cpu", "mem_mb"], out,
                          "指标_%s_%sh.csv" % (pod, hours))

@@ -1,5 +1,12 @@
-"""公共依赖：会话鉴权与 Agent IP 白名单。"""
-from fastapi import HTTPException, Request
+"""公共依赖：会话鉴权与 Agent IP 白名单。
+
+鉴权统一走 FastAPI 依赖注入（QR-S2）：router 级 `dependencies=[Depends(...)]`
+做默认拒绝，需要主体身份的端点用 `CurrentUser` / `AgentIp` 别名取值。
+禁止再手写 `await current_user(request)`——漏写一行就是裸奔。
+"""
+from typing import Annotated
+
+from fastapi import Depends, HTTPException, Request
 
 from ..config import ip_in_whitelist
 
@@ -25,4 +32,8 @@ async def agent_ip_auth(request: Request) -> str:
     if not ip_in_whitelist(networks, ip):
         raise HTTPException(status_code=403, detail="agent ip not allowed")
     return ip
+
+
+CurrentUser = Annotated[str, Depends(current_user)]
+AgentIp = Annotated[str, Depends(agent_ip_auth)]
 

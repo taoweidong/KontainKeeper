@@ -446,6 +446,9 @@ class MqttBridge:
                    "version": latest.get("version", ""),
                    "sha256": latest.get("sha256", ""),
                    "size": latest.get("size", 0), "url": self._download_url()}
+        if latest.get("sig"):
+            # 上传时按二进制本体算好的 HMAC（QR-P0-1）：Agent 推送路径强制验签
+            payload["sig"] = latest["sig"]
         try:
             self.cli.publish(self._cmd_topic(host), json.dumps(payload), qos=QOS_CMD)
             self.stats["upgrade_pushed"] += 1

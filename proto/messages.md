@@ -158,7 +158,7 @@ v1 的 WebSocket close code（`4400/4401/4402/4403/4404`）**已随 WS 删除**�
 {"id":"c-125","kind":"collect","items":["cpu"],"use_shell":true,"argv":["..."],"timeout":30}
 {"id":"c-126","kind":"plugin_reload","timeout":30}
 {"id":"up-web-01-1690000000","kind":"update","version":"0.4.0","sha256":"<hex>",
- "size":1234567,"url":"/api/system/agent/download"}
+ "size":1234567,"url":"/api/system/agent/download","sig":"<hex, 可选>"}
 ```
 
 | 字段 | 说明 |
@@ -168,13 +168,21 @@ v1 的 WebSocket close code（`4400/4401/4402/4403/4404`）**已随 WS 删除**�
 | `argv` | `kind=shell` 时为数组直传 exec（不经 shell 拼接），`timeout` 1–600s |
 | `items` | `kind=collect` 必需，取自下方白名单 |
 | `use_shell` | 允许管道等 shell 语法，受 Agent `KK_ALLOW_SHELL` 约束 |
-| `update` 专用 | `version` / `sha256` / `size` / `url`（相对管理 API 基址；服务端配了 `KK_PUBLIC_URL` 则为绝对地址，见 A6.1） |
+| `update` 专用 | `version` / `sha256` / `size` / `url`（相对管理 API 基址；服务端配了 `KK_PUBLIC_URL` 则为绝对地址，见 A6.1）；`sig` 为对**二进制本体**的 HMAC-SHA256（QR-P0-1，服务端上传时计算，双端 `KK_UPDATE_HMAC_KEY` 一致时携带） |
 
 > **`kind=update` 的 `id` 是** `updates` **台账主键**（`up-<host>-<ts>`），不是 `commands`
 > 表的行：Agent 的更新回执按同一 id 回传，服务端据此把结果落到台账（A6.2）。用别的
 > 形式生成 id（历史实现是 `u-<host>`）会让回执被判为「未知命令」而丢掉。
 > 示例里的 `version` 恒为**比当前 `AGENT_VER` 更高**的版本 —— 它是「服务端推着 Agent 升级」
 > 的方向，由 `tests/test_version_governance.py` 守住，防止文档随版本演进漂移。
+
+> **推送更新签名策略（QR-P0-1，2026-09-29 起）**：v3 的 Broker 默认匿名开放，而
+> `kind=update` 等价于远程替换二进制——Agent 对**推送路径**默认拒绝未签名清单：
+> 配了 `KK_UPDATE_HMAC_KEY`（签名强制，与轮询路径同闸）或显式
+> `KK_UPDATE_ALLOW_UNSIGNED=1`（内网可信逃生口）才放行。`KK_UPDATE_DISABLED=1`
+> 同时关掉轮询与推送两条路，回执原因码 `update_disabled` / `unsigned_push_rejected`
+> 可在服务端更新台账按台核验。HTTP 轮询路径（`/agent/latest`）不强制签名，行为不变。
+> 另外 Agent 侧 dispatch 按 `id` 做有界去重（QR-A1）：QoS1 重发同一命令只执行一次。
 
 **采集项白名单（8 项，双端必须一致）**：
 
@@ -198,14 +206,16 @@ cpu, mem, disk, disk_io, net, proc, user, sys
 |---|---|---|---|
 | POST | `/api/system/agent` | 管理员会话 | 上传新版本二进制（multipart: `file` + `version`），服务端算 `sha256` 并记录为最新 |
 | GET | `/api/system/agent/current` | 管理员会话 | 服务端当前待分发版本 `{version, sha256, size, uploaded_at, hosts_total, hosts_outdated}`（D1.2；与下一条**刻意分离**：鉴权与语义都不同） |
-| GET | `/api/system/agent/latest?ver=<当前版本>` | 请求源 IP ∈ `KK_AGENT_IPS` | 返回 `{available, version, sha256, size, url}` |
-| GET | `/api/system/agent/download` | 请求源 IP ∈ `KK_AGENT_IPS` | 流式下发最新二进制 |
+| GET | `/api/system/agent/latest?ver=<当前版本>` | 请求源 IP ∈ `KK_AGENT_IPS` | 返回 `{available, version, sha256, size, url, sig}`（`sig` 仅在服务端配了 `KK_UPDATE_HMAC_KEY` 时非空） |
+| GET | `/api/system/agent/download` | 请求源 IP ∈ `KK_AGENT_IPS` | 流式下发最新二进制（下载留审计，QR-S7） |
 
 安全边界（v3）：下载/查询按**请求真实 TCP 源 IP**校验白名单（比 MQTT 侧的自报 ip 可靠；
 经反向代理时源 IP 会变成代理地址，自更新地址应配置为内网直连地址）；上传仍需管理员会话。
 替换前强制 `sha256` 校验，可选 HMAC（`KK_UPDATE_HMAC_KEY` + `KK_UPDATE_REQUIRE_SIG`）。
 **ed25519 签名决策不做**（需引入 pynacl，而服务端被攻陷时攻击者同样能篡改清单里的
 sha256，边际收益有限）。`KK_UPDATE_INSECURE=1` 可关闭 TLS 校验（不推荐）。
+服务端上传时若配了 `KK_UPDATE_HMAC_KEY` 会对二进制本体计算 HMAC 并写入清单 `sig`
+（QR-P0-1）：推送路径由 Agent 强制验签，端到端防伪造更新。
 
 ## 6. 已登记但未实现
 

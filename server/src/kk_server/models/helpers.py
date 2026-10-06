@@ -48,11 +48,16 @@ def _num(value):
         return None
 
 
+# 列表路径保留的输出尾段（base64 字符数）：_b64_tail 与 commands.out_tail 列共用
+# 同一算术——ceil(2048/3)*4 = 2732，右截到 4 的倍数仍是合法 base64。
+TAIL_B64_CHARS = ((2048 + 2) // 3) * 4
+
+
 def _b64_tail(b64, nbytes=2048):
     """从拼接好的 base64 里截末段解码：每 4 字符解 3 字节且组间独立，右截仍合法。"""
     if not b64:
         return ""
-    chars = ((nbytes + 2) // 3) * 4
+    chars = TAIL_B64_CHARS if nbytes == 2048 else ((nbytes + 2) // 3) * 4
     tail = b64[-chars:] if len(b64) > chars else b64
     tail = tail[-((len(tail) // 4) * 4):] or tail
     try:

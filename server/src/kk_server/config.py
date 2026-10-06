@@ -54,6 +54,12 @@ class Settings:
     log_level: str = "INFO"
     log_path: str = ""        # 空 = 只写 stdout（容器采集），不落盘
     log_json: bool = False    # KK_LOG_JSON=1 → JSON Lines（接日志采集端时打开）
+    # ---- 自更新签名（QR-P0-1，放末尾不破坏既有按位置构造 Settings 的调用方）----
+    # 配了它：上传时对二进制本体算 HMAC-SHA256 写进清单 sig 字段，推送（cmd 帧）
+    # 与轮询（/agent/latest）都携带；Agent 推送路径强制验签，端到端防伪造更新。
+    # 必须与 Agent 侧 KK_UPDATE_HMAC_KEY 一致；不配则推送路径默认被 Agent 拒绝
+    # （Agent 配 KK_UPDATE_ALLOW_UNSIGNED=1 可放行未签名推送）。
+    update_hmac_key: str = ""
 
 
 def _env_int(env, key, default):
@@ -156,4 +162,5 @@ def load_settings(env=None) -> Settings:
                                                         7 * 86400)),
                     log_level=(env.get("KK_LOG_LEVEL") or "INFO").strip().upper(),
                     log_path=env.get("KK_LOG", "").strip(),
-                    log_json=_env_bool(env, "KK_LOG_JSON"))
+                    log_json=_env_bool(env, "KK_LOG_JSON"),
+                    update_hmac_key=env.get("KK_UPDATE_HMAC_KEY", "").strip())

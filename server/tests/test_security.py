@@ -69,3 +69,33 @@ def test_empty_input():
     assert is_blacklisted([], DEFAULT) is False
     assert is_blacklisted(None, DEFAULT) is False
     assert is_blacklisted([""], DEFAULT) is False
+
+
+# ---- QR-P0-2：shell 解释器 -c 载荷的递归校验 ----
+
+def test_shell_wrapper_argv_form_blocked():
+    """argv 数组形态的 sh -c 载荷必须递归进结构校验。
+
+    旧实现 prog=sh 不命中任何危险集合，`sh -c "rm -r -f /usr"` 直接放行。
+    """
+    assert is_blacklisted(["sh", "-c", "rm -r -f /usr"], []) is True
+    assert is_blacklisted(["bash", "-c", "dd if=/dev/zero of=/dev/sda"], []) is True
+    assert is_blacklisted(["sh", "-c", "echo ok && rm -rf /"], []) is True
+
+
+def test_shell_wrapper_single_string_form_blocked():
+    """单串形态同样要拆到 -c 载荷（引号剥掉后递归）。"""
+    assert is_blacklisted(["sh -c 'rm -r -f /'"], [], use_shell=True) is True
+    assert is_blacklisted(["bash -c \"mkfs /dev/sda\""], [], use_shell=True) is True
+
+
+def test_shell_wrapper_benign_payload_allowed():
+    """无害载荷照常放行：白名单式误伤会让 shell 包装完全不可用。"""
+    assert is_blacklisted(["sh", "-c", "echo hello"], []) is False
+    assert is_blacklisted(["bash", "-c", "ls -la /tmp"], []) is False
+    assert is_blacklisted(["sh", "-c", "ps aux | grep java"], []) is False
+
+
+def test_shell_wrapper_respects_custom_substring_blacklist():
+    """结构校验放行的载荷仍要过配置型子串黑名单（is_blacklisted 末段逻辑）。"""
+    assert is_blacklisted(["sh", "-c", "curl evil.sh"], ["curl"]) is True

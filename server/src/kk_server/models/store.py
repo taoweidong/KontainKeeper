@@ -16,11 +16,11 @@ from sqlalchemy.dialects import mysql, postgresql, sqlite
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from .tables import (MD, ONLINE_GRACE, _ADD_COLUMNS, _CMD_COLS, _SUMMARY_COLS,
-                     admins, audit, commands, containers, heartbeats, hourly, kv,
-                     sessions, updates)
-from .helpers import (_PWDF_ITERS_LEGACY, _b64_tail, _num, _pwdf,
-                       mask_url, normalize_url)
+from .tables import (MD, ONLINE_GRACE, _ADD_COLUMNS, _ADD_INDEXES, _CMD_COLS,
+                     _SUMMARY_COLS, admins, audit, commands, containers,
+                     heartbeats, hourly, kv, sessions, updates)
+from .helpers import (_PWDF_ITERS_LEGACY, TAIL_B64_CHARS, _b64_tail, _num, _pwdf,
+                      mask_url, normalize_url)
 from .version import version_lt as _version_lt
 from ..logsetup import get_logger
 
@@ -30,6 +30,9 @@ log = get_logger("kk.store")
 # execv 替换进程后连接被异常断开，Broker 会立刻补发 LWT（reason 恒为空）；若直接落库，
 # 运维看到的仍是「原因未知的离线」，B6.1 白做。窗口取 120s，足以覆盖「重启 → 新进程上线」。
 _UPDATING_REASON_GRACE = 120
+
+# verify_admin 时序拉平用的假盐（QR-S8）：值无意义，只为让不存在用户也吃满一次 PBKDF2
+_DUMMY_SALT = "0" * 32
 
 
 class Store:
@@ -41,7 +44,10 @@ class Store:
         self.dialect = urlparse(self.url).scheme.split("+")[0]
         kwargs = {"pool_pre_ping": True}
         if self.dialect == "sqlite":
-            kwargs["connect_args"] = {"check_same_thread": False}
+            # timeout 是 sqlite3.connect 的 busy timeout（秒）：**每条连接**都生效。
+            # 此前 PRAGMA busy_timeout 只在 setup() 的那一条连接里执行过，池化新建
+            # 连接全部回落 0，并发写下 database is locked 防护形同虚设（QR-S3）。
+            kwargs["connect_args"] = {"check_same_thread": False, "timeout": 5.0}
             if ":memory:" in self.url:
                 kwargs["poolclass"] = StaticPool   # 内存库每条新连接都会是空库
         self.engine = create_async_engine(self.url, **kwargs)
@@ -50,17 +56,21 @@ class Store:
     async def setup(self):
         async with self.engine.begin() as conn:
             if self.dialect == "sqlite":
-                # WAL 是 SQLite 专属优化：让读不挡写（评审 P0-2 的一半根因）
-                for pragma in ("journal_mode=WAL", "busy_timeout=5000", "synchronous=NORMAL"):
+                # journal_mode=WAL 落在库文件里是持久的；synchronous 是每连接设置，
+                # 这里只覆盖 setup 那条连接（性能取舍，不影响并发正确性——并发正确性
+                # 由 __init__ 里 connect_args 的 busy_timeout 按连接保证，QR-S3）。
+                # aiosqlite 0.22 的游标无法在 sync connect 事件里驱动，逐连接 PRAGMA
+                # 需换驱动或等待上游，暂以 connect_args + 首连尽力而为收口。
+                for pragma in ("journal_mode=WAL", "synchronous=NORMAL"):
                     await conn.exec_driver_sql("PRAGMA " + pragma)
             await conn.run_sync(MD.create_all)
             await self._ensure_schema(conn)
         log.info("storage ready: dialect=%s url=%s", self.dialect, self.safe_url())
 
     async def _ensure_schema(self, conn):
-        """给既有库补新增列：create_all 只建表不加列，升级后必须自己 ALTER。
+        """给既有库补新增列与缺失索引：create_all 只建表，升级后必须自己 ALTER/CREATE。
 
-        三处方言差异都收在这一个方法里：列清单查 PRAGMA 还是 information_schema、
+        方言差异都收在这一个方法里：列/索引清单查 PRAGMA 还是 information_schema、
         MySQL 要按 DATABASE() 限定、以及占位符统一用 :name（exec_driver_sql 的
         位置参数风格各家不同，qmark / $1 / %s 混用必炸）。
         """
@@ -72,6 +82,15 @@ class Store:
                 await conn.exec_driver_sql(
                     "ALTER TABLE %s ADD COLUMN %s %s" % (table, name, ddl))
                 log.info("schema migrated: %s.%s added", table, name)
+        for table, indexes in _ADD_INDEXES.items():
+            existing_idx = await self._table_indexes(conn, table)
+            for name, cols in indexes:
+                if name in existing_idx:
+                    continue
+                await conn.exec_driver_sql(
+                    "CREATE INDEX %s ON %s (%s)" % (name, table, ", ".join(cols)))
+                log.info("schema migrated: index %s on %s(%s) created",
+                         name, table, ", ".join(cols))
 
     async def _table_columns(self, conn, table):
         if self.dialect == "sqlite":
@@ -82,6 +101,22 @@ class Store:
         rows = (await conn.execute(text(
             "SELECT column_name FROM information_schema.columns"
             " WHERE table_name = :t AND table_schema = " + scope),
+            {"t": table})).fetchall()
+        return {r[0] for r in rows}
+
+    async def _table_indexes(self, conn, table):
+        if self.dialect == "sqlite":
+            rows = (await conn.exec_driver_sql("PRAGMA index_list(%s)" % table)).fetchall()
+            return {r[1] for r in rows}
+        if self.dialect == "mysql":
+            rows = (await conn.execute(text(
+                "SELECT index_name FROM information_schema.statistics"
+                " WHERE table_name = :t AND table_schema = DATABASE()"),
+                {"t": table})).fetchall()
+            return {r[0] for r in rows}
+        rows = (await conn.execute(text(
+            "SELECT indexname FROM pg_indexes"
+            " WHERE tablename = :t AND schemaname = current_schema()"),
             {"t": table})).fetchall()
         return {r[0] for r in rows}
 
@@ -377,7 +412,7 @@ class Store:
         argv_json = json.dumps(argv, ensure_ascii=False)
         rows = [{"id": cid, "pod": pod, "kind": kind, "argv": argv_json,
                  "timeout": timeout, "status": "pending", "created_by": created_by,
-                 "created_at": now, "out_b64": "", "batch_id": batch_id}
+                 "created_at": now, "out_b64": "", "out_tail": "", "batch_id": batch_id}
                 for cid, pod in zip(ids, pods)]
         async with self.engine.begin() as conn:
             await conn.execute(insert(commands), rows)
@@ -417,7 +452,13 @@ class Store:
     async def list_commands(self, pod=None, limit=100, offset=None, batch=None,
                             status=None, kind=None, since=None, until=None,
                             keyword=None, tail=True):
-        stmt = select(*(commands.c[c] for c in _CMD_COLS), commands.c.out_b64)
+        """只查小列：输出尾段读 out_tail 镜像列（QR-S1）。
+
+        此前无条件把 out_b64 整列拖回（单行最大 ~5.6MB，500 行列表最坏 GB 级
+        DB→应用传输），tail=False 时取回即丢。历史行（补列前写入）out_tail 为空，
+        前端显示为无预览，新命令即时生效。
+        """
+        stmt = select(*(commands.c[c] for c in _CMD_COLS))
         for cond in self._command_filters(pod, batch, status, kind, since, until, keyword):
             stmt = stmt.where(cond)
         stmt = stmt.order_by(commands.c.created_at.desc()).limit(limit)
@@ -425,7 +466,7 @@ class Store:
             stmt = stmt.offset(int(offset))
         rows = await self._all(stmt)
         for r in rows:
-            raw = r.pop("out_b64", "") or ""
+            raw = r.pop("out_tail", "") or ""
             if tail:
                 r["out_tail"] = _b64_tail(raw)
         return rows
@@ -506,6 +547,11 @@ class Store:
 
         QoS1「至少一次」：Broker 重投时同一 seq 块会被重复拼接，导致命令输出翻倍。
         以 last_seq 为水位做幂等去重（只应用严格更大的 seq）；无 seq 的帧回退为无条件追加。
+
+        out_tail 镜像列（QR-S1）随块维护：取「旧尾 + 本块」的末 TAIL_B64_CHARS 个
+        字符（4 的倍数，右截仍是合法 base64）。水位判定先读小列（out_tail/last_seq）
+        再定字面量，避免大列参与 SQL CASE；同一 cid 的并发由桥接的 per-cid 锁串行，
+        多实例部署下最坏只是尾段预览短暂缺一块，大字段本身的拼接仍是单语句原子。
         """
         cid = msg.get("id")
         if cid is None:
@@ -513,23 +559,41 @@ class Store:
         chunk = str(msg.get("out_b64") or "")
         seq = msg.get("seq")
         now = int(time.time())
-        if seq is None:
+        # seq 规整成 int；坏值按「无水位帧」处理，与旧帧同语义（无条件追加）
+        try:
+            seq_n = int(seq) if seq is not None else None
+        except (TypeError, ValueError):
+            seq_n = None
+        row = await self._one(select(commands.c.out_tail, commands.c.last_seq)
+                              .where(commands.c.id == cid))
+        if row is None or row.get("last_seq") is None:
+            last_seq_val = -1
+        else:
+            last_seq_val = int(row["last_seq"])
+        applied = True if seq_n is None else last_seq_val < seq_n
+        tail = (row or {}).get("out_tail") or ""
+        merged = tail + chunk if applied else tail
+        if len(merged) > TAIL_B64_CHARS:
+            merged = merged[-TAIL_B64_CHARS:]
+        if seq_n is None:
             # 老/畸形帧：无 seq 无法去重，保持原语义无条件拼接
             cat = commands.c.out_b64 + chunk          # 表达式级拼接，三库通用
-            vals = {"out_b64": cat, "out_chunks": commands.c.out_chunks + 1}
+            vals = {"out_b64": cat, "out_chunks": commands.c.out_chunks + 1,
+                    "out_tail": merged}
         else:
             # 幂等路径：仅当 seq 严格大于已应用水位才拼接，避免重投翻倍
-            applied = commands.c.last_seq < seq
-            cat = case((applied, commands.c.out_b64 + chunk), else_=commands.c.out_b64)
-            chunks = case((applied, commands.c.out_chunks + 1), else_=commands.c.out_chunks)
-            last_seq_v = case((applied, seq), else_=commands.c.last_seq)
-            vals = {"out_b64": cat, "out_chunks": chunks, "last_seq": last_seq_v}
+            applied_cond = commands.c.last_seq < seq
+            cat = case((applied_cond, commands.c.out_b64 + chunk), else_=commands.c.out_b64)
+            chunks = case((applied_cond, commands.c.out_chunks + 1), else_=commands.c.out_chunks)
+            last_seq_v = case((applied_cond, seq), else_=commands.c.last_seq)
+            vals = {"out_b64": cat, "out_chunks": chunks, "last_seq": last_seq_v,
+                    "out_tail": case((applied_cond, merged), else_=commands.c.out_tail)}
         if msg.get("done"):
             vals.update(status="done", rc=msg.get("rc"),
                         timed_out=1 if msg.get("timed_out") else 0,
                         truncated=1 if (msg.get("truncated") or msg.get("rc") == -3) else 0,
                         elapsed_ms=msg.get("elapsed_ms"), finished_at=now)
-        elif seq is None:
+        elif seq_n is None:
             vals.update(status="running")
         else:
             # 幂等路径下，迟到重投的非终态分块不能把已终态的命令拉回 running
@@ -710,6 +774,9 @@ class Store:
     async def verify_admin(self, username, password):
         row = await self._one(select(admins).where(admins.c.username == username))
         if not row:
+            # 时序侧信道（QR-S8）：用户不存在也跑一次同代价 PBKDF2，让「存在/不存在」
+            # 的响应时间不可分辨；登录限流挡枚举，这里抹掉剩余的时间差。
+            _pwdf(_DUMMY_SALT, password)
             return False
         cand = _pwdf(row["salt"], password)
         if secrets.compare_digest(row["pw_hash"], cand):
@@ -883,7 +950,8 @@ class Store:
                 return total
             ids = [r["id"] for r in rows]
             total += await self._run(update(commands).where(commands.c.id.in_(ids))
-                                     .values(out_b64="", out_chunks=0, out_purged=1))
+                                     .values(out_b64="", out_tail="", out_chunks=0,
+                                             out_purged=1))
             if len(ids) < batch:
                 return total
 

@@ -13,20 +13,24 @@
 """
 import asyncio
 import hashlib
+import hmac
 import json
 import os
 import time
 from typing import List
 
-from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from .deps import agent_ip_auth, current_user
+from .deps import AgentIp, CurrentUser, agent_ip_auth, current_user
 from ..models.tables import ONLINE_GRACE
 from ..models.version import count_outdated, version_lt
 
-router = APIRouter(prefix="/api/system")
+# 双路由拆分（QR-S2）：同前缀下两组端点的鉴权语义不同——管理员走会话、
+# Agent 走真实源 IP 白名单，router 级依赖各收各的口，新增端点默认受保护。
+router = APIRouter(prefix="/api/system", dependencies=[Depends(current_user)])
+agent_router = APIRouter(prefix="/api/system", dependencies=[Depends(agent_ip_auth)])
 
 MAX_BIN_BYTES = 64 * 1024 * 1024
 _BIN_NAME = "kk-agent"
@@ -45,8 +49,8 @@ def _bin_path(request: Request):
 
 
 @router.post("/agent")
-async def upload_agent(request: Request, file: UploadFile = File(...), version: str = Form(...)):
-    user = await current_user(request)
+async def upload_agent(request: Request, user: CurrentUser,
+                       file: UploadFile = File(...), version: str = Form(...)):
     if not version or not version[0].isdigit():
         raise HTTPException(status_code=400, detail="version 非法")
 
@@ -64,9 +68,14 @@ async def upload_agent(request: Request, file: UploadFile = File(...), version: 
 
     bin_dir = request.app.state.agent_bin_dir
     dest = os.path.join(bin_dir, _BIN_NAME)
+    # HMAC 签名密钥（QR-P0-1）：配了它清单才带 sig，Agent 推送路径强制验签，
+    # 与 Agent 侧 KK_UPDATE_HMAC_KEY 保持一致
+    key = (getattr(request.app.state.settings, "update_hmac_key", "") or "").strip()
 
     def _write():
-        """最大 64MB 的同步写不要占住事件循环——否则上传时所有心跳与请求都被卡住。"""
+        """最大 64MB 的同步写与 sha256/HMAC 计算都不要占住事件循环——
+        否则上传时所有心跳与请求都被卡住（QR-S10 一并修）。
+        返回 (had_prev, sha, sig)。"""
         os.makedirs(bin_dir, exist_ok=True)
         had_prev = False
         if os.path.exists(dest):  # 保留上一版，便于回滚
@@ -82,7 +91,10 @@ async def upload_agent(request: Request, file: UploadFile = File(...), version: 
             f.write(data)
         if os.name == "posix":
             os.chmod(dest, 0o755)
-        return had_prev
+        payload = bytes(data)
+        sha = hashlib.sha256(payload).hexdigest()
+        sig = hmac.new(key.encode(), payload, hashlib.sha256).hexdigest() if key else ""
+        return had_prev, sha, sig
 
     # 上一版的**清单**要和二进制一起留下来（B2）：回滚时无从反推旧版本号，
     # 而 sha256 必须对得上 .prev 文件，否则 Agent 下载后会校验失败。
@@ -90,12 +102,15 @@ async def upload_agent(request: Request, file: UploadFile = File(...), version: 
     async with _upload_lock:
         # 读旧清单 → 换 .prev 并落盘 → 写新清单，三步必须整体原子（B6.5）
         prev_info = await store.get_agent_latest()
-        had_prev = await asyncio.to_thread(_write)
-        sha = hashlib.sha256(data).hexdigest()
+        had_prev, sha, sig = await asyncio.to_thread(_write)
         info = {"version": version, "sha256": sha, "size": len(data),
                 # uploaded_at 随清单一起留痕（D1.2）：管理员要能回答「这个版本是什么时候传的」。
                 # 回滚时它随清单一起互换，语义是「这个版本被上传的时刻」，正确。
                 "uploaded_at": int(time.time())}
+        if sig:
+            # sig 随清单走：推送（bridge.publish_update）与轮询（/agent/latest）都带上，
+            # Agent 侧用二进制本体验 HMAC（QR-P0-1）
+            info["sig"] = sig
         # 顺序要紧：先落盘成功，再写 KV 清单 —— 否则清单可能指向尚未写完的字节
         await store.set_agent_latest(info)
         if had_prev and prev_info:
@@ -107,7 +122,7 @@ async def upload_agent(request: Request, file: UploadFile = File(...), version: 
 
 
 @router.post("/agent/rollback")
-async def rollback_agent(request: Request):
+async def rollback_agent(request: Request, user: CurrentUser):
     """把服务端**待分发**的 Agent 二进制回滚到上一版（B2 / P2-7）。
 
     语义边界（不说清就会被当成「一键回滚全网」）：
@@ -118,7 +133,6 @@ async def rollback_agent(request: Request):
       那个版本）。`agent_prev` 恒记「另一版」的清单，文件路径则看它从哪来 ——
       上传留下的是 `.prev`，回滚留下的是 `.rollback`，两者都被认作候选。
     """
-    user = await current_user(request)
     store = request.app.state.store
     dest = _bin_path(request)
 
@@ -178,7 +192,6 @@ async def list_updates(request: Request, limit: int = 50):
 
     各状态计数 + 最近明细（含失败原因），逐台可核验。
     """
-    await current_user(request)
     store = request.app.state.store
     limit = min(max(int(limit or 50), 1), 500)
     items, summary = await asyncio.gather(
@@ -198,7 +211,6 @@ async def agent_current(request: Request):
     500 台规模下「最新是什么版本」原先对运维完全不可见：`/agent/latest` 只回
     `{available}`，客户端无从得知版本号，也就无法表达「升级到最新版本」。
     """
-    await current_user(request)
     store = request.app.state.store
     latest = await store.get_agent_latest() or {}
     hosts_total, versions = await asyncio.gather(store.count_containers(),
@@ -221,7 +233,7 @@ async def agent_current(request: Request):
     }
 
 
-@router.get("/agent/latest")
+@agent_router.get("/agent/latest")
 async def agent_latest(request: Request, ver: str = ""):
     """Agent 轮询路径：「**现在**该不该升级」。
 
@@ -231,7 +243,6 @@ async def agent_latest(request: Request, ver: str = ""):
     关轮询**不需要改 Agent 一行**：老版本 Agent 读到 `available=false` 就什么都不做，
     于是服务端单侧改动就建立起一个全网点，避免「要改行为先得升级全网」的鸡生蛋困境。
     """
-    await agent_ip_auth(request)
     store = request.app.state.store
     policy = (getattr(request.app.state.settings, "update_mode", "manual")
               or "manual").strip().lower()
@@ -248,6 +259,7 @@ async def agent_latest(request: Request, ver: str = ""):
         "version": latest["version"],
         "sha256": latest.get("sha256", ""),
         "size": latest.get("size", 0),
+        "sig": latest.get("sig", ""),
         "url": _download_url(request),
     }
 
@@ -258,7 +270,7 @@ class UpgradeBody(BaseModel):
 
 
 @router.post("/agent/upgrade")
-async def upgrade_hosts(body: UpgradeBody, request: Request):
+async def upgrade_hosts(body: UpgradeBody, request: Request, user: CurrentUser):
     """受控批量升级（D2.2）：把选中的主机升到服务端当前最新版本。
 
     需求②的落地：原先只有「Agent 自己轮询」与「服务端在 status 帧无差别推送」两条路，
@@ -274,7 +286,6 @@ async def upgrade_hosts(body: UpgradeBody, request: Request):
 
     查询次数与主机数无关：版本、在途台账、在线集合各一次（500 台不留 N+1）。
     """
-    user = await current_user(request)
     store = request.app.state.store
     bridge = request.app.state.bridge
 
@@ -327,13 +338,15 @@ async def upgrade_hosts(body: UpgradeBody, request: Request):
     return {"ok": True, "batch_id": batch_id, "accepted": accepted, "skipped": skipped}
 
 
-@router.get("/agent/download")
-async def agent_download(request: Request):
-    await agent_ip_auth(request)
+@agent_router.get("/agent/download")
+async def agent_download(request: Request, ip: AgentIp):
     latest = await request.app.state.store.get_agent_latest()
     dest = _bin_path(request)
     if not latest or not os.path.isfile(dest):
         raise HTTPException(status_code=404, detail="no agent binary")
+    # 二进制属批量资产外带（8~12MB），下载留痕可追溯（QR-S7）
+    await request.app.state.store.add_audit(
+        "agent", "agent_binary_download", {"ip": ip, "version": latest.get("version", "")})
 
     def gen():
         with open(dest, "rb") as f:

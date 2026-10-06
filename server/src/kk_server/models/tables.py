@@ -51,6 +51,9 @@ heartbeats = Table(
     Column("mem_mb", Float),
     Column("metrics", _long_text(), nullable=False),
     Index("idx_hb_pod_ts", "pod", "ts"),
+    # 小时聚合（_aggregate_hours）只按 ts 范围过滤：前导列是 pod 的唯一索引帮不上，
+    # 没有这条索引每个小时桶都是全表扫描（QR-S4）
+    Index("idx_hb_ts", "ts"),
 )
 
 hourly = Table(
@@ -80,6 +83,11 @@ commands = Table(
     Column("truncated", Integer, nullable=False, server_default="0"),
     Column("elapsed_ms", BigInteger),
     Column("out_b64", _long_text(), nullable=False),
+    # out_b64 的尾段镜像（末 2732 个 base64 字符，写入时随分块维护）：
+    # 列表/导出路径只读这列的小尾巴，不再整列拖 out_b64——单行输出最大 ~5.6MB，
+    # 500 行列表最坏 GB 级 DB→应用传输（QR-S1）。2732 = ceil(2048/3)*4，
+    # 右截到 4 的倍数仍是合法 base64（与 helpers._b64_tail 同一算术）。
+    Column("out_tail", String(2732), nullable=False, server_default=""),
     Column("out_chunks", Integer, nullable=False, server_default="0"),
     # 结果帧幂等水位：已应用的最大 seq。默认 -1 使首块 seq=0 也能被应用
     # （P1-6：QoS1 重投同 seq 块会导致输出翻倍）。
@@ -160,7 +168,16 @@ _ADD_COLUMNS = {
                       ("disk_pct", "DOUBLE PRECISION"),
                       ("status_reason", "VARCHAR(20) DEFAULT ''")],
     "kk_commands": [("out_purged", "INTEGER DEFAULT 0"),
-                     ("last_seq", "INTEGER DEFAULT -1"),
-                     # 不带引号：MySQL 严格模式下 'VARCHAR' 被引号包住会解析失败
-                     ("batch_id", "VARCHAR(32) DEFAULT ''")],
+                    ("last_seq", "INTEGER DEFAULT -1"),
+                    # 不带引号：MySQL 严格模式下 'VARCHAR' 被引号包住会解析失败
+                    ("batch_id", "VARCHAR(32) DEFAULT ''"),
+                    # QR-S1：历史行的 out_tail 为空（不回填——回填要逐行读大字段，
+                    # 新写入的命令即时生效）
+                    ("out_tail", "VARCHAR(2732) DEFAULT ''")],
+}
+
+# 既有库补索引清单：create_all 同样不给已存在的表建索引。
+# 名字三库通用（MySQL 索引名表内唯一，PG/SQLite schema 内唯一，全库小写不冲突）。
+_ADD_INDEXES = {
+    "kk_heartbeats": [("idx_hb_ts", ("ts",))],
 }

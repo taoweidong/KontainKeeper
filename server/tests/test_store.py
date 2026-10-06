@@ -454,3 +454,81 @@ async def test_cleanup_prunes_audit_beyond_retention(store):
     assert stats["audit_deleted"] == 1
     rows = await store.list_audit(limit=10)
     assert [r["action"] for r in rows] == ["command_create"]
+
+
+# ---- QR-S1 / QR-S4 / QR-S8：out_tail 镜像、索引迁移、时序拉平 ----
+
+async def test_schema_migration_creates_missing_index(tmp_path):
+    """QR-S4：create_all 不给既有表补索引，重新 setup() 必须把缺失索引建回来。"""
+    import sqlalchemy as sa
+
+    path = str(tmp_path / "noindex.db")
+    st = Store(path)
+    await st.setup()
+    async with st.engine.begin() as conn:
+        await conn.exec_driver_sql("DROP INDEX idx_hb_ts")
+        names = {r[1] for r in (await conn.exec_driver_sql(
+            "PRAGMA index_list(kk_heartbeats)")).fetchall()}
+    assert "idx_hb_ts" not in names
+    await st.close()
+
+    st2 = Store(path)
+    await st2.setup()
+    async with st2.engine.begin() as conn:
+        names = {r[1] for r in (await conn.exec_driver_sql(
+            "PRAGMA index_list(kk_heartbeats)")).fetchall()}
+    assert "idx_hb_ts" in names, "_ensure_schema 必须补建缺失索引（小时聚合全表扫描的根治）"
+    await st2.close()
+
+
+async def test_out_tail_maintained_and_list_carries_no_out_b64(store):
+    """QR-S1：分块追加同步维护 out_tail 镜像；列表只读小列、不再拖 out_b64 大字段。"""
+    import base64 as b64
+
+    await store.upsert_container("pod-tail", "img", "0.1.0", 60)
+    cid = await store.create_command("pod-tail", "shell", ["echo"], 30, "admin")
+    chunk1 = b64.b64encode(("x" * 3000).encode()).decode()
+    chunk2 = b64.b64encode(b"tail-end").decode()
+    await store.append_result({"id": cid, "seq": 0, "total": 2, "out_b64": chunk1,
+                               "done": False})
+    await store.append_result({"id": cid, "seq": 1, "total": 2, "out_b64": chunk2,
+                               "done": True, "rc": 0})
+
+    rows = await store.list_commands(pod="pod-tail", limit=10)
+    assert len(rows) == 1
+    r = rows[0]
+    assert "out_b64" not in r, "列表路径绝不能再携带大字段（QR-S1 的核心诉求）"
+    assert r["out_tail"].endswith("tail-end"), "预览是可读文本且含最后一块"
+    assert "tail-end" in await store.command_output(cid), "大字段本体不受镜像影响"
+
+    # 幂等水位同样约束 out_tail：重投同 seq 不改变预览
+    await store.append_result({"id": cid, "seq": 1, "total": 2, "out_b64": chunk2,
+                               "done": True, "rc": 0})
+    assert (await store.list_commands(pod="pod-tail", limit=10))[0]["out_tail"] \
+        == r["out_tail"]
+
+
+async def test_list_commands_tail_false_has_no_out_tail(store):
+    await store.upsert_container("pod-t2", "img", "0.1.0", 60)
+    cid = await store.create_command("pod-t2", "shell", ["echo"], 30, "admin")
+    await store.append_result({"id": cid, "seq": 0, "total": 1, "out_b64": "QUJD",
+                               "done": True, "rc": 0})
+    rows = await store.list_commands(pod="pod-t2", limit=10, tail=False)
+    assert "out_tail" not in rows[0]
+
+
+async def test_verify_admin_missing_user_no_short_circuit(store):
+    """QR-S8：用户不存在也要吃满一次同代价 PBKDF2，「存在/不存在」响应时间不可分辨。"""
+    import time as _t
+
+    t0 = _t.perf_counter()
+    assert await store.verify_admin("no-such-user-xyz", "pw") is False
+    missing = _t.perf_counter() - t0
+
+    await store.ensure_admin("timing-user", "right")
+    t0 = _t.perf_counter()
+    assert await store.verify_admin("timing-user", "wrong") is False
+    exists = _t.perf_counter() - t0
+
+    assert missing > exists * 0.3, \
+        "不存在用户耗时 %fs 与存在用户 %fs 差距过大，时序侧信道未抹平" % (missing, exists)

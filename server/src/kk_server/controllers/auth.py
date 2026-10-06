@@ -6,7 +6,7 @@ from collections import defaultdict
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from .deps import current_user
+from .deps import CurrentUser
 
 router = APIRouter(prefix="/api")
 
@@ -112,6 +112,6 @@ async def logout(request: Request):
 
 
 @router.get("/me")
-async def me(request: Request):
-    user = await current_user(request)
+async def me(user: CurrentUser):
+    """会话身份：鉴权走 CurrentUser 依赖（QR-S2），漏配路由级依赖也会被参数兜住。"""
     return {"username": user}

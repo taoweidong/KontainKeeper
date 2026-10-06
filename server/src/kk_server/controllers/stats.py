@@ -9,19 +9,19 @@
 import asyncio
 import time
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 
 from .deps import current_user
 from ..models.version import count_outdated
 
-router = APIRouter(prefix="/api/system")
+# 会话鉴权在 router 级收口（QR-S2）：新增端点默认受保护
+router = APIRouter(prefix="/api/system", dependencies=[Depends(current_user)])
 
 _started = time.time()
 
 
 @router.get("/stats")
 async def stats(request: Request):
-    await current_user(request)
     store, bridge = request.app.state.store, request.app.state.bridge
     counts = await store.counts()
     broker = {

@@ -197,6 +197,7 @@ uv run kk-server                            # 监听 0.0.0.0:8443
 | `KK_WEB_DIR` | 前端静态目录 | 包内 `web/` |
 | `KK_PUBLIC_URL` | 服务端对外访问基址（如 `http://10.0.0.1:8443`）。**启用自更新的必配项**：配了它，下发给 Agent 的更新帧就带绝对下载地址，镜像侧无需再配 `KK_UPDATE_URL`；不配则仍是相对路径，Agent 拿不到地址时只记 WARNING 并跳过更新 | `""` |
 | `KK_INTERVAL_MIN` | 允许的最小上报间隔（秒）。低于此值的心跳**照常落库**，但会写审计 `interval_violation` 并在 `/api/system/stats` 的 `broker.stats.interval_violation` 计数——用于发现误配机器。留空 = 不检查 | `""` |
+| `KK_UPDATE_HMAC_KEY` | 自更新清单 HMAC 密钥（QR-P0-1）。配了它：上传时对二进制本体算 HMAC 写入清单 `sig`，推送帧与 `/agent/latest` 都携带；**必须与 Agent 侧同名键一致**。不配则 Agent 推送路径默认拒绝未签名更新（除非 Agent 配 `KK_UPDATE_ALLOW_UNSIGNED=1`），见 §9.2.1 | `""` |
 
 ### 4.6 数据库选型
 
@@ -422,7 +423,9 @@ KK_ADVERTISE_IP=10.0.0.15 /opt/kk-agent mqtt://broker.ops.example.com:1883
 | `KK_MAX_QUEUED` | 离线 out-queue 上限 | `512` |
 | `KK_UPDATE_URL` | 管理 API 基址（自更新用，未配则跳过自更新） | 空 |
 | `KK_UPDATE_INTERVAL` | 版本轮询间隔（秒，≥30） | `300` |
-| `KK_UPDATE_DISABLED` | 设 `1/true` 关闭自更新 | 关闭 |
+| `KK_UPDATE_DISABLED` | 设 `1/true` 关闭自更新。**同时关掉轮询与推送两条路**（QR-P0-1）：推送式升级命令会收到 `update_disabled` 回执 | 关闭 |
+| `KK_UPDATE_ALLOW_UNSIGNED` | 设 `1/true` 放行**未签名**的推送更新（QR-P0-1 逃生口）。默认拒绝：未配 `KK_UPDATE_HMAC_KEY` 时，任何能连 Broker 的客户端都能向 cmd 主题发推送更新帧。仅建议内网可信部署显式开启；轮询路径不受影响 | 关闭 |
+| `KK_UPDATE_HMAC_KEY` | 与服务端同名键配同一密钥：推送更新强制验签（对二进制本体的 HMAC，QR-P0-1）。配了它未签名的清单同样被拒 | 空 |
 | `KK_AGENT_BIN` | 自更新替换目标路径（build.sh 已烧入） | 自动 |
 | `KK_NICE` | Agent 进程 CPU 调度优先级（**由镜像 entrypoint wrapper 读取**，非 Agent 自身）；`19` = 最低，与用户 IDE 争抢 CPU 时主动让位；置 `0` 等价关闭降权 | `19` |
 
@@ -493,8 +496,26 @@ curl -H "Authorization: Bearer $TOKEN" -F "version=0.2.0" \
 | 轮询抖动 | `KK_UPDATE_INTERVAL` 上下浮动 ±20%（与心跳同理由），避免 500 台同相启动齐拉二进制 |
 | 失败退避 | 同一版本失败后 5→10→30min 退避，不再重试刷屏；**版本号变化或成功即清零**（上传修好的包立刻生效） |
 | 完整性 | 下载后先比清单 `size` 再比 `sha256`（截断更早暴露）；`.kk-agent.update.*` 残留由 wrapper 启动时清理 |
+| execv 失败回滚 | 替换前旧二进制留 `.kkbak`，execv 失败自动还原并按 `exec_error` 回执，不会再「磁盘已是新二进制、下次重启变砖」（QR-A2） |
+| 推送签名 | 推送路径默认要求签名，见下节（QR-P0-1） |
 
-#### 9.2.1 回滚待分发版本
+#### 9.2.1 推送更新签名策略（QR-P0-1，2026-09-29 起）
+
+`kind=update` 命令等价于远程替换二进制，而 v3 的 Broker 默认匿名开放——任何能连上
+Broker 的客户端都能直接向 `kk/v1/{host}/cmd` 发帧。因此 **Agent 的推送路径默认拒绝
+未签名清单**（HTTP 轮询路径不受影响，行为不变）：
+
+| 部署形态 | 需要的配置 | 行为 |
+|---|---|---|
+| 推荐（端到端防伪造） | 服务端与 Agent 都配 `KK_UPDATE_HMAC_KEY`（同一密钥） | 上传时服务端对二进制本体算 HMAC 写入清单 `sig`；推送帧与 `/agent/latest` 都携带，Agent 强制验签 |
+| 内网可信（现状兼容） | Agent 显式配 `KK_UPDATE_ALLOW_UNSIGNED=1` | 放行未签名推送；其余防线（源 IP 白名单、sha256、黑名单、审计）不变 |
+| 默认（未做任何配置） | — | 推送更新被拒绝，回执原因码 `unsigned_push_rejected` 进服务端更新台账，逐台可查 |
+
+另外：`KK_UPDATE_DISABLED=1` 现在**同时关掉轮询与推送两条路**（此前推送可绕过该
+开关）；Agent 侧按命令 id 去重，QoS1 重发不会重复执行。签名密钥丢失或换钥后，
+需用新钥重新上传一版（sig 跟随清单走，回滚互换天然继承）。
+
+#### 9.2.2 回滚待分发版本
 
 上传新版本后发现问题，可把服务端**待分发**的二进制换回上一版：
 

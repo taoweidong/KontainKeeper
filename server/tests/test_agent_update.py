@@ -4,6 +4,7 @@ v3 起 Agent 侧接口（latest/download）按请求源 IP 校验 KK_AGENT_IPS �
 替代原 Bearer token；上传仍需管理员会话。
 """
 import hashlib
+import hmac
 import json
 import os
 import time
@@ -19,18 +20,20 @@ GOOD_CLIENT = ("127.0.0.1", 50001)     # 白名单内的模拟 Agent 来源
 BAD_CLIENT = ("192.0.2.9", 50002)     # 白名单外的模拟 Agent 来源
 
 
-def _make_app(tmp_path):
+def _make_app(tmp_path, extra_env=None):
     # KK_UPDATE_MODE 默认 manual（D2.1：关自动全网推）。本文件里的测试覆盖的就是
     # 「上传 → /agent/latest 立即可拉 / status 帧触发升级推送」这条主链路 —— 把模式
     # 显式拨成 auto 还原旧行为，使本文件与 D2.1 解耦。
-    return create_app({
+    env = {
         "KK_AGENT_IPS": "127.0.0.1",
         "KK_ADMIN_USER": ADMIN_USER,
         "KK_ADMIN_PASS": ADMIN_PASS,
         "KK_DB_PATH": str(tmp_path / "au.db"),
         "KK_AGENT_BIN_DIR": str(tmp_path / "bin"),
         "KK_UPDATE_MODE": "auto",
-    })
+    }
+    env.update(extra_env or {})
+    return create_app(env)
 
 
 def _admin_token(client):
@@ -160,20 +163,26 @@ async def test_status_pushes_upgrade(tmp_path):
                        "99.0.0").status_code == 200
         store = app.state.store
 
-    bridge = MqttBridge(store, app.state.settings, app.state.agent_ips, proto_ver=3)
-    bridge.cli = types.SimpleNamespace(
-        publish=lambda topic, body, qos=0, retain=False: (
-            published.append((topic, json.loads(body))),
-            types.SimpleNamespace(rc=0))[1])
-    await bridge._on_status("pod-upgrade", {
-        "online": True, "host": "pod-upgrade", "ip": "127.0.0.1", "proto_ver": 3,
-        "agent_ver": "0.0.1", "image": "img", "interval": 60, "ts": int(time.time())})
+    try:
+        bridge = MqttBridge(store, app.state.settings, app.state.agent_ips, proto_ver=3)
+        bridge.cli = types.SimpleNamespace(
+            publish=lambda topic, body, qos=0, retain=False: (
+                published.append((topic, json.loads(body))),
+                types.SimpleNamespace(rc=0))[1])
+        await bridge._on_status("pod-upgrade", {
+            "online": True, "host": "pod-upgrade", "ip": "127.0.0.1", "proto_ver": 3,
+            "agent_ver": "0.0.1", "image": "img", "interval": 60, "ts": int(time.time())})
 
-    assert published, "落后的 Agent 上线未触发升级推送"
-    topic, body = published[-1]
-    assert topic.endswith("/pod-upgrade/cmd")
-    assert body["kind"] == "update" and body["version"] == "99.0.0"
-    assert body["url"].endswith("/api/system/agent/download")
+        assert published, "落后的 Agent 上线未触发升级推送"
+        topic, body = published[-1]
+        assert topic.endswith("/pod-upgrade/cmd")
+        assert body["kind"] == "update" and body["version"] == "99.0.0"
+        assert body["url"].endswith("/api/system/agent/download")
+    finally:
+        # TestClient 退出时 lifespan 已 close 过 store；本用例刻意在退出后继续用它
+        # （QR-T4），会新建 aiosqlite 连接，必须再关一次，否则 GC 时
+        # Connection.__del__ 会以 PytestUnraisableExceptionWarning 炸到后面的用例
+        await store.close()
 
 
 # ---- A6.1：服务端下发绝对下载地址 ----
@@ -232,7 +241,8 @@ async def test_concurrent_uploads_stay_consistent(tmp_path):
                        files={"file": ("kk-agent", b)}, data={"version": "2.0.0"}),
             )
         latest = await store.get_agent_latest()
-        on_disk = open(os.path.join(str(tmp_path / "bin"), "kk-agent"), "rb").read()
+        with open(os.path.join(str(tmp_path / "bin"), "kk-agent"), "rb") as f:
+            on_disk = f.read()   # with 包裹：裸 open 的句柄 GC 时会炸 ResourceWarning
         assert hashlib.sha256(on_disk).hexdigest() == latest["sha256"], \
             "清单与磁盘字节必须一致（并发交错会破坏它）"
         assert latest["version"] in ("1.0.0", "2.0.0")
@@ -288,3 +298,33 @@ async def test_agent_latest_relative_url_without_public_url(tmp_path):
         assert body["url"] == "/api/system/agent/download"
     finally:
         await store.close()
+
+
+# ---- QR-P0-1：上传清单签名 ----
+
+def test_upload_signs_manifest_when_hmac_key_set(tmp_path):
+    """配了 KK_UPDATE_HMAC_KEY：清单带 sig（对二进制本体的 HMAC-SHA256），
+    /agent/latest 轮询响应同样携带；cmd 帧由 bridge 测试锁定。"""
+    payload = b"ELF-signed-binary"
+    with TestClient(_make_app(tmp_path, extra_env={"KK_UPDATE_HMAC_KEY": "s3cret"}),
+                    client=GOOD_CLIENT) as client:
+        token = _admin_token(client)
+        r = _upload(client, token, payload, "0.4.0")
+        assert r.status_code == 200, r.text
+        sig = r.json().get("sig")
+        assert sig == hmac.new(b"s3cret", payload, hashlib.sha256).hexdigest()
+        assert r.json()["sha256"] == hashlib.sha256(payload).hexdigest()
+
+        r = client.get("/api/system/agent/latest", params={"ver": "0.1.0"})
+        assert r.status_code == 200 and r.json()["available"] is True
+        assert r.json()["sig"] == sig
+
+
+def test_upload_without_key_has_no_sig(tmp_path):
+    """未配 key 时清单不带 sig 字段：存量行为不变，Agent 侧走未签名策略门。"""
+    payload = b"ELF-unsigned"
+    with TestClient(_make_app(tmp_path), client=GOOD_CLIENT) as client:
+        token = _admin_token(client)
+        r = _upload(client, token, payload, "0.5.0")
+        assert r.status_code == 200
+        assert "sig" not in r.json()
