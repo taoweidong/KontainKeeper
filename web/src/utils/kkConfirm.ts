@@ -6,11 +6,15 @@
 
 单台不弹：高频单机操作不该被对话框打断。
 */
+import { h } from "vue";
 import { ElMessageBox } from "element-plus";
 
 export type ConfirmTarget = { pod: string; online: boolean };
 
-export async function confirmDispatch(targets: ConfirmTarget[], action = "下发命令") {
+export async function confirmDispatch(
+  targets: ConfirmTarget[],
+  action = "下发命令"
+) {
   if (targets.length <= 1) return true;
   const online = targets.filter(t => t.online);
   const offline = targets.filter(t => !t.online);
@@ -26,15 +30,26 @@ export async function confirmDispatch(targets: ConfirmTarget[], action = "下发
     }`
   ];
   if (offline.length) {
-    lines.push("离线主机的命令将由 Broker 排队，重连后自动补投，结果会稍后出现。");
+    lines.push(
+      "离线主机的命令将由 Broker 排队，重连后自动补投，结果会稍后出现。"
+    );
   }
   try {
-    await ElMessageBox.confirm(lines.join("<br/>"), "批量下发确认", {
-      dangerouslyUseHTMLString: true,
-      confirmButtonText: "确认下发",
-      cancelButtonText: "取消",
-      type: "warning"
-    });
+    // 主机名由 Agent 自报，不可信：走 VNode 文本节点交给 Vue 转义，
+    // 不用 dangerouslyUseHTMLString（那是全仓唯一的 HTML 注入 sink）。
+    await ElMessageBox.confirm(
+      h(
+        "div",
+        { class: "kk-confirm" },
+        lines.map(text => h("p", text))
+      ),
+      "批量下发确认",
+      {
+        confirmButtonText: "确认下发",
+        cancelButtonText: "取消",
+        type: "warning"
+      }
+    );
     return true;
   } catch {
     return false;

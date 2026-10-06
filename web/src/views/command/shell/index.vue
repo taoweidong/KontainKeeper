@@ -39,7 +39,9 @@ const shellForm = reactive({
 });
 
 /** 选中主机的在线情况：确认框要如实告诉用户离线主机会排队补投 */
-const picked = computed(() => hosts.value.filter(h => shellForm.pods.includes(h.pod)));
+const picked = computed(() =>
+  hosts.value.filter(h => shellForm.pods.includes(h.pod))
+);
 
 async function loadHosts() {
   try {
@@ -49,7 +51,8 @@ async function loadHosts() {
   }
 }
 
-/** 输入状态同步到 query（replace 不污染后退栈）：刷新与分享不丢 */
+/** 选择与超时同步到 query（replace 不污染后退栈）：刷新与分享不丢。
+ *  命令体 **不落 URL**——地址栏、复制链接、浏览器历史都会留下整条 shell 命令。 */
 watch(
   () => ({ ...shellForm }),
   v => {
@@ -58,7 +61,6 @@ watch(
         ...route.query,
         pods: v.pods.join(",") || undefined,
         mode: v.mode,
-        cmdline: v.cmdline || undefined,
         timeout: String(v.timeout)
       }
     });
@@ -92,7 +94,10 @@ async function submitShell() {
     const res = await createCommand(body as any);
     ElMessage.success(`已下发 ${res.items.length} 条命令`);
     // 定位到该批次：下发即看到进度，不需要滚动去找
-    history.value?.focusBatch(res.batch_id, res.items.map(i => i.id));
+    history.value?.focusBatch(
+      res.batch_id,
+      res.items.map(i => i.id)
+    );
   } catch (e: any) {
     ElMessage.error("下发失败：" + errText(e));
   } finally {
@@ -135,8 +140,8 @@ onMounted(async () => {
               @keydown.meta.enter.prevent="submitShell"
             />
             <div class="kk-sub">
-              整条命令经 sh -c 执行，支持管道 / 重定向 / && / 变量展开；
-              仅 rm -rf /、mkfs、reboot 等危险命令会被服务端黑名单拦截
+              整条命令经 sh -c 执行，支持管道 / 重定向 / && / 变量展开； 仅 rm
+              -rf /、mkfs、reboot 等危险命令会被服务端黑名单拦截
             </div>
           </div>
         </el-form-item>

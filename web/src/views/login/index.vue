@@ -37,8 +37,10 @@ dataThemeChange(overallStyle.value);
 const { title } = useNav();
 
 const ruleForm = reactive({
-  username: "admin",
-  password: "admin123"
+  // 不预填默认口令：登录页把 admin/admin123 印在输入框里，等于向内网任何人
+  // 出示入口凭据（后端仅在非 production 放行该默认口令）。
+  username: "",
+  password: ""
 });
 
 const onLogin = async (formEl: FormInstance | undefined) => {
