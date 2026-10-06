@@ -6,7 +6,15 @@ import { ElMessage } from "element-plus";
 import { listHosts, type HostSummary } from "@/api/containers";
 import { createCommand, listCollectItems } from "@/api/commands";
 import { exportHosts } from "@/api/exporting";
-import { ageText, downloadBlob, errText, fileStamp, mbText, numText, tsText } from "@/utils/kk";
+import {
+  ageText,
+  downloadBlob,
+  errText,
+  fileStamp,
+  mbText,
+  numText,
+  tsText
+} from "@/utils/kk";
 import { usePolls } from "@/utils/kkPoll";
 
 defineOptions({ name: "HostMonitor" });
@@ -17,11 +25,14 @@ const loading = ref(false);
 const rows = ref<HostSummary[]>([]);
 const online = ref(0);
 const alerts = ref(0);
+const outdated = ref(0);
 const keyword = ref("");
 const onlyOnline = ref(false);
 const onlyAlert = ref(false);
 /** 最近一次加载成功的时间（秒级时间戳），0 = 尚未加载 */
 const lastLoadedAt = ref(0);
+/** 静默轮询失败：不刷 toast，改由表头的同步读数如实说明（W5） */
+const pollFailed = ref(false);
 /** 轮询间隔（秒），0 = 停。总览是唯一常驻轮询的页面，10s 足够且不给服务端放大压力 */
 const interval = ref(10);
 
@@ -41,13 +52,17 @@ const filtered = computed(() => {
   return rows.value.filter(r => {
     if (onlyOnline.value && !r.online) return false;
     if (onlyAlert.value && !r.disk_alert) return false;
-    if (kw && !r.pod.toLowerCase().includes(kw) && !(r.image || "").toLowerCase().includes(kw))
+    if (
+      kw &&
+      !r.pod.toLowerCase().includes(kw) &&
+      !(r.image || "").toLowerCase().includes(kw)
+    )
       return false;
     return true;
   });
 });
 
-/** silent=true 供轮询复用：表格数据原位更新，不闪整页 loading */
+/** silent=true 供轮询复用：表格数据原位更新，不闪整页 loading，失败也不刷 toast */
 async function load(silent = false) {
   if (!silent) loading.value = true;
   try {
@@ -55,9 +70,14 @@ async function load(silent = false) {
     rows.value = data.items;
     online.value = data.online;
     alerts.value = data.alerts;
+    outdated.value = data.outdated;
     lastLoadedAt.value = Math.floor(Date.now() / 1000);
+    pollFailed.value = false;
   } catch (e: any) {
-    ElMessage.error("加载主机列表失败：" + errText(e));
+    // 自动轮询失败只在表头的同步读数上如实说明：后端宕机时每 10s 弹一次
+    // ElMessage 会把真正的错误淹成噪音（W5）。
+    pollFailed.value = silent;
+    if (!silent) ElMessage.error("加载主机列表失败：" + errText(e));
   } finally {
     loading.value = false;
   }
@@ -169,6 +189,39 @@ function rowClass({ row }: { row: HostSummary }): string {
   return row.disk_alert ? "kk-row-alert" : "";
 }
 
+/** 离线要把服务端记的原因说出来：updating 是设计内的自更新窗口，不是故障，
+ *  运维看到它不该去重启 Agent（B6 的语义此前在 UI 上完全丢失）。
+ *  取值集合只有 online / updating / LWT 空，其余一律按「离线」呈现。 */
+const OFFLINE_REASON_LABEL: Record<string, string> = { updating: "更新中" };
+
+function stateClass(row: HostSummary): string {
+  if (row.online) return "";
+  return row.status_reason === "updating"
+    ? "kk-state--updating"
+    : "kk-state--idle";
+}
+
+function stateText(row: HostSummary): string {
+  if (row.online) return "在线";
+  return OFFLINE_REASON_LABEL[row.status_reason || ""] || "离线";
+}
+
+/** 计量条填充：钳到 0–100，坏值不画出越界的条 */
+function fillPct(v: number | null | undefined): number {
+  return Math.max(0, Math.min(100, Math.round(v ?? 0)));
+}
+
+/** 心跳新鲜度三格，按绝对秒数判级（默认 60s 上报间隔下 ≈ 0.5 / 2 / 10 个周期）。
+ *  三格是判级不是历史波形——列头图例写明阈值，避免误读成时间序列。 */
+function tickState(row: HostSummary): { n: number; cls: string } {
+  if (!row.online) return { n: 0, cls: "" };
+  const age = row.age_sec ?? 0;
+  if (age <= 30) return { n: 3, cls: "" };
+  if (age <= 120) return { n: 2, cls: "kk-ticks--mid" };
+  if (age <= 600) return { n: 1, cls: "kk-ticks--low" };
+  return { n: 0, cls: "" };
+}
+
 onMounted(async () => {
   await load();
   restartTimer();
@@ -179,11 +232,52 @@ onMounted(async () => {
   <div>
     <el-card shadow="never" class="kk-card">
       <template #header>
-        <div class="kk-toolbar">
-          <div class="kk-stat">
-            <span>主机 <b>{{ rows.length }}</b></span>
-            <span>在线 <b class="kk-ok">{{ online }}</b></span>
-            <span>磁盘告警 <b class="kk-bad">{{ alerts }}</b></span>
+        <div class="kk-band">
+          <div class="kk-band__fleet">
+            <span
+              class="kk-band__strip"
+              role="img"
+              :aria-label="`在线 ${online} 台，离线 ${Math.max(0, rows.length - online)} 台`"
+            >
+              <i class="kk-band__seg" :style="{ flex: String(online) }" />
+              <i
+                class="kk-band__seg kk-band__seg--offline"
+                :style="{ flex: String(Math.max(0, rows.length - online)) }"
+              />
+            </span>
+            <span class="kk-band__readout"
+              ><b>{{ rows.length }}</b
+              >台主机</span
+            >
+            <span class="kk-band__readout"
+              ><b>{{ online }}</b
+              >在线</span
+            >
+            <span class="kk-band__readout kk-band__readout--alert">
+              <b>{{ alerts }}</b
+              >磁盘告警
+            </span>
+            <span class="kk-band__readout kk-band__readout--stale">
+              <b>{{ outdated }}</b
+              >待升级
+            </span>
+            <el-tooltip
+              content="自动刷新最近一次成功的时间；失败时表格保持上一批数据"
+              placement="bottom"
+            >
+              <span
+                class="kk-band__sync"
+                :class="{ 'kk-band__sync--stale': pollFailed }"
+              >
+                {{
+                  pollFailed
+                    ? "自动刷新失败，读数可能已过期"
+                    : lastLoadedAt
+                      ? `已同步 ${tsText(lastLoadedAt)}`
+                      : "尚未同步"
+                }}
+              </span>
+            </el-tooltip>
           </div>
           <div class="kk-actions">
             <el-input
@@ -194,7 +288,11 @@ onMounted(async () => {
             />
             <el-checkbox v-model="onlyOnline">仅在线</el-checkbox>
             <el-checkbox v-model="onlyAlert">仅告警</el-checkbox>
-            <el-select v-model="interval" style="width: 120px" @change="restartTimer">
+            <el-select
+              v-model="interval"
+              style="width: 120px"
+              @change="restartTimer"
+            >
               <el-option label="5 秒" :value="5" />
               <el-option label="10 秒" :value="10" />
               <el-option label="30 秒" :value="30" />
@@ -212,6 +310,7 @@ onMounted(async () => {
         v-loading="loading"
         :data="filtered"
         :row-class-name="rowClass"
+        size="small"
         class="kk-fill-table"
         @selection-change="onSelectionChange"
         @row-click="onRowClick"
@@ -219,58 +318,88 @@ onMounted(async () => {
         <el-table-column type="selection" width="46" />
         <el-table-column label="主机" min-width="200">
           <template #default="{ row }">
-            <el-link type="primary" @click="gotoDetail(row.pod)">{{ row.pod }}</el-link>
+            <el-link type="primary" class="kk-num" @click="gotoDetail(row.pod)">
+              {{ row.pod }}
+            </el-link>
             <div class="kk-sub">{{ row.image || "-" }}</div>
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="90">
+        <el-table-column label="状态" width="92">
           <template #default="{ row }">
-            <el-tag :type="row.online ? 'success' : 'info'" size="small">
-              {{ row.online ? "在线" : "离线" }}
-            </el-tag>
+            <span class="kk-state" :class="stateClass(row)">{{
+              stateText(row)
+            }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="CPU" width="110">
+        <el-table-column label="CPU" width="132">
           <template #default="{ row }">
-            <div class="kk-metric">
-              <el-progress
-                :percentage="Math.min(100, Math.round(row.cpu ?? 0))"
-                :stroke-width="10"
-                :show-text="false"
-              />
-              <span>{{ numText(row.cpu) }}%</span>
-            </div>
+            <span class="kk-meter">
+              <span class="kk-meter__bar">
+                <i :style="{ width: fillPct(row.cpu) + '%' }" />
+              </span>
+              <span class="kk-meter__num">{{ numText(row.cpu) }}</span>
+            </span>
           </template>
         </el-table-column>
-        <el-table-column label="内存" width="120">
-          <template #default="{ row }">{{ mbText(row.mem_mb) }}</template>
-        </el-table-column>
-        <el-table-column label="磁盘" width="150">
+        <el-table-column label="内存" width="110" align="right">
           <template #default="{ row }">
-            <el-tag :type="row.disk_alert ? 'danger' : 'info'" size="small">
-              {{ numText(row.disk_pct, 0) }}%
-            </el-tag>
+            <span class="kk-num">{{ mbText(row.mem_mb) }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="Agent" width="140">
+        <el-table-column label="磁盘" width="132">
           <template #default="{ row }">
-            <!-- 版本 tag：落后于 latest 时打 warning——一眼看出「哪些要升」（D2.4） -->
-            <el-tag
-              :type="row.agent_outdated ? 'warning' : 'info'"
-              size="small"
-              effect="plain"
+            <!-- 告警态由条本身变红承担，不再套一层 tag：一列只有一种强调方式 -->
+            <span
+              class="kk-meter"
+              :class="{ 'kk-meter--alert': row.disk_alert }"
             >
-              {{ row.agent_ver || "-" }}
-            </el-tag>
+              <span class="kk-meter__bar">
+                <i :style="{ width: fillPct(row.disk_pct) + '%' }" />
+              </span>
+              <span class="kk-meter__num">{{ numText(row.disk_pct, 0) }}</span>
+            </span>
           </template>
         </el-table-column>
-        <el-table-column label="最近心跳" width="130">
-          <template #default="{ row }">{{ ageText(row.age_sec) }}</template>
+        <el-table-column label="Agent" width="120">
+          <template #default="{ row }">
+            <!-- 落后于待分发版本时用「待升级」同色——一眼看出哪些要升（D2.4） -->
+            <span class="kk-num" :class="{ 'kk-warn': row.agent_outdated }">
+              {{ row.agent_ver || "-" }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column width="158">
+          <template #header>
+            <el-tooltip
+              content="心跳新鲜度分级：满格 ≤30s，两格 ≤2 分钟，一格 ≤10 分钟，空格更久"
+              placement="bottom"
+            >
+              <span>最近心跳</span>
+            </el-tooltip>
+          </template>
+          <template #default="{ row }">
+            <span
+              class="kk-ticks"
+              :class="tickState(row).cls"
+              aria-hidden="true"
+            >
+              <i
+                v-for="n in 3"
+                :key="n"
+                :class="{ on: n <= tickState(row).n }"
+              />
+            </span>
+            <span class="kk-num kk-ml">{{ ageText(row.age_sec) }}</span>
+          </template>
         </el-table-column>
         <el-table-column label="操作" width="150" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" @click="gotoDetail(row.pod)">详情</el-button>
-            <el-button link type="primary" @click="collectOne(row)">采集</el-button>
+            <el-button link type="primary" @click="gotoDetail(row.pod)"
+              >详情</el-button
+            >
+            <el-button link type="primary" @click="collectOne(row)"
+              >采集</el-button
+            >
           </template>
         </el-table-column>
         <template #empty>
@@ -280,7 +409,11 @@ onMounted(async () => {
 
       <div class="kk-batch kk-sticky-bar">
         <span class="kk-sub">已选 {{ selection.length }} 台</span>
-        <el-button type="primary" :disabled="!selection.length" @click="openCollect">
+        <el-button
+          type="primary"
+          :disabled="!selection.length"
+          @click="openCollect"
+        >
           批量采集
         </el-button>
         <el-button :disabled="!selection.length" @click="openCommandCenter">
@@ -292,28 +425,45 @@ onMounted(async () => {
                进入页面后 selection 已被预填好。 -->
         <el-button
           type="warning"
-          :disabled="!selection.length || !selection.some(h => h.agent_outdated)"
+          :disabled="
+            !selection.length || !selection.some(h => h.agent_outdated)
+          "
           @click="gotoUpgrade"
         >
           批量升级
         </el-button>
-        <el-button :disabled="!selection.length" :loading="exporting" @click="onExport">
+        <el-button
+          :disabled="!selection.length"
+          :loading="exporting"
+          @click="onExport"
+        >
           导出选中清单
         </el-button>
-        <span class="kk-sub">最后加载：{{ lastLoadedAt ? tsText(lastLoadedAt) : "-" }}</span>
       </div>
     </el-card>
 
     <el-dialog v-model="dialog.visible" title="批量采集指标" width="420px">
       <el-checkbox-group v-model="dialog.items">
-        <el-checkbox v-for="it in collectItems" :key="it" :label="it" :value="it">
+        <el-checkbox
+          v-for="it in collectItems"
+          :key="it"
+          :label="it"
+          :value="it"
+        >
           {{ it }}
         </el-checkbox>
       </el-checkbox-group>
-      <p class="kk-sub">将对已选 {{ selection.length }} 台主机下发采集命令，结果在「命令中心」查看。</p>
+      <p class="kk-sub">
+        将对已选
+        {{ selection.length }} 台主机下发采集命令，结果在「命令中心」查看。
+      </p>
       <template #footer>
         <el-button @click="dialog.visible = false">取消</el-button>
-        <el-button type="primary" :loading="dialog.submitting" @click="submitCollect">
+        <el-button
+          type="primary"
+          :loading="dialog.submitting"
+          @click="submitCollect"
+        >
           下发
         </el-button>
       </template>
@@ -321,4 +471,4 @@ onMounted(async () => {
   </div>
 </template>
 
-<!-- 通用类（kk-toolbar/kk-stat/kk-metric/kk-batch 等）统一在 style/kk.scss -->
+<!-- 通用类（kk-band/kk-state/kk-meter/kk-ticks/kk-batch 等）统一在 style/kk.scss -->

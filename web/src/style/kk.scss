@@ -20,6 +20,26 @@
   /* navbar(48) + tabs(33) + 内容区留白 + 页脚 的合计占用，约 150px 量级。
      只在此处维护；业务页不得再写 calc(100vh - N)。 */
   --kk-page-h: 152px;
+
+  /* 抽屉内表格高度锚点：与 --kk-page-h 同族，数值只在这里维护 */
+  --kk-drawer-h: 300px;
+
+  /* ---- 设计基座 · 机队控制台（2026-10-06）----
+   * 视觉语言来自读数本身：数字等宽、状态只有四档、层级靠密度与 hairline 分隔，
+   * 不靠圆角/阴影/渐变。取值全部派生自 Element Plus 变量，因此 light/dark 与
+   * 8 套主题预设都不破；离线部署（docker-compose.offline.yml）不引任何外部字体。
+   */
+
+  /* 读数角色：数字/主机名/版本/时间戳/命令输出共用一条等宽栈（本机字体，无网络依赖） */
+  --kk-font-num:
+    ui-monospace, sfmono-regular, menlo, consolas, "liberation mono", monospace;
+
+  /* 四档状态。饱和色只留给「告警」与「待升级」，所以它们真的刺眼；
+     在线用绿、离线用空心冷灰——离线不是错误，是一种运维场景。 */
+  --kk-live: var(--el-color-success);
+  --kk-alert: var(--el-color-danger);
+  --kk-stale: var(--el-color-warning);
+  --kk-idle: var(--el-text-color-disabled);
 }
 
 /* 页面根容器：全站唯一的高度锚点 */
@@ -62,7 +82,7 @@
 }
 
 /* 1366×768 运维笔记本常见：窄屏折叠为上下，避免横向滚动 */
-@media (max-width: 1200px) {
+@media (width <= 1200px) {
   .kk-side {
     flex-direction: column;
   }
@@ -77,11 +97,6 @@
    本文件是全局样式（非 scoped），el-table 的行类名落在 <tr> 上，直接后代选择即可。 */
 .kk-row-alert > td.el-table__cell {
   background: var(--el-color-danger-light-9);
-}
-
-/* 抽屉内表格高度锚点：与 --kk-page-h 同族，数值只在这里维护 */
-:root {
-  --kk-drawer-h: 300px;
 }
 
 .kk-mb {
@@ -156,7 +171,9 @@
 }
 
 .kk-stat b {
+  font-family: var(--kk-font-num);
   font-size: 16px;
+  font-variant-numeric: tabular-nums;
   color: var(--el-text-color-primary);
 }
 
@@ -166,17 +183,6 @@
 
 .kk-bad {
   color: var(--el-color-danger) !important;
-}
-
-/* 总览页：行内 CPU 进度条 */
-.kk-metric {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
-.kk-metric .el-progress {
-  flex: 1;
 }
 
 /* 总览页：表底批量操作条 */
@@ -199,8 +205,8 @@
   font-family: Consolas, Monaco, monospace;
   font-size: 12px;
   line-height: 1.6;
-  white-space: pre-wrap;
   word-break: break-all;
+  white-space: pre-wrap;
   background: var(--el-fill-color-light);
   border-radius: 4px;
 }
@@ -218,4 +224,190 @@
   margin-right: 14px;
   font-size: 12px;
   color: var(--el-text-color-regular);
+}
+
+/* ---- 读数 ----
+ * tabular-nums 让 500 行的同列数字逐位对齐，扫读时形成可比较的「数字柱」。 */
+.kk-num {
+  font-family: var(--kk-font-num);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- 状态：圆点 + 文字，替代 el-tag 的圆角色块 ----
+ * 空心 = 离线（含自更新窗口），实心 = 在线；更新中给方点，与 B6 的 status_reason 对齐。 */
+.kk-state {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--el-text-color-regular);
+}
+
+.kk-state::before {
+  width: 7px;
+  height: 7px;
+  content: "";
+  background: var(--kk-live);
+  border-radius: 50%;
+}
+
+.kk-state--idle::before {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--kk-idle);
+}
+
+.kk-state--updating::before {
+  background: var(--kk-stale);
+  border-radius: 1px;
+}
+
+/* ---- 计量条：一条 4px 的槽 + 等宽读数，替代「进度条 + 重复百分比文字」 ----
+ * 条宽由内联 width 驱动，告警态直接换色，不再额外套一层 tag。 */
+.kk-meter {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.kk-meter__bar {
+  flex: 1;
+  height: 4px;
+  overflow: hidden;
+  background: var(--el-fill-color);
+  border-radius: 1px;
+}
+
+.kk-meter__bar i {
+  display: block;
+  height: 100%;
+  background: var(--el-color-primary);
+  transition: width 0.3s;
+}
+
+.kk-meter--alert .kk-meter__bar i {
+  background: var(--kk-alert);
+}
+
+.kk-meter__num {
+  min-width: 34px;
+  font-family: var(--kk-font-num);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--el-text-color-regular);
+  text-align: right;
+}
+
+/* ---- 心跳新鲜度刻度：三格，格数随 age 递减 ----
+ * 三格是「新鲜 / 尚可 / 迟滞」三档判级，不是历史波形——列头图例写清阈值，
+ * 不让人误读成时间序列。 */
+.kk-ticks {
+  display: inline-flex;
+  gap: 2px;
+  align-items: center;
+  vertical-align: middle;
+}
+
+.kk-ticks i {
+  width: 9px;
+  height: 3px;
+  background: var(--el-border-color);
+}
+
+.kk-ticks i.on {
+  background: var(--kk-live);
+}
+
+.kk-ticks--mid i.on {
+  background: var(--kk-idle);
+}
+
+.kk-ticks--low i.on {
+  background: var(--kk-stale);
+}
+
+/* ---- 机队仪表带：整屏最重要的判断（机队健康比例）压成一次视觉扫描 ----
+ * 分段条只编码互斥的两类（在线/离线），可重叠的子集（磁盘告警、版本落后）
+ * 一律用读数表达——比例条里放重叠子集会画出一张说谎的图。 */
+.kk-band {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.kk-band__fleet {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  align-items: center;
+  min-width: 0;
+}
+
+.kk-band__strip {
+  display: flex;
+  width: 132px;
+  height: 6px;
+  overflow: hidden;
+  background: var(--el-fill-color);
+  border-radius: 1px;
+}
+
+.kk-band__seg {
+  height: 100%;
+  background: var(--kk-live);
+}
+
+.kk-band__seg--offline {
+  background: var(--kk-idle);
+  opacity: 0.45;
+}
+
+.kk-band__readout {
+  display: inline-flex;
+  gap: 5px;
+  align-items: baseline;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.kk-band__readout b {
+  font-family: var(--kk-font-num);
+  font-size: 16px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--el-text-color-primary);
+  letter-spacing: -0.01em;
+}
+
+.kk-band__readout--alert b {
+  color: var(--kk-alert);
+}
+
+.kk-band__readout--stale b {
+  color: var(--kk-stale);
+}
+
+/* 轮询心跳读数：自动刷新失败时不再刷 toast，而是让这条读数变冷并写明原因 */
+.kk-band__sync {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.kk-band__sync--stale {
+  color: var(--kk-stale);
+}
+
+/* 落后于待分发版本的 Agent 版本号：与「待升级」同色 */
+.kk-warn {
+  color: var(--kk-stale) !important;
+}
+
+/* 二次确认框（kkConfirm 用 VNode 渲染多行，reset 里 p 的 margin 被清零） */
+.kk-confirm p {
+  margin: 0 0 6px;
+  line-height: 1.7;
 }
