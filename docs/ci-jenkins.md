@@ -160,7 +160,9 @@ git add server/src/kk_server/web && git commit -m "chore(web): 同步前端构�
 | ⑨ 失败 | 构建日志 | 仓库凭据错、仓库地址不可达、tag 无推权 |
 | ⑩ 失败 | 构建日志（SSH 输出） | 私钥不对、`DEPLOY_DIR` 不是克隆、目标机连不上仓库、`.env` 缺 `KK_AGENT_IPS`（production 自检会拒绝启动） |
 | ⑪ 失败 | 构建日志 | 服务端没起来、Broker 未连上、口令与目标机 `.env` 不一致 |
-| ⑬ 失败 | `reports/loadtest.log` / `reports/bench_agent.log` / `reports/db-smoke*.log` | PG/MySQL 真连建表扩列失败（方言缺陷）、压测掉线或命令回传 < 100%、Agent RSS 超基线；属每日报告，不阻塞 ①~⑫ |
+| ⑬ 失败 | 构建日志 | PG/MySQL 真连建表扩列失败（方言缺陷）|
+| ⑬ 失败 | `reports/loadtest.log` | 连接成功率 < 98%、或服务端 `agents_online` < 连接成功数（桥接漏收）——脚本现在返回 1，不再只打印 |
+| ⑬ 失败 | `reports/bench_agent.log` | Agent 常驻 RSS ≥ 40MB、或有 Broker 却采不到内存（读不到=校验失明，同样红）|
 
 两个容易踩的坑：
 
@@ -169,6 +171,31 @@ git add server/src/kk_server/web && git commit -m "chore(web): 同步前端构�
   服务端之间若走了代理，源 IP 会退化为代理地址，等于「全局 5 次」，更容易互相连坐。
 - **`KK_ENV=production` 自检**：目标机口令为默认 `admin123` 或 `KK_AGENT_IPS` 为空时，
   服务端会**直接拒绝启动**（fail-fast）。⑩ 之后容器反复重启、⑪ 探活失败，多半是这个。
+
+### 6.1 「静默绿灯」反例清单（本轮 ③/⑬ 门禁就是为堵这些洞）
+
+绿灯不等于健康。历史上这条流水线有过几次「全绿但其实什么都没验」：
+
+| 反例 | 为什么会假绿 | 现在的门禁 |
+|---|---|---|
+| 集成用例被 skip 却仍绿 | `pytest` 对 skipped 返回 0，`set -e` 抓不到 | ③ 解析 `reports/pytest.xml`，**`skipped != 0` 直接红**（有 Broker 就不该有 skip） |
+| 整块测试文件被误删 | 用例从 340 掉到 180，仍 0 failed | ③ 断言 `tests >= 340`（下限，防误删），跌破即红 |
+| 报告没产出 | junit `allowEmptyResults: true` 把「无文件」当通过 | 改 `false`；`reports/**` 归档在非 SKIP_TESTS 构建下 `allowEmptyArchive: false`（缺报告=红） |
+| loadtest / bench 只打印不判 | 脚本恒 `exit 0`，「超标」只写在日志里 | `scripts/loadtest.py`、`scripts/bench_agent.py` 指标不达标即 `sys.exit(1)`；⑬ `set -euo pipefail` 让非零退出穿透 `| tee` 变红 |
+| bench 连的是「默认端口」而不是 CI Broker | `bench_agent.py` 读 `KK_BENCH_MQTT`，默认 1883；⑬ 的 Broker 在 18830 → 每次都走「无 Broker，跳过」分支并返回 0 | ⑬ 显式注入 `KK_BENCH_MQTT="$CI_MQTT_URL"`，并在跑之前硬等 Broker 与 `/api/health` 就绪，不就绪直接 `exit 1` |
+| 「有 Broker 却读不到内存」也算过 | bench 采样为空时旧实现静默 `return`（0） | 采样为空现在返回 1；只有「Broker 确实不可达」才允许跳过 |
+
+门禁本身也会说谎，所以两条反向验证都要做过（本轮实跑结论）：
+
+- **造一次全 skip**：把 `KK_IT_MQTT_URL` 指向空端口 → `pytest` 退出码仍是 0、`skipped=4`，
+  ③ 的 XML 门禁返回 1。只盯 `pytest` 退出码的流水线在这一刻是绿的。
+- **造一次假绿变真红**：把 `transport.py` 的 hb 临时改成 `retain=True` → R1 必须红。
+  顺带暴露 e2e 自身的两个盲点，现已修：R1 原先靠「订阅窗口内收到的都是 retained」判定，
+  而被测 Agent 每秒发实时 hb，窗口必然收到 → 随机红；现在按 `msg.retain` 判。
+  另外 retained 是 **Broker 侧状态**，改坏一次就永久留在 Broker 上让后续每轮都误红，
+  所以 `mqtt_e2e.py` 收尾会清掉本 PREFIX 下的 retained 帧。
+
+> 应急回滚勾 `SKIP_TESTS` 时，③④ 整体不跑、归档允许为空——这是**唯一**被允许的「无报告」路径。
 
 ## 7. 回滚
 
@@ -201,6 +228,12 @@ KK_IT_MQTT_URL=mqtt://127.0.0.1:18830 .venv/bin/python -m pytest agent/tests ser
 
 # 2) Broker 语义冒烟
 KK_MQTT_URL=mqtt://127.0.0.1:18830 .venv/bin/python scripts/mqtt_e2e.py
+
+# 2b) 夜测等价（⑬：连接压测 + Agent RSS 基线，两者都退出码判定）
+#     bench_agent 读 KK_BENCH_MQTT，不显式指到 18830 会走「跳过」返回 0
+.venv/bin/python -m kk_server &          # KK_MQTT_URL 同上
+.venv/bin/python scripts/loadtest.py 200 127.0.0.1 18830 8443
+KK_BENCH_MQTT=mqtt://127.0.0.1:18830 .venv/bin/python scripts/bench_agent.py 15
 
 # 3) 前端
 cd web && pnpm install --frozen-lockfile && pnpm typecheck && pnpm build && cd ..

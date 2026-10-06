@@ -185,9 +185,11 @@ def main():
               "frames=%d out=%r" % (n, (out or b"")[:40]))
 
         # ---- 3. 大输出多块可拼装 ----
+        # argv[0] 用 sys.executable：Ubuntu/WSL 上没有 `python` 只有 `python3`，
+        # 硬编码会让这条用例在干净 Linux 上拿到 69 字节的 FileNotFoundError 结果帧
         cid2 = "c-big-1"
         publish_cmd(host, {"id": cid2, "kind": "shell",
-                           "argv": ["python", "-c",
+                           "argv": [sys.executable, "-c",
                                     "import sys;sys.stdout.write('Q'*300000)"],
                            "timeout": 30})
         out2, body2, n2 = collect_result(rec, host, cid2, timeout=TIMEOUT)
@@ -239,6 +241,7 @@ def main():
         kill_proc(revived)
 
     rec.stop()
+    clear_retained()
     bad = [n for n, ok in _checks if not ok]
     print("\n%d/%d 通过" % (len(_checks) - len(bad), len(_checks)))
     if bad:
@@ -246,14 +249,48 @@ def main():
     return 1 if bad else 0
 
 
+def clear_retained():
+    """清掉本次运行在本 PREFIX 下留下的 retained 帧（发空 retain 载荷即删除）。
+
+    retained 是 Broker 侧状态而不是进程状态：它跨构建、跨进程存活。上一轮改坏
+    Agent 留下的 retained hb 会让 R1 在此后每次构建都稳定误红——流水线复用同一
+    Broker 时，这种残留比缺一条用例更危险。
+    """
+    seen = set()
+    cli = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2,
+                      client_id="kk-e2e-clean-" + str(int(time.time() * 1000)),
+                      clean_session=True, protocol=mqtt.MQTTv311)
+    cli.on_connect = lambda c, u, f, rc, p=None: c.subscribe(PREFIX + "/#", qos=1)
+    cli.on_message = lambda c, u, m: seen.add(m.topic) if m.retain else None
+    connect_with_retry(cli)
+    cli.loop_start()
+    time.sleep(2)          # 等 retained 回放收齐（只按 retain 标志收，实时帧不进删除清单）
+    for topic in sorted(seen):
+        cli.publish(topic, b"", qos=1, retain=True)
+    time.sleep(0.5)
+    cli.loop_stop()
+    cli.disconnect()
+
+
 def retained_topics(host):
-    """新开一个 clean_session 订阅者，只有 retained 消息会立刻回放。"""
+    """新开一个 clean_session 订阅者，按消息的 retain 标志筛出 retained 主题。
+
+    不能靠「窗口里收到的就是 retained」来判定：被测 Agent 正以 1s 间隔活着发 hb，
+    实时帧一定会落进探测窗口（曾因此让 R1 变成随机红）。`msg.retain` 才是 Broker
+    给出的权威标记。
+    """
     seen = []
     done = threading.Event()
+
+    def on_message(client, userdata, msg):
+        if msg.retain:
+            seen.append(msg.topic)
+            done.set()
+
     cli = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="kk-e2e-retain-" + str(
         int(time.time() * 1000)), clean_session=True, protocol=mqtt.MQTTv311)
     cli.on_connect = lambda c, u, f, rc, p=None: c.subscribe(PREFIX + "/" + host + "/#", qos=1)
-    cli.on_message = lambda c, u, m: (seen.append(m.topic), done.set())
+    cli.on_message = on_message
     connect_with_retry(cli)
     cli.loop_start()
     done.wait(6)

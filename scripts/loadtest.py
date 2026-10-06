@@ -68,22 +68,50 @@ def main():
     elapsed = time.monotonic() - t0
 
     time.sleep(3)   # 留时间给服务端桥接收敛 retained status
-    h = health(api_port)
+    try:
+        h = health(api_port)
+    except Exception as e:
+        # 服务端不可达 = 环境没起来，必须红（旧实现这里抛栈 exit 非零，但语义含糊）
+        print("loadtest: !! 服务端 /api/health 不可达：%s" % e)
+        _teardown(keep)
+        return 1
     print("connect: %d/%d 成功，耗时 %.1fs，失败 %d" % (len(keep), n, elapsed, len(errors)))
     if errors:
         print("  失败示例:", errors[:3])
     print("服务端 /api/health: agents_online=%s (期望 >= %d)" % (h["agents_online"], len(keep)))
+    online_before = h["agents_online"]
 
+    _teardown(keep)
+    time.sleep(3)
+    try:
+        h = health(api_port)
+        print("断开后 agents_online=%s (期望 0，retained 清理依赖各客户端主动下线)" % h["agents_online"])
+    except Exception as e:
+        print("loadtest: !! 断开后 /api/health 不可达：%s" % e)
+        return 1
+
+    # 门禁：连接成功率 ≥98% 且服务端确实收敛到在线数；否则红（旧实现只打印不退出码）
+    reasons = []
+    if n and len(keep) < n * 0.98:
+        reasons.append("连接成功率 %.0f%% < 98%%" % (100.0 * len(keep) / n))
+    # 比对的是「断开前」的在线数：断开后的读数天然偏低，拿它当门槛会永远红
+    if online_before < len(keep):
+        reasons.append("服务端在线数 %s < 连接成功 %d（桥接漏收）" % (online_before, len(keep)))
+    if reasons:
+        print("loadtest: !! 未达标 → " + "; ".join(reasons))
+        return 1
+    print("loadtest: 达标")
+    return 0
+
+
+def _teardown(keep):
     for cli in keep:
         try:
             cli.disconnect()
             cli.loop_stop()
         except Exception:
             pass
-    time.sleep(3)
-    h = health(api_port)
-    print("断开后 agents_online=%s (期望 0，retained 清理依赖各客户端主动下线)" % h["agents_online"])
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

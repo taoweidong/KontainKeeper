@@ -4,10 +4,11 @@
 v3 起 Agent 基于 psutil + paho-mqtt（跨平台真实采集，不再伪造 /proc），常驻
 RSS 口径约 25–35MB（见 AGENTS.md）。
 
-前置：本机 1883 端口有 Mosquitto（docker run -d -p 1883:1883 eclipse-mosquitto:2）。
+前置：Broker 地址由 `KK_BENCH_MQTT` 指定（默认 `mqtt://127.0.0.1:1883`）；CI 里必须显式
+指向流水线自己起的 Broker，否则脚本会「跳过」而不是失败。
 
 用法: python scripts/bench_agent.py [持续秒数=10]
-输出: 子进程 RSS 均值/最大值、峰值、心跳条数、是否达标
+输出: 子进程 RSS 均值/最大值、峰值、是否达标；结论进退出码（0 达标/无 Broker 跳过，1 失败）
 """
 import ctypes
 import os
@@ -101,7 +102,7 @@ def main():
     duration = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else 10
     if not broker_reachable():
         print("bench: 本机无 Mosquitto（%s），跳过；见文件头说明" % BROKER_URL)
-        return
+        return 0   # 无 Broker = 跳过（CI 里有 Broker，不会走这支）
 
     tmp = Path(tempfile.mkdtemp(prefix="kk-bench-"))
     port = free_port()
@@ -142,21 +143,26 @@ def main():
     time.sleep(1)   # 留时间给桥接收尾最后一帧心跳
     server.should_exit = True
 
-    rows, _ = app.state.store.metrics_series("bench-pod", 1)
+    # 心跳条数不在这里查：Store.metrics_series 是协程，而 uvicorn 的 loop 在子线程里
+    # 已关闭，主线程再 asyncio.run 会撞上绑定旧 loop 的 async engine（异步化重构遗留的
+    # TypeError 就是这里）。采样次数本身已能反映 Agent 是否活着。
     if not samples:
-        print("bench: 无法读取子进程内存（权限或平台不支持）")
-        return
+        # 有 Broker 却测不到内存 = 校验失明，必须红（旧实现静默 return 0 = 假绿）
+        print("bench: !! 无法读取子进程内存（权限或平台不支持）——视为失败")
+        return 1
     rss_list = [s[0] for s in samples]
     peaks = [s[1] for s in samples if s[1] is not None]
-    print("bench 结果（%d 次采样 / %ds，心跳 %d 条）：" % (len(samples), duration, len(rows)))
+    print("bench 结果（%d 次采样 / %ds）：" % (len(samples), duration))
     print("  常驻 RSS: avg=%.1f MB  max=%.1f MB" % (sum(rss_list) / len(rss_list), max(rss_list)))
     if peaks:
         print("  峰值:     %.1f MB" % max(peaks))
-    print("  目标:     < %.0f MB → %s" % (TARGET_MB, "达标" if max(rss_list) < TARGET_MB else "超标"))
+    over = max(rss_list) >= TARGET_MB
+    print("  目标:     < %.0f MB → %s" % (TARGET_MB, "超标" if over else "达标"))
+    return 1 if over else 0
 
 
 if __name__ == "__main__":
     if len(sys.argv) > 3 and sys.argv[1] == "--child":
         run_agent_child(sys.argv[2], sys.argv[3])
     else:
-        main()
+        sys.exit(main())

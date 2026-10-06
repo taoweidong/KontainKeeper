@@ -197,19 +197,41 @@ python3 -c "import socket;socket.create_connection(('127.0.0.1',${CI_MQTT_PORT})
 '''
                 sh 'uv sync --all-packages'
                 sh '''#!/usr/bin/env bash
-set -euo pipefail
+set -uo pipefail
 # KK_IT_MQTT_URL：集成用例读这个（默认 127.0.0.1:1883）；mqtt_e2e.py 读 KK_MQTT_URL
 export KK_IT_MQTT_URL="$CI_MQTT_URL"
 export KK_MQTT_URL="$CI_MQTT_URL"
 # 有 Broker 时应当是「全量通过」，而不是 198 passed + 4 skipped
+# 不用 set -e：pytest 非零退出时要先留住 junit 报告，交下面的门禁裁决
 .venv/bin/python -m pytest agent/tests server/tests -q \
   --junitxml=reports/pytest.xml --tb=short -p no:cacheprovider \
   | tee reports/pytest.log
+PYTEST_RC=${PIPESTATUS[0]}
+# 硬门禁（QR-P1/P2）：光看 pytest 退出码不够——skip 也返回 0，会造成「静默绿灯」。
+# 有 Broker 时任何 skipped 都是漏测；tests 跌破下限＝疑似整块用例被误删。
+.venv/bin/python - <<PY
+import sys, xml.etree.ElementTree as ET
+t = ET.parse("reports/pytest.xml").getroot()
+s = t if t.tag == "testsuite" else t.find("testsuite")
+f = int(s.get("failures") or 0); e = int(s.get("errors") or 0)
+sk = int(s.get("skipped") or 0); n = int(s.get("tests") or 0)
+print("pytest.xml: tests=%d failures=%d errors=%d skipped=%d" % (n, f, e, sk))
+bad = []
+if f: bad.append("failures=%d" % f)
+if e: bad.append("errors=%d" % e)
+if sk: bad.append("skipped=%d（Broker 应可达，任何 skip 都算静默漏测）" % sk)
+if n < 340: bad.append("tests=%d < 下限 340（疑似误删用例）" % n)
+if bad:
+    print("!! 测试门禁不通过: " + "; ".join(bad)); sys.exit(1)
+print(">> 测试门禁通过")
+PY
+GATE_RC=$?
+if [ "$PYTEST_RC" -ne 0 ] || [ "$GATE_RC" -ne 0 ]; then exit 1; fi
 '''
             }
             post {
                 always {
-                    junit allowEmptyResults: true, testResults: 'reports/pytest.xml'
+                    junit allowEmptyResults: false, testResults: 'reports/pytest.xml'
                     sh 'docker rm -f "$BROKER_CT" >/dev/null 2>&1 || true'
                 }
             }
@@ -526,8 +548,9 @@ done
 '''
                 sh '''#!/usr/bin/env bash
 set -euo pipefail
-# 夜测：500 连接压测（心跳零误判掉线 + 命令成功率 100%）+ Agent RSS 基线（< 40MB）。
-# 两者都依赖本机 1883 有 Mosquitto，复用 ④ 的方式起一个。
+# 夜测：500 连接压测（心跳零误判掉线 + Agent RSS 基线 < 40MB）。
+# 复用 ④ 的方式起一个 Broker；两个脚本都必须真的连上它，
+# 连不上就是流水线失明（旧实现静默「跳过」并 return 0，等于假绿）。
 docker rm -f "$BROKER_CT" >/dev/null 2>&1 || true
 docker run -d --name "$BROKER_CT" -p "127.0.0.1:${CI_MQTT_PORT}:1883" \\
   -v "$WORKSPACE/deploy/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" "$BROKER_IMAGE" >/dev/null
@@ -535,6 +558,8 @@ for _ in $(seq 1 60); do
   python3 -c "import socket;socket.create_connection(('127.0.0.1',${CI_MQTT_PORT}),2)" 2>/dev/null && break
   sleep 1
 done
+python3 -c "import socket;socket.create_connection(('127.0.0.1',${CI_MQTT_PORT}),2)" \\
+  || { echo "!! CI Broker 未就绪（$CI_MQTT_URL），夜测拒绝假绿"; exit 1; }
 
 # 先起服务端（loadtest 打它的 /api/health 与在线数）
 KK_MQTT_URL="$CI_MQTT_URL" .venv/bin/python -m kk_server >reports/server-nightly.log 2>&1 &
@@ -543,9 +568,13 @@ for _ in $(seq 1 30); do
   curl -sf "http://127.0.0.1:8443/api/health" >/dev/null 2>&1 && break
   sleep 1
 done
+curl -sf http://127.0.0.1:8443/api/health >/dev/null \\
+  || { echo "!! 服务端未就绪，夜测拒绝假绿"; exit 1; }
 
-.venv/bin/python scripts/loadtest.py 500 127.0.0.1 ${CI_MQTT_PORT} 8443 | tee reports/loadtest.log
-.venv/bin/python scripts/bench_agent.py 15 | tee reports/bench_agent.log
+# bench_agent 读 KK_BENCH_MQTT，默认 1883 —— 不显式指到 CI Broker 会永远「跳过」
+.venv/bin/python scripts/loadtest.py 500 127.0.0.1 ${CI_MQTT_PORT} 8443 \\
+  | tee reports/loadtest.log
+KK_BENCH_MQTT="$CI_MQTT_URL" .venv/bin/python scripts/bench_agent.py 15 | tee reports/bench_agent.log
 kill "$SRV" 2>/dev/null || true
 '''
             }
@@ -559,7 +588,13 @@ kill "$SRV" 2>/dev/null || true
 
     post {
         always {
-            archiveArtifacts artifacts: 'reports/**', allowEmptyArchive: true, fingerprint: true
+            script {
+                // 缺报告 = 红灯（QR-P2）：测试跑过却没产出 reports 就是「静默绿灯」的温床。
+                // 仅 SKIP_TESTS 的应急构建允许空归档，否则一律要求非空。
+                archiveArtifacts artifacts: 'reports/**',
+                                 allowEmptyArchive: params.SKIP_TESTS,
+                                 fingerprint: true
+            }
             sh 'docker rm -f "$BROKER_CT" >/dev/null 2>&1 || true'
         }
         success {
