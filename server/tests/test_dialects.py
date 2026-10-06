@@ -8,7 +8,6 @@
 - 不带方言分支的查询（CASE 宽限、COALESCE 清扫、base64 字符串拼接）能编译
 """
 from sqlalchemy.dialects import mysql, postgresql, sqlite
-import os
 
 import sqlalchemy
 from sqlalchemy import func, select, update
@@ -111,8 +110,9 @@ def test_limit_and_in_clause_compile_everywhere():
 
 def test_url_normalization_rules():
     assert normalize_url("kk.db") == "sqlite+aiosqlite:///kk.db"
-    win = os.path.join("C:", os.sep + "tmp", "kk.db")     # C:\tmp\kk.db
-    assert normalize_url(win) == "sqlite+aiosqlite:///C:/tmp/kk.db"
+    # 字面 Windows 路径（正斜杠化 + 盘符保留），与宿主 OS 无关：
+    # 用 os.path.join + os.sep 在 Linux 上会被绝对段吞掉盘符（曾假红）。
+    assert normalize_url("C:\\tmp\\kk.db") == "sqlite+aiosqlite:///C:/tmp/kk.db"
     assert normalize_url("postgresql://u:p@h/d") == "postgresql+asyncpg://u:p@h/d"
     assert normalize_url("postgres://h/d") == "postgresql+asyncpg://h/d"
     assert normalize_url("mysql://h/d") == "mysql+aiomysql://h/d"
