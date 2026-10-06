@@ -216,6 +216,38 @@ def test_dispatch_update_announces_offline_before_restart(monkeypatch):
     assert any(f.get("announce") == "updating" for f in tr.frames), "缺少 reason=updating 宣告"
 
 
+def test_each_kind_emits_exactly_one_result(monkeypatch):
+    """QR-A19 回归锁：kind=update 的结果帧曾发两遍。
+
+    `_run_update` 自己 `send_result` 之后又 `return res`，`submit_fn` 按返回值再
+    `emit` 一次 → 服务端多写一条 `agent_update_failed` 审计、`upgrade_failed`
+    计数翻倍、全网 QoS1 流量 ×2。旧用例只断言「末帧内容正确」，看不见多发，
+    所以这里数的是 `publish_result` 的调用次数：每个 kind 都必须恰好一条回执。
+    """
+    monkeypatch.setattr(
+        m.kk_updater, "apply_manifest_receipt",
+        lambda cfg, log, manifest, on_before_restart=None: (False, "boom"))
+    monkeypatch.setattr(m.kk_collector, "collect_items",
+                        lambda items, state, cfg=None: ({"cpu": 1.5}, state))
+    cases = [
+        {"id": "c-1", "kind": "shell",
+         "argv": [sys.executable, "-c", "print(1)"], "timeout": 20},
+        {"id": "c-2", "kind": "collect", "items": ["cpu"]},
+        {"id": "c-3", "kind": "plugin_reload"},
+        {"id": "c-4", "kind": "update", "version": "9.9.9", "sha256": "x"},
+    ]
+    for cmd in cases:
+        tr = FakeTransport()
+        dispatch = build_runner(tr)
+        dispatch(cmd)
+        for _ in range(200):
+            if tr.frames and tr.frames[-1].get("done"):
+                break
+            threading.Event().wait(0.05)
+        assert tr.frames and tr.frames[-1]["done"] is True, cmd["kind"]
+        assert tr.calls == 1, "%s 发了 %d 帧结果，回执必须恰好一条" % (cmd["kind"], tr.calls)
+
+
 def test_dispatch_collect_requires_items(monkeypatch):
     tr = FakeTransport()
     dispatch = build_runner(tr)

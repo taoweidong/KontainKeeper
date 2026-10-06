@@ -342,6 +342,10 @@ class MqttBridge:
             await self.store.add_audit("mqtt", "update_result_mismatch",
                                        {"expect": row["pod"], "got": host, "id": cid})
             return
+        if row["status"] in ("done", "failed"):
+            # 终态幂等：finish_update 本身不覆盖终态行，但计数与审计会重复——
+            # QoS1 重发或 Agent 双发（QR-A19）都会让 upgrade_failed 翻倍、多写一条审计。
+            return
         rc = body.get("rc")
         if rc in (None, 0):
             await self.store.finish_update(cid, "done")

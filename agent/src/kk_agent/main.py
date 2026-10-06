@@ -106,14 +106,17 @@ def _run_plugin_reload(cfg, log):
     return {"rc": 0, "out": body.encode("utf-8"), "timed_out": False, "elapsed_ms": 0}
 
 
-def _run_update(tr, cid, cmd, cfg, log):
-    """推送式自更新（A6.2）：成功/失败都回传一帧极简结果。
+def _run_update(tr, cmd, cfg, log):
+    """推送式自更新（A6.2）：只返回结果，**不自己发帧**。
 
-    此前 kind=update 是唯一不回传 result 的 kind，服务端无从知道 500 台里
-    升了多少、失败多少、卡在哪一步。
+    此前 kind=update 是唯一不回传 result 的 kind，服务端无从知道 500 里
+    升了多少、失败多少、卡在哪一步。补上回执时踩了第二个坑：这里发一帧、
+    `submit_fn` 又按「fn 返回值」emit 一帧 → 服务端多写一条审计、`upgrade_failed`
+    翻倍、全网 QoS1 流量 ×2（QR-A19）。发送权归一后 `submit_fn` 是唯一出口，
+    collect/plugin_reload/shell 三个 kind 本来就是这个形态。
 
-    结果帧只在失败时出现：成功路径以 execv 结束、进程被替换，来不及发「成功」
-    回执——真正的成功终态由服务端按「状态帧佐证版本到达」判定
+    成功路径以 execv 结束、进程被替换，`return res` 与 emit 都到不了服务端——
+    真正的成功终态由服务端按「状态帧佐证版本到达」判定
     （store.finish_updates_reaching），不是漏发。
     """
     log = log.bind(component="updater")
@@ -124,10 +127,8 @@ def _run_update(tr, cid, cmd, cfg, log):
         log.warning("push update rejected: unsigned manifest without "
                     "KK_UPDATE_HMAC_KEY (set KK_UPDATE_ALLOW_UNSIGNED=1 on the "
                     "agent to allow, or configure the key on both ends)")
-        res = {"rc": 1, "out": b"unsigned_push_rejected",
-               "timed_out": False, "elapsed_ms": 0}
-        send_result(tr, cid, res)
-        return res
+        return {"rc": 1, "out": b"unsigned_push_rejected",
+                "timed_out": False, "elapsed_ms": 0}
 
     def before_restart():
         # B6.1：让服务端能把「正在自更新」与「容器停了」区分开。
@@ -139,10 +140,8 @@ def _run_update(tr, cid, cmd, cfg, log):
 
     ok, reason = kk_updater.apply_manifest_receipt(cfg, log, cmd,
                                                    on_before_restart=before_restart)
-    res = {"rc": 0 if ok else 1, "out": (reason or "").encode("utf-8", "replace"),
-           "timed_out": False, "elapsed_ms": 0}
-    send_result(tr, cid, res)
-    return res
+    return {"rc": 0 if ok else 1, "out": (reason or "").encode("utf-8", "replace"),
+            "timed_out": False, "elapsed_ms": 0}
 
 
 def make_dispatcher(tr, runner, cfg, log, state_box):
@@ -178,7 +177,7 @@ def make_dispatcher(tr, runner, cfg, log, state_box):
                 return
             # 服务端推送式自更新：命令载荷即版本清单，形态校验在 updater 内做。
             # 走 runner 而不是裸线程：更新要回执（A6.2），失败原因必须能送到服务端
-            runner.submit_fn(cid, lambda: _run_update(tr, cid, cmd, cfg, log))
+            runner.submit_fn(cid, lambda: _run_update(tr, cmd, cfg, log))
         else:
             send_result(tr, cid, {"rc": 127, "out": b"unknown command kind: " + kind.encode(),
                                   "timed_out": False, "elapsed_ms": 0})

@@ -652,3 +652,28 @@ async def test_dispatch_without_loop_rejects_frames(bridge):
         payload=_json.dumps({"online": True, "ip": ""}).encode())
     bridge._on_message(None, None, msg)
     assert bridge.stats["rejected"] == before + 1
+
+
+async def test_update_result_terminal_frame_is_idempotent(bridge):
+    """QR-A19 的服务端半边：重复终态帧不得翻倍计数、不得重复写审计。
+
+    Agent 侧已修成「一个 kind 只发一帧」，但 QoS1 重发是 Broker 层面的既有能力，
+    台账这一侧必须自己幂等——`finish_update` 只认 pending/queued，而 stats 与
+    审计此前是无条件累加的。
+    """
+    audits = []
+
+    async def spy(actor, action, detail=None):
+        audits.append(action)
+
+    bridge.store.add_audit = spy
+    await bridge.store.create_update("u-idem", "h1", "0.3.0", "9.9.9")
+    frame = {"done": True, "rc": 1,
+             "out_b64": base64.b64encode(b"sha256_mismatch").decode()}
+    before = bridge.stats.get("upgrade_failed", 0)
+    for _ in range(3):
+        await bridge._on_update_result("h1", "u-idem", frame)
+    assert bridge.stats["upgrade_failed"] - before == 1
+    assert audits == ["agent_update_failed"]
+    row = await bridge.store.get_update("u-idem")
+    assert row["status"] == "failed" and row["reason"] == "sha256_mismatch"
