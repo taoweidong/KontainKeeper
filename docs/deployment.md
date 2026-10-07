@@ -420,7 +420,7 @@ KK_ADVERTISE_IP=10.0.0.15 /opt/kk-agent mqtt://broker.ops.example.com:1883
 | `KK_PLUGIN_TIMEOUT` | 插件 `collect()` 超时（秒），超时隔离至重载 | `5` |
 | `KK_ALLOW_SHELL` | 允许 `use_shell` 管道模式 | `1` |
 | `KK_MAX_OUT_MB` | 单命令输出上限 | `4` |
-| `KK_MAX_QUEUED` | 离线 out-queue 上限 | `512` |
+| `KK_MAX_QUEUED` | 离线 out-queue 上限（≈64KB/块，128 块 ≈8MB 驻留预算） | `128` |
 | `KK_UPDATE_URL` | 管理 API 基址（自更新用，未配则跳过自更新） | 空 |
 | `KK_UPDATE_INTERVAL` | 版本轮询间隔（秒，≥30） | `300` |
 | `KK_UPDATE_DISABLED` | 设 `1/true` 关闭自更新。**同时关掉轮询与推送两条路**（QR-P0-1）：推送式升级命令会收到 `update_disabled` 回执 | 关闭 |

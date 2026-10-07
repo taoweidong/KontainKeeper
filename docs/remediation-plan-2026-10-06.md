@@ -70,6 +70,12 @@ QR-W1（XSS sink）、QR-W6（命令体不落 URL）、QR-W8（默认凭据预�
 - 清单读取加 1MB 流式上限（QR-A23）；`spawn_apply` 直接删除或挂同一门禁（QR-A18′）。
 验收：`agent/tests` 对每条都有负路径（队列满、断开、无权限 kill、超大清单）；`scripts/bench_agent.py` 的 RSS 断言在批次 0.2 之后能真的红。
 
+> 落地修正（实施时发现的方案自身偏差，按证据改法）：① 计划里的「命令结果优先于心跳出队」无对象可做——
+> 心跳本就是 QoS0 且断线时直接跳过入队，out-queue 里只有 status 与 result 两类，因此改成的杠杆是
+> **上限本身**（512→128，配回归用例锁 ≈8MB 预算）；② 「丢最老排队帧强插终态」换成**终态走 QoS0 直发**：
+> 强插要动 paho 私有队列结构，QoS0 不入队、天然绕开积压，代价（终态可能丢一次）由服务端 30min 超时清扫兜底。
+> 已在 `proto/messages.md` §1.1/§3.3 写清「服务端不得假设 result 恒为 QoS1」，帧结构不变故不升 `proto_ver`。
+
 ### 1.6 回滚可执行（QR-P3，P1）
 
 `Jenkinsfile` 加 `GIT_REF`（默认 `main`，回滚时填历史 tag/commit）参数并在 ① 使用；部署日志与审计里记录实际部署的 commit SHA；`docs/ci-jenkins.md §7` 的回滚步骤重写为「填 GIT_REF + 不勾 SKIP_TESTS」。
