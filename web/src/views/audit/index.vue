@@ -12,6 +12,9 @@ defineOptions({ name: "AuditLog" });
 const loading = ref(false);
 const rows = ref<AuditRow[]>([]);
 const total = ref(0);
+/** 读到过真值没有：审计页的「暂无记录」是强断言（等于说「没人操作过」），
+ *  读不到时必须和「确实为空」分开（QR-W16） */
+const read = ref(false);
 const keyword = ref("");
 const limit = ref(200);
 const offset = ref(0);
@@ -41,6 +44,7 @@ async function load() {
     if (!isLatest()) return;
     rows.value = data.items;
     total.value = data.total;
+    read.value = true;
   } catch (e: any) {
     if (!isLatest()) return;
     ElMessage.error("加载审计日志失败：" + errText(e));
@@ -168,7 +172,15 @@ onMounted(load);
           </template>
         </el-table-column>
         <template #empty>
-          <el-empty description="暂无审计记录" />
+          <el-empty
+            :description="
+              read
+                ? keyword.trim()
+                  ? '该筛选条件下没有匹配记录'
+                  : '暂无审计记录'
+                : '没读到（审计接口不可达）'
+            "
+          />
         </template>
       </el-table>
     </div>

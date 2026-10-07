@@ -42,6 +42,9 @@ const POLL_KEY = "command-history";
 
 const rows = ref<CommandRow[]>([]);
 const total = ref(0);
+/** 读到过真值没有：「还没有命令记录」在接口挂掉时是一句假话（QR-W16）。
+ *  total 是**筛选后**的总数，所以空表还要再分「筛选无匹配」与「真的没有记录」。 */
+const read = ref(false);
 const loading = ref(false);
 const statusFilter = ref("");
 const keyword = ref("");
@@ -86,6 +89,7 @@ async function loadCommands(silent = false) {
     if (!isLatest()) return;
     rows.value = data.items;
     total.value = data.total;
+    read.value = true;
     pollFailed.value = false;
   } catch (e: any) {
     if (!isLatest()) return;
@@ -155,6 +159,11 @@ const batchStat = computed(() => {
 function statNum(v: string | number | undefined): number {
   return Number(v || 0);
 }
+
+/** 三个筛选任一处生效：空表要说的是「这个条件下没匹配」，不是「从来没下过命令」 */
+const hasFilter = computed(
+  () => !!(statusFilter.value || keyword.value.trim() || batchFilter.value)
+);
 
 /** el-pagination 用 1 起始的页码，后端要的是 offset —— 换算只在这里做一次 */
 const pageNo = computed({
@@ -409,7 +418,17 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
         </template>
       </el-table-column>
       <template #empty>
-        <el-empty :description="total ? '本页无数据' : '还没有命令记录'" />
+        <el-empty
+          :description="
+            read
+              ? total
+                ? '本页无数据'
+                : hasFilter
+                  ? '该筛选条件下没有匹配命令'
+                  : '还没有命令记录'
+              : '没读到（命令接口不可达）'
+          "
+        />
       </template>
     </el-table>
 

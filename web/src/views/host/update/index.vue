@@ -62,25 +62,49 @@ let podsPrefilled = false;
 
 const hasLatest = computed(() => !!current.value?.version);
 
+/** 读到过真值没有：与「服务端说没有落后主机」是两件事（QR-W16） */
+const read = ref(false);
+/** 升级台账是独立一路（load 内自带 catch），它不能连带别的路一起谎称「暂无记录」 */
+const ledgerRead = ref(false);
+
+/** 「落后 N / M 台」三态分开说：没读到 / 读到了但还没有待分发版本 / 有版本。
+ *  前两态渲染 0 是假话——服务端注释写明「没上传过版本时 0 表示『无从定义』，不是『全都不落后』」。
+ *  hosts_total 不受此限：它始终是真读数，0 就该显示 0。 */
+const fleetInfo = computed(() => {
+  const c = current.value;
+  if (!read.value) {
+    return { version: "—", outdated: "—", total: "—", cls: "" };
+  }
+  const known = !!c?.version;
+  return {
+    version: c?.version || "（未上传）",
+    outdated: known ? (c?.hosts_outdated ?? 0) : "—",
+    total: c?.hosts_total ?? "—",
+    cls: known ? (c?.hosts_outdated ? "kk-bad" : "kk-ok") : ""
+  };
+});
+
 /** silent=true 供轮询复用：勾选态与数据原位更新，不闪整页 loading */
 async function load(silent = false) {
   const isLatest = beginLoad();
   if (!silent) loading.value = true;
   try {
+    let missLedger = false;
     const [cur, hosts, upds] = await Promise.all([
       getAgentCurrent(),
       listHosts("summary"),
-      listUpdates(50).catch(() => ({
-        items: [] as UpdateRow[],
-        summary: {},
-        limit: 50
-      }))
+      listUpdates(50).catch(() => {
+        missLedger = true;
+        return { items: [] as UpdateRow[], summary: {}, limit: 50 };
+      })
     ]);
     if (!isLatest()) return;
     pollFailed.value = false;
     current.value = cur;
     outdated.value = hosts.items.filter(h => h.agent_outdated);
     updates.value = upds.items;
+    read.value = true;
+    ledgerRead.value = !missLedger;
     // 轮询刷新保留现有勾选：先把模型对齐到新数据（丢掉已不再落后的主机），再回填表格；
     // 「?pods= 预填」只在首次加载与 query 本身变化（watch）时应用，不随轮询重设
     reconcileSelection();
@@ -263,14 +287,14 @@ onMounted(async () => {
         <div class="kk-toolbar">
           <div class="kk-stat">
             <span
-              >当前版本 <b>{{ current?.version || "（未上传）" }}</b></span
+              >当前版本 <b>{{ fleetInfo.version }}</b></span
             >
-            <span
-              >落后主机
-              <b :class="current?.hosts_outdated ? 'kk-bad' : 'kk-ok'">
-                {{ current?.hosts_outdated ?? 0 }}
+            <span>
+              落后主机
+              <b :class="fleetInfo.cls">
+                {{ fleetInfo.outdated }}
               </b>
-              / {{ current?.hosts_total ?? 0 }}</span
+              / {{ fleetInfo.total }}</span
             >
             <span v-if="current?.uploaded_at" class="kk-sub">
               {{
@@ -336,9 +360,11 @@ onMounted(async () => {
         <template #empty>
           <el-empty
             :description="
-              hasLatest
-                ? '所有主机都是最新版本'
-                : '还没有待分发版本，先去上传 Agent 二进制'
+              !read
+                ? '没读到（主机与版本接口不可达）'
+                : hasLatest
+                  ? '所有主机都是最新版本'
+                  : '还没有待分发版本，先去上传 Agent 二进制'
             "
           />
         </template>
@@ -402,7 +428,9 @@ onMounted(async () => {
         <el-table-column label="时间" width="170">
           <template #default="{ row }">{{ tsText(row.created_at) }}</template>
         </el-table-column>
-        <template #empty>暂无升级记录</template>
+        <template #empty>
+          {{ ledgerRead ? "暂无升级记录" : "没读到（升级台账接口不可达）" }}
+        </template>
       </el-table>
     </el-card>
   </div>

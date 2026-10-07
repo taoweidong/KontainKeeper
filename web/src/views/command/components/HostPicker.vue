@@ -26,6 +26,10 @@ const fetched = ref<HostSummary[]>([]);
 const options = computed(() =>
   props.hosts?.length ? props.hosts : fetched.value
 );
+/** 清单读到过没有：父页给了清单即算读到，懒加载那路要等自己成功一次。
+ *  没读到时空表不能说「没有匹配的主机」——那是把接口故障劝用户改成搜索条件（QR-W16）。 */
+const read = ref(false);
+const listRead = computed(() => !!props.hosts?.length || read.value);
 const loading = ref(false);
 const drawer = ref(false);
 const keyword = ref("");
@@ -73,6 +77,7 @@ async function loadHosts() {
     const items = (await listHosts("summary")).items;
     if (!isLatest()) return;
     fetched.value = items;
+    read.value = true;
   } catch (e: any) {
     if (!isLatest()) return;
     ElMessage.error("加载主机列表失败：" + (e?.message ?? e));
@@ -210,7 +215,11 @@ watch(
         </el-table-column>
         <template #empty>
           <el-empty
-            description="没有匹配的主机，试试清除搜索或关闭「仅在线」"
+            :description="
+              listRead
+                ? '没有匹配的主机，试试清除搜索或关闭「仅在线」'
+                : '没读到（主机清单不可达）'
+            "
           />
         </template>
       </el-table>

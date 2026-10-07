@@ -12,6 +12,7 @@ import {
   errText,
   fileStamp,
   mbText,
+  nOr,
   numText,
   tsText
 } from "@/utils/kk";
@@ -33,6 +34,8 @@ const onlyAlert = ref(false);
 const lastLoadedAt = ref(0);
 /** 静默轮询失败：不刷 toast，改由表头的同步读数如实说明（W5） */
 const pollFailed = ref(false);
+/** 是否读到过至少一次真值：和「服务端报了 0 台」是两件事（QR-W16） */
+const read = computed(() => lastLoadedAt.value > 0);
 /** 轮询间隔（秒），0 = 停。总览是唯一常驻轮询的页面，10s 足够且不给服务端放大压力 */
 const interval = ref(10);
 
@@ -309,7 +312,10 @@ onMounted(async () => {
       <template #header>
         <div class="kk-band">
           <div class="kk-band__fleet">
+            <!-- 首次加载失败时一个读数都没有：条与四个格子一律不渲染 0（QR-W16）。
+                 0 台主机是肯定语句，运维会当成「 fleet 空了」去做下一步动作。 -->
             <span
+              v-if="read"
               class="kk-band__strip"
               role="img"
               :aria-label="`在线 ${online} 台，离线 ${Math.max(0, rows.length - online)} 台`"
@@ -321,19 +327,19 @@ onMounted(async () => {
               />
             </span>
             <span class="kk-band__readout"
-              ><b>{{ rows.length }}</b
+              ><b>{{ nOr(read, rows.length) }}</b
               >台主机</span
             >
             <span class="kk-band__readout"
-              ><b>{{ online }}</b
+              ><b>{{ nOr(read, online) }}</b
               >在线</span
             >
             <span class="kk-band__readout kk-band__readout--alert">
-              <b>{{ alerts }}</b
+              <b>{{ nOr(read, alerts) }}</b
               >磁盘告警
             </span>
             <span class="kk-band__readout kk-band__readout--stale">
-              <b>{{ outdated }}</b
+              <b>{{ nOr(read, outdated) }}</b
               >待升级
             </span>
             <el-tooltip

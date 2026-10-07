@@ -14,6 +14,7 @@ import { listCommands, type CommandRow } from "@/api/commands";
 import {
   durText,
   elapsedText,
+  nOr,
   statusLabel,
   statusType,
   tsText
@@ -52,7 +53,6 @@ const offline = computed(() => hosts.value.length - online.value);
 const hostsRead = ref(false);
 const cmdsRead = ref(false);
 const statsRead = computed(() => stats.value !== null);
-const nOr = (read: boolean, v: number) => (read ? v : "—");
 
 /** 命令状态分布里值得一眼关注的项（其余归入「其他」） */
 const cmdStats = computed(() => {

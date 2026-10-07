@@ -35,6 +35,11 @@ export const mbText = (mb?: number | null): string => {
 export const numText = (v?: number | null, digits = 1): string =>
   v === null || v === undefined ? "-" : Number(v).toFixed(digits);
 
+/** 请求失败时数字读数的占位（QR-W16）。0 在这些页面上的意思是「服务端报了 0」，
+ *  拿它当「没读到」就是编数据：调用方必须能区分这两种状态，别拿 `?? 0` 代替。 */
+export const nOr = (read: boolean, v: number): number | string =>
+  read ? v : "—";
+
 /** 命令执行耗时（毫秒 → 秒，两位小数）：执行历史与总览最近命令共用一种口径 */
 export const elapsedText = (ms?: number | null): string =>
   ms === null || ms === undefined ? "-" : `${numText(ms / 1000, 2)} s`;
