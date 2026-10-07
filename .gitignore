@@ -34,6 +34,8 @@ deploy/mosquitto/passwordfile
 skills-lock.json
 # pnpm 本地 store 实验遗留（web/.npmrc 已不含 store-dir，根目录不该出现缓存壳）
 .pnpm-store/
+# eslint 的增量缓存：lint:eslint 带 --cache，谁跑一次谁就多一个未跟踪文件
+.eslintcache
 # CI 产物与构建缓存（Jenkins 流水线：测试报告、uv/pip 缓存、节点内的 uv 与构建 venv）
 reports/
 .ci-cache/

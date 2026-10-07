@@ -126,6 +126,8 @@
 
 | QR-W14 | P2 | `c966d38` 信息 vs `git show c966d38 -- Jenkinsfile` | 同一类账实不符的**第二例**：c966d38 的信息写「删掉 LINT_DIRTY 与 --ignore-pattern 机制，⑤ 转为全量门禁」，diff 实际只把豁免清单从 8 项缩到 3 项——机制仍在，HEAD 的 ⑤ 继续豁免 `kk.ts`/`detail`/`update` 三个已干净的文件（豁免已干净的文件 = 纯粹的静音装置，以后这三个文件新增违规无人知晓）。我在写 QR-W10/QR-W13 时把这条假账当事实抄了进去 | **已修**（0141287 真删机制，`eslint --max-warnings 0` 零豁免退出码 0，`sh` 块 `bash -n` 通过）。**教训**：引用「某提交做了什么」之前必须 `git show <c> -- <file>`，提交信息不是证据 |
 
+| QR-W15 | P2 | `Jenkinsfile:312-323`（⑤ 只有 `pnpm exec eslint --max-warnings 0`）、`web/package.json:17-20` | 「前端 lint 门禁」这个名字**只覆盖 eslint**：`lint:prettier`/`lint:stylelint` 不在任何门禁里，HEAD 因此可以 eslint 全绿而格式持续漂移。更糟的是这三条脚本全带 `--write`/`--fix`，`pnpm lint` 对干净 HEAD **不幂等**——本轮我在新页跑一次 `pnpm lint`，132 个我没碰过的文件被改写（stylelint 属性重排、`0px 0 0`→`0`、EOL 往返），改动混进工作区后与并行会话的在途编辑撞在一起。证据：`git status` 里那 132 个 `M` 全部来自一次 lint，不是来自任何功能修改 | **未修**（本轮只做取证并回滚那批改写）。修法二选一，都要单独一批提交：① ⑤ 追加 `pnpm exec prettier --check "src/**"` 与 `stylelint` 无 `--fix` 版本，先把存量漂移清零再入门禁；② 把 `lint` 脚本改名成 `lint:fix` 并新增无副作用的 `lint:check`，避免「跑一次 lint = 提交一千行」。我倾向前者：漂移不可见比漂移本身更贵 |
+
 > 前端体验/正确性清单（FE-1…FE-33）的逐条落地状态、以及**本轮明确没做的条目与理由**，
 > 记在 `docs/frontend-optimization-plan-2026-10-07.md` §7；本轮门禁实测数字在同一节开头。
 
@@ -161,7 +163,7 @@
 | **可维护性** | ✅ 分层强 / ⚠ 规模失控 | 方言只收口两处、依赖注入默认拒绝、协议双端同步；但 `store.py` 已 976 行（自订 ≤500）、`mqtt_bridge.py` 514 行、Agent 侧几乎零类型注解（QR-A16）、无 ruff/mypy/cov、`strict:false`（QR-W2）、`.zcode/` 等工具目录混入版本库 |
 | **可观测性** | ⚠ 有盲区 | `/api/health` 未鉴权即返回 bridge 计数与版本（QR-S15）；Agent `stop()` 三段 `except: pass` 无日志（QR-A14）；夜测恒绿使规模退化不可见（QR-P1）；`.prev` 保留失败静默（QR-S19） |
 | **测试有效性** | ⚠ 单测扎实、门禁虚设 | 回归锁 docstring、fake 防御式断言、free_port、有界轮询都成立；但无覆盖率工具、skip 静默、弱断言两处未清、PG/MySQL 只走夜测、账本两条「已修复」与代码不符 |
-| **可发布性** | ⚠ 已补三块 | 回滚参数缺失已修（QR-P3）、产物同步改写工作区已修（QR-P7）、`pnpm build` 在 Windows 不可用已修（QR-W10，3e2b2eb）、前端 lint 已进门禁且**零豁免**（QR-W10/QR-W14，0141287）；FE-1…FE-33 批次 A/B/C 的正确性项已落地（`docs/frontend-optimization-plan-2026-10-07.md` §7）。入库产物已从前端的**已提交源码**重构建并整目录同步（`ac495cc`，43 个文件逐字节比对与 `web/dist` 一致，`git status --porcelain server/src/kk_server/web` 为空）。剩余：Jenkins ⑤ 的 lint 步骤尚未在真流水线跑过一次（本地等价命令红/绿双向自检，见 §8.5）；需要人眼判读的 FE-5 / FE-9 / FE-19 / FE-16 轴格式化四条**明确未做**，理由同 §7。 |
+| **可发布性** | ⚠ 已补三块 | 回滚参数缺失已修（QR-P3）、产物同步改写工作区已修（QR-P7）、`pnpm build` 在 Windows 不可用已修（QR-W10，3e2b2eb）、前端 **eslint** 已进门禁且**零豁免**（QR-W10/QR-W14，0141287；但 ⑤ 不含 prettier/stylelint，格式漂移仍无人守，见 QR-W15）；FE-1…FE-33 批次 A/B/C 的正确性项已落地（`docs/frontend-optimization-plan-2026-10-07.md` §7）。入库产物已从前端的**已提交源码**重构建并整目录同步（`ac495cc`，43 个文件逐字节比对与 `web/dist` 一致，`git status --porcelain server/src/kk_server/web` 为空）。剩余：Jenkins ⑤ 的 lint 步骤尚未在真流水线跑过一次（本地等价命令红/绿双向自检，见 §8.5）；需要人眼判读的 FE-5 / FE-9 / FE-19 / FE-16 轴格式化四条**明确未做**，理由同 §7。 |
 
 ---
 
@@ -334,6 +336,29 @@ v4 的卖点是「所有 Linux 主机 + 其上的容器」，但在途 P1 只做
 | 单元内容一致 | 不重写文件 | ✓ `cmp -s` 命中则跳过 `cp`（只归一 `chmod 0644`），日志「单元与现有文件一致，跳过写入」；重跑调用序列实测 `enable → start → is-active`，无 `daemon-reload`、无 `restart` |
 
 补一条**只做不说就会再撞一次**的教训：第一版把单元路径写死成 `/etc/systemd/system/kk-agent.service`，我在 WSL 里验证时它就真的装进了系统目录，配上 `Restart=always` 把 `/bin/ls` 当 Agent 反复拉起（当场 stop/disable/reset-failed 清理干净）。现在架构检查、目标目录、单元目录都可用 `KK_INSTALL_BIN` / `KK_INSTALL_UNIT_DIR` / `KK_INSTALL_DRY_RUN` 三个钩子改道，测试只需把 PATH 指向 `systemctl` stub——上面这张表全部在**不接触真 systemd** 的前提下复现，单元本身能加载另由真 systemd 单独验过。
+
+### 8.8 v4 方案 §7.3.7：`/system` 系统统计页的运行时走查（2026-10-07）
+
+这页是方案里唯一不被并行会话占用的条目，用的端点早已存在（`GET /api/system/stats`）。走查用真环境：Broker 18830 + `kk_server` 8443（临时 SQLite 库）+ `pnpm dev` 8848，登录 admin 后进页面。
+
+**三个缺陷只有跑起来才看得见**，静态门禁（typecheck / eslint / prettier / stylelint）四条全绿的同时它们一个都没被拦住：
+
+| 现象 | 根因 | 处置 |
+|---|---|---|
+| `upgrade_done` / `upgrade_failed` 落到「后端新增的计数器，本页尚未收录说明」分支 | 清单少收两行，而 fallback 分支**不会报错**，只会把已知计数器说成「未收录」 | 补进清单（口径照 `mqtt_bridge.py:376,382`：回执 rc 空/0 计成功，非 0 计失败，已终态不重复计）；并在清单注释写明「动后端 `self.stats` 必须同步这里」。复核：15 行全收录、`unlisted=0`，与 `self.stats` 的 16 个初始化键 + 2 个惰性键一一对上 |
+| 页头「已同步 · 0 秒前」永久停在 0 | `syncText` 是 computed，里面调 `nowSec()`（非响应式）→ 求值一次就冻结，两次刷新之间读数不 aging | 改用绝对时刻 `tsText(lastLoadedAt)`，与 `host/monitor` 同一条写法；不为一个假时钟加秒级定时器 |
+| 服务端停掉后页面说「桥接未启动」，各格填 0 | `stats` 为 null 时 `broker` 也是 null，三态 ternary 把**没问到**渲染成了「问了、答案是没启动」；主机/在途/命令积压/待分发版本同理会凭空填 0 | 链路读数拆四态（未知 / 未启动 / 已断开 / 已连接），数字统一走 `dash()`——**0 在这页只表示服务端报了 0**；命令积压与计数器两张卡各加一条「这次没拿到读数」的说明 |
+
+失败态实测（把服务端真停掉，非模拟）：
+
+| 用例 | 实测 |
+|---|---|
+| 手动刷新失败（500） | toast「加载系统统计失败：Request failed with status code 500」+ `.kk-sync--stale`；读数全部变 `—`，链路说「未知」 |
+| **轮询**失败（30s 到点，服务已停） | 注入计数器证实请求真发出（`pollFired=1`）、**零 toast**、读数变冷、上一轮真实读数保留在屏——正是红线 6「静默失败只更新同步读数」，也是 QR-W5 的同一套约定 |
+| 正常态 | 15 行计数器、库行数、升级汇总按服务端真值渲染；`proto_v3_received` 刻意不出现（QR-S31 恒 0，给它读数位等于诱导运维在存量 Agent 没升完时关兼容窗口） |
+
+**本轮无法自证的项**（内置浏览器是隐藏页：截图必失败、rAF 冻结、`innerWidth=0` 使几何不可信）：红线 9 的 1366×768 无横向滚动、dark 主题对比度、8 套预设抽查。另外隐藏页里路由级 `<transition mode="out-in">` 不会走完（旧页留在 DOM），验证时只能整页重载到目标路由——这是观察手段的限制，不是页面缺陷，但任何依赖「点菜单切页」的自动化验收在这个环境里都不可用。
+
 
 
 顺带纠正一条我自己差点写进文档的错误结论：第一次探针测试显示「systemd 拒收 CRLF 单元文件」，据此要给 `.gitattributes` 加 `*.service text eol=lf`。复查发现是**探针自己漏了换行**（`[Unit]Description=...` 挤在同一行）；用仓库真实模板做结构完好的 CRLF 版本，systemd 照样 `LoadState=loaded`。所以那条 gitattributes 不加——理由是「不需要」，不是「忘了」。
