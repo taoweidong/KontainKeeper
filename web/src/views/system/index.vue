@@ -130,6 +130,13 @@ const COUNTER_META: {
     alert: true
   },
   {
+    key: "proto_v3_received",
+    name: "旧协议帧",
+    hint:
+      "兼容窗口内收到的 v3 帧累计数（进程内，不随升级下降）。关窗口的判据是" +
+      "「存量 Agent 升完后重启服务端，它仍为 0」；现在就关 = 存量 Agent 全网判为不匹配"
+  },
+  {
     key: "cmd_published",
     name: "命令已发布",
     hint: "与结果帧一起看，才知道发出去的和回来的差多少"
@@ -183,14 +190,13 @@ const COUNTER_META: {
   }
 ];
 
-/** 后端有、但这页刻意**不展示**的键。分两类，理由不同：
- *  - 时间戳不是计数器：last_msg_ts / started_at 已经分别渲染成「最近一帧」和
- *    「已运行」，再列一行原始 epoch 只会让人误读成一个很大的计数；
- *  - proto_v3_received 是「能否关闭 v3 兼容窗口」的唯一依据，而服务端从未累加它
- *    （缺陷账本 QR-S31），恒为 0。照直显示会诱导运维在存量 Agent 还没升完时就关
- *    窗口，那是一次全网闪断。后端把累加补上之后，从这里删掉它就回到表格里。
+/** 后端有、但这页刻意**不展示**的键：时间戳不是计数器——last_msg_ts / started_at
+ *  已经分别渲染成「最近一帧」和「已运行」，再列一行原始 epoch 只会让人误读成一个
+ *  很大的计数。
+ * （proto_v3_received 曾经也在这里，因为服务端从不累加它、恒为 0，给它读数位等于
+ *  诱导运维提前关窗口；QR-S31 修好之后它归入 COUNTER_META。）
  */
-const SUPPRESSED = ["proto_v3_received", "last_msg_ts", "started_at"];
+const SUPPRESSED = ["last_msg_ts", "started_at"];
 
 const counterRows = computed(() => {
   const c = counters.value;
@@ -452,10 +458,12 @@ onMounted(() => {
         <el-table-column prop="hint" label="什么值该担心" min-width="260" />
       </el-table>
       <p class="kk-sub kk-mt">
-        表里没有 <b>proto_v3_received</b>，这是刻意的：它是判断「能否关闭 v3
-        兼容窗口」的唯一依据，而后端从未累加它（缺陷账本 <b>QR-S31</b>），恒为
-        0。照直显示会诱导运维在存量 Agent 还没升完时就关窗口，
-        那是一次全网闪断。累加修好之前，这页不给它读数的位置。
+        「旧协议帧」是决定能不能设
+        <b>KK_DROP_PROTO_V3</b> 的唯一依据，别在它非零时关窗口。
+        它是进程内累计值（缺陷账本 <b>QR-S31</b>）：存量 Agent 全部升级完之后
+        <b>重启服务端</b>，再看它是否仍为 0 ——
+        重启前的读数不作数，因为那里面还混着
+        升级之前收到的帧。这一格没有拿到读数（上面两行的空态）时同样不能当作 0。
       </p>
     </el-card>
   </div>
