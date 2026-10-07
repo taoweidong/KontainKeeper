@@ -52,7 +52,11 @@ export type HostDetail = {
   commands: Array<Record<string, any>>;
 };
 
-export type MetricPoint = { ts: number; cpu: number | null; mem_mb: number | null };
+export type MetricPoint = {
+  ts: number;
+  cpu: number | null;
+  mem_mb: number | null;
+};
 
 export type MetricsResult = {
   pod: string;
@@ -63,15 +67,24 @@ export type MetricsResult = {
 };
 
 export const listHosts = (view: "full" | "summary" = "summary") => {
-  return http.request<HostListResult>("get", "/api/containers", { params: { view } });
+  return http.request<HostListResult>("get", "/api/containers", {
+    params: { view }
+  });
 };
 
 export const getHost = (pod: string) => {
-  return http.request<HostDetail>("get", `/api/containers/${encodeURIComponent(pod)}`);
+  return http.request<HostDetail>(
+    "get",
+    `/api/containers/${encodeURIComponent(pod)}`
+  );
 };
 
 export const getHostMetrics = (pod: string, hours = 24) => {
-  return http.request<MetricsResult>("get", `/api/containers/${encodeURIComponent(pod)}/metrics`, {
-    params: { hours }
-  });
+  return http.request<MetricsResult>(
+    "get",
+    `/api/containers/${encodeURIComponent(pod)}/metrics`,
+    {
+      params: { hours }
+    }
+  );
 };

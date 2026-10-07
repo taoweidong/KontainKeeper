@@ -19,7 +19,14 @@ export type CommandRow = {
    *  单条接口（GET /commands/{id}）才 json.loads 成数组/结构体 */
   argv: string | string[] | Record<string, any> | null;
   timeout: number;
-  status: "pending" | "sent" | "running" | "done" | "failed" | "timeout" | "lost";
+  status:
+    | "pending"
+    | "sent"
+    | "running"
+    | "done"
+    | "failed"
+    | "timeout"
+    | "lost";
   created_by: string;
   created_at: number;
   sent_at: number | null;

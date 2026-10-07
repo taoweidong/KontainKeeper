@@ -70,9 +70,13 @@ export const getAgentCurrent = () => {
 
 /** 选机升级：hosts 为空数组返回 400（前端守住，不再重复发请求） */
 export const upgradeHosts = (hosts: string[]) => {
-  return http.request<UpgradeResult>("post", "/api/system/agent/upgrade", { data: { hosts } });
+  return http.request<UpgradeResult>("post", "/api/system/agent/upgrade", {
+    data: { hosts }
+  });
 };
 
 export const listUpdates = (limit = 50) => {
-  return http.request<UpdatesResult>("get", "/api/system/updates", { params: { limit } });
+  return http.request<UpdatesResult>("get", "/api/system/updates", {
+    params: { limit }
+  });
 };
