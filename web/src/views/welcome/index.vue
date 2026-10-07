@@ -154,6 +154,24 @@ function goHost(pod: string) {
   router.push(`/hosts/detail/${encodeURIComponent(pod)}`);
 }
 
+/** 「整块可点」的卡片与条目必须同时能用键盘走到：Tab 聚焦、Enter/Space 触发同一个动作。
+ *  这些原来是纯 div，键盘用户在首页一步都走不动（FE-17）。 */
+const press = (run: () => void) => ({
+  role: "button",
+  tabindex: "0",
+  onClick: run,
+  onKeyup: (e: KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      run();
+    }
+  }
+});
+
+/** 按 key 取命令读数：写死下标等于把「数组一改顺序界面就错」埋进模板（FE-29）。 */
+const cmdStat = (key: string): number =>
+  cmdStats.value.find(i => i.key === key)?.value ?? 0;
+
 onMounted(() => {
   load();
   // 汇总页 10s 轮询：给个「页面活着」的信号即可，不必更密；静默刷新不闪 loading
@@ -173,7 +191,7 @@ onMounted(() => {
         <el-card
           shadow="hover"
           class="stat-card clickable"
-          @click="go('/hosts/monitor')"
+          v-bind="press(() => go('/hosts/monitor'))"
         >
           <div class="stat-value">{{ hosts.length }}</div>
           <div class="stat-label">主机总数</div>
@@ -185,7 +203,7 @@ onMounted(() => {
           shadow="hover"
           class="stat-card clickable"
           :class="{ 'stat-warn': alerts > 0 }"
-          @click="go('/hosts/monitor')"
+          v-bind="press(() => go('/hosts/monitor'))"
         >
           <div class="stat-value" :class="{ 'text-danger': alerts > 0 }">
             {{ alerts }}
@@ -200,19 +218,23 @@ onMounted(() => {
         <el-card
           shadow="hover"
           class="stat-card clickable"
-          @click="go('/command/shell')"
+          v-bind="press(() => go('/command/shell'))"
         >
           <div class="stat-value">
             {{ cmdStats.reduce((s, i) => s + i.value, 0) }}
           </div>
           <div class="stat-label">命令总数</div>
           <div class="stat-sub">
-            失败 {{ cmdStats[1].value }} / 执行中 {{ cmdStats[2].value }}
+            失败 {{ cmdStat("failed") }} / 执行中 {{ cmdStat("running") }}
           </div>
         </el-card>
       </el-col>
       <el-col :xs="12" :sm="6">
-        <el-card shadow="hover" class="stat-card clickable" @click="gotoUpdate">
+        <el-card
+          shadow="hover"
+          class="stat-card clickable"
+          v-bind="press(gotoUpdate)"
+        >
           <div
             class="stat-value"
             :class="{ 'text-warning': (stats?.agents_outdated ?? 0) > 0 }"
@@ -285,19 +307,19 @@ onMounted(() => {
         <el-card shadow="never" class="panel">
           <template #header><span>快速入口</span></template>
           <div class="quick-links">
-            <div class="quick-link" @click="go('/hosts/monitor')">
+            <div class="quick-link" v-bind="press(() => go('/hosts/monitor'))">
               <el-icon size="22"
                 ><component :is="useRenderIcon(MonitorIcon)"
               /></el-icon>
               <span>主机总览</span>
             </div>
-            <div class="quick-link" @click="go('/command/shell')">
+            <div class="quick-link" v-bind="press(() => go('/command/shell'))">
               <el-icon size="22"
                 ><component :is="useRenderIcon(CommandIcon)"
               /></el-icon>
               <span>命令中心</span>
             </div>
-            <div class="quick-link" @click="go('/audit/index')">
+            <div class="quick-link" v-bind="press(() => go('/audit/index'))">
               <el-icon size="22"
                 ><component :is="useRenderIcon(AuditIcon)"
               /></el-icon>
@@ -313,7 +335,7 @@ onMounted(() => {
               v-for="pod in offlineHosts"
               :key="pod"
               class="offline-host clickable"
-              @click="goHost(pod)"
+              v-bind="press(() => goHost(pod))"
             >
               <el-tag type="danger" size="small" effect="plain">离线</el-tag>
               <span class="pod-name">{{ pod }}</span>

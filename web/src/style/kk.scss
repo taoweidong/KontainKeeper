@@ -408,6 +408,13 @@
   color: var(--kk-stale) !important;
 }
 
+/* 键盘可达：凡是「整块可点」（role=button 的卡片/条目）都必须露出焦点框，
+ * 否则 Tab 走过去了看不见在哪（FE-17）。只认 :focus-visible，鼠标点击不画框。 */
+[role="button"]:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 2px;
+}
+
 /* 二次确认框（kkConfirm 用 VNode 渲染多行，reset 里 p 的 margin 被清零） */
 .kk-confirm p {
   margin: 0 0 6px;
