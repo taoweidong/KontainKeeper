@@ -1,1 +1,0 @@
-import{ay as e}from"./index-BI212NR7.js";const r=()=>e.request("get","/api/system/agent/current"),a=t=>e.request("post","/api/system/agent/upgrade",{data:{hosts:t}}),p=(t=50)=>e.request("get","/api/system/updates",{params:{limit:t}});export{r as g,p as l,a as u};
