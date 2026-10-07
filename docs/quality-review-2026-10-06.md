@@ -38,6 +38,7 @@
 | 本机 Docker | **不可用** | 「Broker 可达时全 passed」这一叙事本轮**无法在开发机验证**（见 §7） |
 
 **仓库卫生**：`.zcode/`（24 文件）、`.codegraph/`、`.workbuddy/`（18 文件）、`skills-lock.json`、`KontainKeeper-项目架构设计方案.pptx`（480KB 二进制）均被 git 跟踪；`include/ lib/ service/` 是 WSL 遗留空目录、未进 `.gitignore`；`kk-server.db*` 已正确忽略（QR-T9 的 git 面已修，磁盘残留仍在）。
+> **2026-10-07 落地（`c41b7a0`，整改 2.7）**：`.zcode/`（24）+ `.codegraph/`（1）+ `.workbuddy/memory`（2）+ `skills-lock.json` 共 **28 个文件用 `git rm --cached` 摘出版本库，磁盘副本一份没删**（那是别的工具在用的状态）；`.gitignore` 补 `.zcode/ .codegraph/ .stepcode/ .codeartsdoer/ skills-lock.json .pnpm-store/`。磁盘侧清掉 `include/ service/`（空）、`lib/`（已验证零文件的 WSL venv 空壳）、根 `.pnpm-store/`（0 文件）、根 `kk-server.db*`（12 行的一次误跑，移到 `%TEMP%/kk-workspace-cleanup-2026-10-07` 而非直接删；正式运行库一直在 `data/`）。**pptx 仍留在仓库**：`GET /repos/…/releases` 返回 0 条，「走 Release 资产」的前提不成立。更正两处口径：① `include/ lib/ service/` 原本就不需要进 `.gitignore` —— git 不跟踪空目录，它们从未出现在 `git status` 里，2.7 那条是误诊；② 上文「`.workbuddy/`（18 文件）」是**磁盘**计数，`git ls-tree` 实际入库只有 2 个（`memory/2026-08-30.md`、`memory/2026-09-04.md`），故摘出的 28 个是按版本库条目数的。
 
 ---
 
@@ -92,7 +93,7 @@
 | QR-S26（NEW-S2） | P2 | `store.py:764-789` | QR-S8 把「用户不存在也跑 PBKDF2」搬进了事件循环：修复前用假用户名探测近乎免费，现在**每次尝试同步占循环 100–300ms**，探测成本反而转嫁给全体心跳落库；且 `_reap` 不清未锁定的键 | 与优化方案 S3 未做叠加，登录是循环里最重的同步 CPU |
 | QR-S27（NEW-S3） | P2 | `mqtt_bridge.py:453-457` | `publish_update` 不检查 `cli.publish` 的返回码（对照 `dispatch_command:386-399` 有查）。断连 + out-queue 溢出时 publish 只回错误 rc 不抛异常 → 台账留 pending、`upgrade_pushed` 虚增，30min sweep 才收敛，期间 `in_flight` 去重还挡住重推 | 静态确认，路径与 cmd 分支不对称 |
 | QR-S28（NEW-S4） | P2 | `store.py:567-577,601` + `mqtt_bridge.py:299-304` | HEAD 把水位判定改成「先 SELECT 再用 Python 快照写」，`status` 分支不再是语句原子的 SQL 条件；正确性现在**完全依赖桥接的进程内 per-cid 锁**，而桥接 docstring 仍宣称「多实例只需改 `_sub_topics`」。二者必弃其一：要么回到 SQL 条件表达式，要么撤回多实例承诺并写明单实例前提 | 属"文档与实现互相矛盾"类风险，扩容当天才会显形 |
-| QR-S29（NEW-S5） | P2（假设，待复现） | `mqtt_bridge.py:230` | `int(body.get("proto_ver") or 0)` 未捕 ValueError：畸形字符串 status 帧炸掉整个 task，而 QoS1 已被 paho 线程 ACK → 帧永久丢失、retained 不落库。验证步骤：向测试 Broker 发 `{"proto_ver":"v3"}` 观察 `_on_task_done` 与容器表 | 未运行验证（本机无 Broker） |
+| QR-S29（NEW-S5） | ~~P2（假设，待复现）~~ **已修** | `mqtt_bridge.py:241-245` | `int(body.get("proto_ver") or 0)` 未捕 ValueError：畸形字符串 status 帧炸掉整个 task，而 QoS1 已被 paho 线程 ACK → 帧永久丢失、retained 不落库。验证步骤：向测试 Broker 发 `{"proto_ver":"v3"}` 观察 `_on_task_done` 与容器表 | ~~未运行验证（本机无 Broker）~~ **2026-10-07 收口**：在途 v4 代码把这段包进了 `try/except (TypeError, ValueError)`（窗口判定前归零），本轮在有 Broker 的环境补上永久回归锁 `server/tests/test_proto_window.py::test_malformed_proto_ver_rejects_instead_of_crashing`（`"v3"` / `None` 各拒收并审计一次，`"4"` 数字字符串仍受理）——`ab41ccc` |
 
 ### 3.2 Agent
 
@@ -142,7 +143,10 @@
 | QR-P8 | P2 | `Jenkinsfile:57,181` | `SKIP_TESTS=true` 直通部署且生产可 `AUTO_APPROVE`，应急后门无留痕 |
 | QR-P9 | P3 | `ci_smoke.sh:233,236` | 「生产自检通过」是硬编码 `PASS(1)` 无证据断言；登录口令进 curl argv（本机 `ps` 可见）。凭据总体处理合格（`--password-stdin`、stdin + `umask 077`、`--data @-`） |
 | **QR-P10**（2026-10-07 真库复现） | **P1** | `scripts/db_smoke.py:30-36`（修复前）、`Jenkinsfile:542-547` | **真库门禁从未成立**：脚本用「随机库名」隔离跨 run 污染，却没有任何地方 `CREATE DATABASE`，跑冒烟的账号也没有这个权限 → PG 报 `database "kk_smoke_…" does not exist`、MySQL 报 `Access denied for user 'kk'@'%' to database`，Jenkins ⑬ 的 dialects 循环两次都是必炸（历史里从未通过）。第二重假绿：所谓「大字段路径」只写 4KB base64，**连 MySQL TEXT 的 64KB 上限都没触到**，LONGTEXT 这条红线等于没验。已修（用 `KK_DB_URL` 原样 + uuid 主机 id 隔离并自清理；266,660 字符分两帧往返 + 同 seq 重投断言），并在 Mosquitto 2.1.2 / PG 16 / MySQL 8.4.11 / SQLite 上实跑绿、四条变异全红 |
-| **QR-S30**（2026-10-07 真库暴露，未提交代码） | **P1** | 工作区 `tables.py` 的 `labels` / `caps` 列 + `_ADD_COLUMNS` 的 `("labels", "TEXT DEFAULT ''")` | **MySQL 上建不出库**：`_long_text()` 列同时带 `server_default=""`，MySQL 直接拒绝 `1101 BLOB/TEXT column 'labels' can't have a default value`（PG / SQLite 完全无感）。两条路径都炸——`create_all` 建新库、`_ensure_schema` 给既有库 `ALTER ADD COLUMN ... TEXT DEFAULT ''`。HEAD 没有这个形态（历史 LONGTEXT 列一律不带默认值），属 v4 主机元信息引入；只有真连 MySQL 才暴露，正是 QR-P10 修好之后门禁的第一件战果。**修法**：去掉 `server_default`，写入侧给 `""` / `{}` 字面量（与 `out_b64`、`last_metrics` 同风格），`_ADD_COLUMNS` 同步只写类型不写默认值 |
+| **QR-S30**（2026-10-07 真库暴露，未提交代码） | **P1** | 工作区 `tables.py` 的 `labels` / `caps` 列 + `_ADD_COLUMNS` 的 `("labels", "TEXT DEFAULT ''")` | **MySQL 上建不出库**：`_long_text()` 列同时带 `server_default=""`，MySQL 直接拒绝 `1101 BLOB/TEXT column 'labels' can't have a default value`（PG / SQLite 完全无感）。两条路径都炸——`create_all` 建新库、`_ensure_schema` 给既有库 `ALTER ADD COLUMN ... TEXT DEFAULT ''`。HEAD 没有这个形态（历史 LONGTEXT 列一律不带默认值），属 v4 主机元信息引入；只有真连 MySQL 才暴露，正是 QR-P10 修好之后门禁的第一件战果。**修法**：去掉 `server_default`，写入侧给 `""` / `{}` 字面量（与 `out_b64`、`last_metrics` 同风格），`_ADD_COLUMNS` 同步只写类型不写默认值。**2026-10-07 复核：仍未修**，且不需要驱动就能复现——`CreateTable(containers).compile(dialect=mysql.dialect())` 直接吐出 `labels LONGTEXT NOT NULL DEFAULT ''` 与 `caps LONGTEXT NOT NULL DEFAULT ''`（本轮 `.venv` 无 `aiomysql`，未擅自装驱动，故用静态编译取证） |
+| **QR-S31**（2026-10-07 在途 v4 代码） | **P1** | `mqtt_bridge.py:93`（`proto_v3_received` 定义处） | **判断「能否关闭 v3 窗口」的唯一依据是个死计数器**：`stats` 里初始化了 `proto_v3_received`，注释写明用途是「窗口关闭前据此确认存量 Agent 是否已全部升级，否则关窗口就是全网闪断」，但全文件（含 `_on_status`）**没有任何一处累加它** —— 永远读 0。运维按文档流程「看到 0 就关窗口」会直接把存量 v3 Agent 全部判为不匹配、全网掉线，而 `/api/health` 上一片绿。这属 QR-P1「观测剧场」同族：计数器的存在让人以为门禁在守，实际没人数。**修法**：`_on_status` 受理分支里 `if proto < PROTO_VER: self.stats["proto_v3_received"] += 1`，并把它并进 `/api/system/stats` 的 Broker 组；回归锁：`test_proto_window.py` 里断言收到 v3 帧后该计数为 1。**未修**：`mqtt_bridge.py` 由并行会话持有（工作区脏），本轮只在测试与账本侧登记 |
+| **QR-S32**（2026-10-07 在途 v4 代码） | **P2** | `proto/messages.md:3,83,92`、`kk_server/__init__.py:11` | **协议四件套只做了三件**：双端 `PROTO_VER` 已抬 4、服务端有 `ACCEPT_PROTO_VERS=(3,4)` 窗口、`_on_status` 按窗口受理，但 `proto/messages.md` 头部仍写「`proto_ver = 3`」、示例帧仍是 `"proto_ver":3`、字段表仍写「`proto_ver` 必须为 `3`」，且 §3.2 完全没有 `env`/`group`/`labels`/`caps`/`docker` 这些 v4 新字段的定义 —— 照文档实现第二个 Agent 会做出 v3 帧。另外 `__init__.py` 的注释指向 `_accept_proto_vers()`，这个函数不存在（实际是 `config.load_settings()` 里按 `KK_DROP_PROTO_V3` 现算）。**修法**：文档补 v4 字段表 + QoS/retain 不变声明、三处 3 改 4 并写明窗口语义、注释里的假函数名改掉。**未修**：`proto/messages.md` 由并行会话持有 |
+| **QR-S33**（2026-10-07 在途 v4 代码） | **P2** | 工作区 `tables.py:54-55` vs `tables.py:203-204`、`store.py:132-139` | **`labels` / `caps` 在「新建库」和「升级库」上不是同一个类型**：建表路径是 `_long_text()`（MySQL 落 LONGTEXT），补列路径把类型写死成 `TEXT`，而 `ALTER TABLE … ADD COLUMN` 用的就是这条裸字符串（`exec_driver_sql`）。结果：全新 MySQL 库拿到 4GB 上限的 LONGTEXT，从 v3 升上来的 MySQL 库拿到 64KB 的 TEXT —— 超限**静默截断**，正是 QR-S1 / QR-P1 那一族。更要命的是它**不可自愈**：`_ensure_schema` 只在列不存在时补，§8.2 的变异测试已经独立证明「`create_all` 不会修正已存在的错误列型」，所以错误类型会一直留在这套库里。历史列（`out_b64` / `last_metrics`）从未进过 `_ADD_COLUMNS`，所以这是**第一类**同时具备「模型是 LONGTEXT」+「走补列路径」的列，坑是新开的。**修法**：AGENTS.md 明确允许方言集中在 `_ensure_schema`，就在这里按方言映射类型（MySQL→`LONGTEXT`，其余→`TEXT`），而不是在清单里写死一家；回归锁：对 MySQL 方言编译补列语句并断言 `LONGTEXT`，同时断言 `_ADD_COLUMNS` 里凡模型侧为 `_long_text()` 的列都不得写 `TEXT`。**未修**：`tables.py` / `store.py` 由并行会话持有 |
 
 ---
 
@@ -214,7 +218,7 @@
 
 | 验证项 | 命令 | 结果 |
 |---|---|---|
-| 全量测试（真 Broker） | `KK_IT_MQTT_URL=… pytest agent/tests server/tests --junitxml` | `tests=371 failures=2 errors=0 skipped=0`（rc=1）；两条失败**都属并行进行中的 v4 工作流**，非本轮改动 |
+| 全量测试（真 Broker） | `KK_IT_MQTT_URL=… pytest agent/tests server/tests --junitxml` | `tests=371 failures=2 errors=0 skipped=0`（rc=1）；两条失败**都属并行进行中的 v4 工作流**，非本轮改动。**2026-10-07 复测已归零，见 §8.6** |
 | Broker 语义冒烟 | `KK_MQTT_URL=… scripts/mqtt_e2e.py` | rc=0，**10/10**（LWT、QoS1 离线队列在 2.1.2 上语义成立） |
 | 真库冒烟（干净 HEAD） | `scripts/db_smoke.py` × MySQL / PG / SQLite | **三库全 rc=0**，MySQL 上 266,660 字符 LONGTEXT 往返一致 |
 | 真库冒烟（含 v4 工作区） | 同上 | MySQL **rc=1（1101）**、PG rc=0、SQLite rc=0 → QR-S30 |
@@ -234,11 +238,14 @@
 
 另附一条口径修正：Python 文件在 `.gitattributes` 里已强制 `eol=lf`，Windows 工作区的 CRLF 只是落盘表象，提交时归一 —— 之前担心的「脚本改写文件换行符」在这类文件上不构成风险。
 
-### 8.3 v4 工作流的两条红灯（交回，不在本轮修复范围）
+### 8.3 v4 工作流的三条红灯（收口状态见每条尾部）
 
 1. `test_full_chain`：`proto_ver` 落库为 4 而断言 3 —— 协议四件套（`PROTO_VER` ×2 + `proto/messages.md` + 用例）未同步。
+   → **测试侧已归位**（`6c3c1c5`）：断言改成读 `kk_server.PROTO_VER`，抬版本不再需要一个个人工改点。**文档那件仍是欠的**（QR-S32）。
 2. `test_summary_view_written_with_heartbeat`：`caps` / `os_name` / `docker*` 等元信息进了 `view="summary"`，摘要视图不再是「只读小列」（QR-S1 的口径）。
+   → **口径已确认并写死**（`6c3c1c5`）：v4 有意把**标量与极小 JSON**放进摘要视图，换掉总览页的第二次查询（N+1）；`last_metrics` 与 `labels` 这两个可能变大的字段仍留在详情侧，测试断言里逐个列名硬写并加了「不该带出大字段」的说明。**这是裁决不是妥协**：摘要视图的边界从「只读小列」变成「只读定长/小列」。
 3. 同批新增的 `labels` / `caps` 列形态触发 **QR-S30**：MySQL 上既建不出库也补不了列。
+   → **未修**，`tables.py` / `store.py` 由并行会话持有；本轮把取证降到「无需驱动」（静态编译 MySQL 方言 DDL），并登记同族的 **QR-S33**（补列路径的 `TEXT` 与建表路径的 `LONGTEXT` 不一致，且不可自愈）。
 
 ### 8.4 前端批次（QR-W4 / W5 / W7 / W9）验证记录（2026-10-07）
 
@@ -271,5 +278,31 @@
 （`frontend-optimization-plan-2026-10-07.md` 的 FE-6/FE-8/FE-11~13/FE-17/FE-21 与 `utils/kk.ts`），
 prettier 是整文件重写，并行时改同一批页面必然撞车。棘轮的意义正在于此：**别人清一个，清单缩一行，门禁立刻开始护它**，
 而在途文件保持豁免不会把别人的中间态算成本轮的红。
+
+### 8.6 v4 兼容窗口门禁的收口（`6c3c1c5` / `ab41ccc` / `c41b7a0`，2026-10-07）
+
+v4 的 P1 阶段把 `PROTO_VER` 抬到 4、开了 `(3,4)` 双版本窗口。窗口本身是有意的兼容策略，风险全在「**谁能保证它按设计工作**」——此前答案是没人。本轮补 `server/tests/test_proto_window.py`（6 条，不连真 Broker，用临时 SQLite + `load_settings(env)` 按 `main.py` 的同一套接线构造桥），并把两条被抬版本落下的陈旧断言归位。
+
+| 验证项 | 命令 | 结果 |
+|---|---|---|
+| 全量复测（真 Broker 2.1.2） | `KK_IT_MQTT_URL=… pytest agent/tests server/tests --junitxml` | **`tests=377 failures=0 errors=0 skipped=1`，rc=0**；唯一跳过是 `test_kill_tree_permission_error_does_not_break_result`（`os.killpg` 仅 POSIX） |
+| 全量复测（无 Broker） | 同一条，不设环境变量 | `tests=377 failures=0 skipped=5`，rc=0 —— 跳过 = 上面那条 + 4 条集成用例，与「无 Broker 时集成用例降级为 skip」的既定口径一致 |
+| QR-S30 的取证降级 | `CreateTable(containers).compile(dialect=mysql.dialect())` | 无需驱动即复现：吐出 `labels LONGTEXT NOT NULL DEFAULT ''` + `caps LONGTEXT NOT NULL DEFAULT ''`，**2 处 1101 违规**；补列清单 `("labels", "TEXT DEFAULT ''")` 是同一条红线的第二个入口。**本轮没装 `aiomysql`**（不擅自改共享环境），故用静态编译取证 |
+| 仓库卫生（整改 2.7） | `git rm -r --cached` + `.gitignore` | `c41b7a0`：**28 个工具态文件摘出版本库**（`.zcode` 24 / `.workbuddy` 2 / `.codegraph` 1 / `skills-lock.json` 1，4,186 行）**磁盘副本一律保留**；根目录 WSL 空壳与 SQLite 残留另行清理 |
+
+变异测试（承接 §8.2 的口径：门禁必须有牙齿）。全部在 **临时副本**上做——`mqtt_bridge.py` / `store.py` / `tables.py` / `config.py` 此刻都是并行会话的在途脏文件，直接在真工作区里改再复原存在覆盖别人写入的风险；副本用 `PYTHONPATH` 覆盖 editable 安装（已验证 `kk_server.__file__` 指向副本），跑完即删，工作区 `git status` 前后一致（22 条目未变）。
+
+| 变异 | 期望 | 实测 |
+|---|---|---|
+| 窗口门改成硬门：`proto not in accept_proto_vers` → `proto != self.proto_ver` | RED | `test_v3_frame_still_lands_inside_window` 单点红（存量 v3 Agent 会当场全网掉线） |
+| `KK_DROP_PROTO_V3` 变成哑开关（恒返回 `ACCEPT_PROTO_VERS`） | RED | `test_drop_v3_window_closes_the_gate` 单点红 |
+| 畸形 `proto_ver` 按「当前版本」受理：`except → proto = self.proto_ver` | RED | `test_malformed_proto_ver_rejects_instead_of_crashing` 单点红（QR-S29 从「假设」变成锁） |
+| 离线帧也覆盖元信息：`set_online` 的 `not online` 分支追加写 `host_type/os_name/group_name/caps` | RED | `test_offline_frame_does_not_clobber_v4_meta` 单点红 |
+| 在线路径不落元信息：upsert 去掉 `**meta` | RED | 4 条同时红（窗口内落库、v4 摘要、QR-S29、离线不覆盖） |
+| 大字段进摘要视图：`_SUMMARY_COLS` 追加 `labels` | RED | **两条守门同时红**：`test_proto_window.py::test_v4_meta_lands_in_summary_view` 与既有的 `test_store.py::test_summary_view_written_with_heartbeat` |
+| 副本复原后基线 | GREEN | `test_proto_window.py + test_store.py` **38 passed**，副本已删 |
+
+最后一条变异值得单独记：它同时点亮新旧两条断言，说明 §8.3 里那条「摘要视图边界从『只读小列』改成『只读定长/小列』」的裁决**不是把守卫松掉了**，而是把边界挪到了新位置并且两边都在守——`labels` 一旦被塞进列表响应，两处都会立刻红。
+
 
 
