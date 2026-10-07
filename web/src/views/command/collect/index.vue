@@ -22,13 +22,19 @@ const route = useRoute();
 
 const hosts = ref<HostSummary[]>([]);
 const items = ref<string[]>([]);
+/** 采集项清单加载失败：界面必须说「加载失败」并给重试，绝不能摆一份硬编码清单
+ *  冒充后端白名单——采后端没有的项，下发出去只会换回一批失败命令（FE-30）。 */
+const itemsFailed = ref(false);
 const submitting = ref(false);
 const history = ref<InstanceType<typeof CommandHistory>>();
 
 const collectForm = reactive({
   pods: [] as string[],
-  items: ["cpu", "mem", "disk"] as string[]
+  items: [] as string[]
 });
+
+/** 默认勾选的三项：只在后端确实支持时才预勾，不作为失败兜底 */
+const DEFAULT_ITEMS = ["cpu", "mem", "disk"];
 
 const picked = computed(() =>
   hosts.value.filter(h => collectForm.pods.includes(h.pod))
@@ -42,20 +48,25 @@ async function loadHosts() {
   }
 }
 
+/** 只在首次成功加载时预勾默认三项；此后重试只剔除后端不再支持的项，
+ *  不把用户主动清空的勾选又填满。 */
+let prefilled = false;
+
 async function loadItems() {
   try {
-    items.value = (await listCollectItems()).items;
-  } catch {
-    items.value = [
-      "cpu",
-      "mem",
-      "disk",
-      "disk_io",
-      "net",
-      "proc",
-      "user",
-      "sys"
-    ];
+    const avail = (await listCollectItems()).items;
+    items.value = avail;
+    itemsFailed.value = false;
+    collectForm.items = prefilled
+      ? collectForm.items.filter(i => avail.includes(i))
+      : DEFAULT_ITEMS.filter(i => avail.includes(i));
+    prefilled = true;
+  } catch (e: any) {
+    items.value = [];
+    // 预勾的三项属于已失效的清单，留着它们等于凭空下发
+    collectForm.items = [];
+    itemsFailed.value = true;
+    ElMessage.error("加载采集项失败：" + errText(e));
   }
 }
 
@@ -99,15 +110,26 @@ onMounted(async () => {
         </el-form-item>
         <el-form-item label="采集项">
           <el-checkbox-group v-model="collectForm.items">
-            <el-checkbox v-for="it in items" :key="it" :label="it" :value="it">
+            <el-checkbox v-for="it in items" :key="it" :value="it">
               {{ it }}
             </el-checkbox>
           </el-checkbox-group>
+          <!-- el-form-item__content 是 flex 容器，不给 width:100% 这条读数会和
+               勾选区挤在同一行（读不到、也难看）。 -->
+          <div
+            v-if="itemsFailed"
+            class="kk-sync kk-sync--stale kk-mt"
+            style="width: 100%"
+          >
+            采集项清单加载失败，下发范围无法校验。
+            <el-button link type="primary" @click="loadItems">重试</el-button>
+          </div>
         </el-form-item>
         <el-form-item>
           <el-button
             type="primary"
             :loading="submitting"
+            :disabled="!items.length"
             @click="submitCollect"
           >
             下发采集（{{ collectForm.pods.length }} 台）

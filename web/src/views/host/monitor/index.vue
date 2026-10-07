@@ -43,6 +43,10 @@ const dialog = reactive({
   submitting: false
 });
 const selection = ref<HostSummary[]>([]);
+/** 采集弹窗的目标主机快照：行级「采集」只下发这一台，不能反过来改写表格的
+ *  批量勾选（旧写法 `selection.value = [row]` 只改了内存里的 ref，表头复选框
+ *  与行勾选的视觉状态由 el-table 自己持有，于是界面显示 10 台、实际发 1 台）。 */
+const collectTargets = ref<HostSummary[]>([]);
 
 // 作用域版 setPoll：卸载时只清本页注册的 key（此前漏调 usePolls，切页后 host-monitor 轮询不会停）
 const { setPoll } = usePolls();
@@ -155,31 +159,44 @@ async function onExport() {
 /** 采集项懒加载：连点两次「批量采集」会并发两路，迟到那路的结果与错误都不该再动界面（QR-W4）。 */
 const beginCollectItems = useSeq();
 
+async function ensureCollectItems(): Promise<boolean> {
+  if (collectItems.value.length) return true;
+  const isLatest = beginCollectItems();
+  try {
+    const items = (await listCollectItems()).items;
+    if (!isLatest()) return false;
+    collectItems.value = items;
+    return true;
+  } catch (e: any) {
+    if (!isLatest()) return false;
+    ElMessage.error("加载采集项失败：" + errText(e));
+    // 采集项拿不到就不开弹窗，避免勾选区空白
+    return false;
+  }
+}
+
+/** 默认预勾的三项：只在后端确实支持时才预勾，不硬塞采集项清单 */
+const DEFAULT_ITEMS = ["cpu", "mem", "disk"];
+
+/** 打开采集弹窗。目标由调用方给定：批量=当前勾选，行级=这一台。 */
+async function openCollectDialog(targets: HostSummary[]) {
+  if (!(await ensureCollectItems())) return;
+  collectTargets.value = targets;
+  dialog.items = DEFAULT_ITEMS.filter(i => collectItems.value.includes(i));
+  dialog.visible = true;
+}
+
 async function openCollect() {
   if (!selection.value.length) {
     ElMessage.warning("请先在表格里勾选主机");
     return;
   }
-  if (!collectItems.value.length) {
-    const isLatest = beginCollectItems();
-    try {
-      const items = (await listCollectItems()).items;
-      if (!isLatest()) return;
-      collectItems.value = items;
-    } catch (e: any) {
-      if (!isLatest()) return;
-      ElMessage.error("加载采集项失败：" + errText(e));
-      return; // 采集项拿不到就不开弹窗，避免勾选区空白
-    }
-  }
-  dialog.items = ["cpu", "mem", "disk"];
-  dialog.visible = true;
+  await openCollectDialog(selection.value);
 }
 
-/** 行级「采集」：单台主机等价于「勾选这一台 → 批量采集」的快捷路径 */
+/** 行级「采集」：只针对这一台，不改写用户在表格里已有的批量勾选 */
 function collectOne(row: HostSummary) {
-  selection.value = [row];
-  openCollect();
+  return openCollectDialog([row]);
 }
 
 async function submitCollect() {
@@ -187,16 +204,23 @@ async function submitCollect() {
     ElMessage.warning("至少勾选一个采集项");
     return;
   }
+  if (!collectTargets.value.length) {
+    ElMessage.warning("没有目标主机");
+    return;
+  }
   dialog.submitting = true;
+  const pods = collectTargets.value.map(r => r.pod);
   try {
     const res = await createCommand({
-      pods: selection.value.map(r => r.pod),
+      pods,
       kind: "collect",
       items: dialog.items
     });
     ElMessage.success(`已下发 ${res.items.length} 条采集命令`);
     dialog.visible = false;
-    router.push({ name: "CommandCollect" });
+    // 与「批量命令 / 批量升级」同一套 ?pods= 契约：落到采集页要带回刚下发的
+    // 主机，否则运维得在采集页把同一批机器重新勾一遍（FE-3）。
+    router.push({ name: "CommandCollect", query: { pods: pods.join(",") } });
   } catch (e: any) {
     ElMessage.error("下发失败：" + errText(e));
   } finally {
@@ -367,7 +391,11 @@ onMounted(async () => {
         <el-table-column type="selection" width="46" reserve-selection />
         <el-table-column label="主机" min-width="200">
           <template #default="{ row }">
-            <el-link type="primary" class="kk-num" @click="gotoDetail(row.pod)">
+            <el-link
+              type="primary"
+              class="kk-num"
+              @click.stop="gotoDetail(row.pod)"
+            >
               {{ row.pod }}
             </el-link>
             <div class="kk-sub">{{ row.image || "-" }}</div>
@@ -443,10 +471,10 @@ onMounted(async () => {
         </el-table-column>
         <el-table-column label="操作" width="150" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" @click="gotoDetail(row.pod)"
+            <el-button link type="primary" @click.stop="gotoDetail(row.pod)"
               >详情</el-button
             >
-            <el-button link type="primary" @click="collectOne(row)"
+            <el-button link type="primary" @click.stop="collectOne(row)"
               >采集</el-button
             >
           </template>
@@ -509,20 +537,19 @@ onMounted(async () => {
       </div>
     </el-card>
 
-    <el-dialog v-model="dialog.visible" title="批量采集指标" width="420px">
+    <el-dialog
+      v-model="dialog.visible"
+      :title="collectTargets.length > 1 ? '批量采集指标' : '采集指标'"
+      width="420px"
+    >
       <el-checkbox-group v-model="dialog.items">
-        <el-checkbox
-          v-for="it in collectItems"
-          :key="it"
-          :label="it"
-          :value="it"
-        >
+        <el-checkbox v-for="it in collectItems" :key="it" :value="it">
           {{ it }}
         </el-checkbox>
       </el-checkbox-group>
       <p class="kk-sub">
-        将对已选
-        {{ selection.length }} 台主机下发采集命令，结果在「命令中心」查看。
+        将对
+        {{ collectTargets.length }} 台主机下发采集命令，结果在「命令中心」查看。
       </p>
       <template #footer>
         <el-button @click="dialog.visible = false">取消</el-button>
