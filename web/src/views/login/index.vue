@@ -2,6 +2,7 @@
 import Motion from "./utils/motion";
 import { useRouter } from "vue-router";
 import { message } from "@/utils/message";
+import { errText } from "@/utils/kk";
 import { loginRules } from "./utils/rule";
 import { ref, reactive, toRaw } from "vue";
 import { debounce } from "@pureadmin/utils";
@@ -68,6 +69,12 @@ const onLogin = async (formEl: FormInstance | undefined) => {
           } else {
             message("登录失败", { type: "error" });
           }
+        })
+        // 口令错误（后端 401）与锁定（429）都是**拒绝**的 Promise：
+        // 这条链此前只有 then/finally，于是输错口令页面毫无反应——
+        // 既看不到「密码错」也看不到「尝试过于频繁」。把后端 detail 透出来。
+        .catch((e: any) => {
+          message(errText(e), { type: "error", duration: 4000 });
         })
         .finally(() => (loading.value = false));
     }
