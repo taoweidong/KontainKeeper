@@ -218,9 +218,14 @@ async def test_summary_view_written_with_heartbeat(store):
     assert row["cpu"] == 12.5 and row["mem_mb"] == 800.0
     # 磁盘告警取的是「最满的那块盘」，不是第一块
     assert row["disk_pct"] == 91.0
+    # v4 起摘要视图多带标量与小 JSON（类型/分组/能力/Docker 摘要/协议版本），
+    # 换掉总览页的第二次查询；last_metrics 与 labels（运维可写大）仍留在详情侧。
     assert set(row) == {"pod", "image", "agent_ver", "hb_interval", "online",
-                        "last_seen", "cpu", "mem_mb", "disk_pct", "status_reason"}, \
-        "摘要视图不该把 last_metrics 这种大字段带出来"
+                        "last_seen", "cpu", "mem_mb", "disk_pct", "status_reason",
+                        "host_type", "os_name", "ip", "group_name", "caps",
+                        "docker_total", "docker_running", "docker_unhealthy",
+                        "proto_ver"}, \
+        "摘要视图不该把 last_metrics / labels 这种大字段带出来"
 
 
 async def test_summary_tolerates_broken_metrics(store):

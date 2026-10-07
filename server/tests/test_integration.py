@@ -162,9 +162,10 @@ def _login(port):
 def test_full_chain(stack):
     port, host = stack["port"], stack["host"]
 
-    # 健康检查（含桥接状态）
+    # 健康检查（含桥接状态）：版本号硬写在这里，每次抬协议都要来改一遍（v4 时就是它判红的）
+    from kk_server import PROTO_VER
     status, body = http(port, "GET", "/api/health")
-    assert status == 200 and body["ok"] and body["proto_ver"] == 3
+    assert status == 200 and body["ok"] and body["proto_ver"] == PROTO_VER
 
     status, _ = http(port, "POST", "/api/login", {"username": "admin", "password": "bad"})
     assert status == 401
