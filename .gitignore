@@ -43,3 +43,6 @@ reports/
 # 离线镜像 tar（deploy/offline/pack.sh 产出，动辄数 GB，严禁入库）
 deploy/offline/images/*.tar.gz
 deploy/offline/images/SHA256SUMS
+
+# 本地三端运行时产物（pid/log，由会话托管，严禁入库）
+service/
