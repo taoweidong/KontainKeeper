@@ -7,11 +7,12 @@
 # .dockerignore 已把前端 / node_modules 等大目录排除，上下文很小。
 FROM python:3.12-slim
 
-# 装入 uv 官方静态二进制（无需联网安装 uv 本身）
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uv
-ENV PATH="/uv:$PATH" \
-    # 镜像自带 python3.12，禁止 uv 再下载 Python
-    UV_PYTHON_DOWNLOADS=never
+# 装入 uv 官方静态二进制（无需联网安装 uv 本身）。
+# 注意：必须放进 PATH 标准目录——曾用「COPY 到 /uv + ENV PATH=/uv:...」，
+# wslc 构建器不吃多行 ENV 续行，RUN 阶段会 uv: not found。
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+# 镜像自带 python3.12，禁止 uv 再下载 Python
+ENV UV_PYTHON_DOWNLOADS=never
 
 WORKDIR /app
 
