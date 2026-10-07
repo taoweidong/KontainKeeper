@@ -125,7 +125,7 @@
 |---|---|---|---|
 | **QR-P1**（NEW-P1） | **P1** | `scripts/loadtest.py` 末段、`scripts/bench_agent.py:155` | 两个夜测脚本**恒退出码 0**，只 print「期望≥/超标」。500 台误判掉线、Agent RSS 100MB 都不会让流水线变红 → Jenkins ⑬ 整个 stage 是观测剧场 |
 | QR-P2 | P1 | `Jenkinsfile:205-212` | 无 `skipped>0` 与用例数下限门槛 + `allowEmptyResults:true`：Broker 在但集成用例全 skip、或用例被误删，都不会红（340 条 vs 叙事「290+」无人守护）。`archiveArtifacts allowEmptyArchive:true` 同理 |
-| QR-P3 | P1 | `Jenkinsfile:33-67,101` + `docs/ci-jenkins.md §7` | **回滚路径不可执行**：无 `GIT_REF/GIT_COMMIT` 参数，① 恒 checkout 最新提交，`IMAGE_TAG` 只换镜像不换代码 →「新代码 + 旧镜像」错配；文档还把「勾 SKIP_TESTS」当作回滚手段 |
+| QR-P3 | P1 | `Jenkinsfile:33-67,101` + `docs/ci-jenkins.md §7` | **回滚路径不可执行**：无 `GIT_REF/GIT_COMMIT` 参数，① 恒 checkout 最新提交，`IMAGE_TAG` 只换镜像不换代码 →「新代码 + 旧镜像」错配；文档还把「勾 SKIP_TESTS」当作回滚手段。**已修（2026-10-07）**：新增 `GIT_REF`（带字符集与「必须是 sha/分支/标签字面量」守卫、ref 解析失败红在 ① 并说清原因），① 之后的 `GIT_SHA`/自动标签/OCI revision/⑩ 的 `git reset` 全部派生自它；构建描述写 `<短SHA> | <标签> | <环境>` 让人不用翻控制台找坐标；§7 整节重写，并把「SKIP_TESTS 当回滚」列为反面做法。验证：临时克隆里对渲染后的 sh 块跑 `bash -n` + 正/负 ref 真跑（旧提交 rc=0 detach 成功、`deadbeef1234` rc=1 报清原因、`main` rc=0），`--help` / `-x` / `.hidden` / `a;rm -rf /` 全部被守卫拒绝 |
 | QR-P4 | P2 | `server/Dockerfile:8-41` | 无 `USER`（root 运行）、无 `HEALTHCHECK`、基础镜像 `ghcr.io/astral-sh/uv:latest` 浮动 tag（不可复现 + 供应链面） |
 | QR-P5 | P2 | 四份 compose | 全部无 `healthcheck`、无 `mem_limit`/`cpus`（RSS 25–35MB 只是代码自律）；mosquitto 无日志轮转；匿名 1883 绑 `0.0.0.0` 完全依赖「有防火墙」这一假设 |
 | QR-P6 | P2 | 提交 `8d7f442`（message = `update`） | 混合提交：3,500+ 行 `.zcode/skills` vendoring + pptx + 服务端 QR-S1~S8 修复 + 测试一把梭，违反「中文前缀 / 按模块分批 / 标注 QR 编号」约定。后果是**可追溯性断裂**：`git log --grep QR-` 只追得到 agent 侧（`7c694ae`），服务端这批修复在历史里查不到归属 |

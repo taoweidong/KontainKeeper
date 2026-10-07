@@ -133,7 +133,8 @@ git add server/src/kk_server/web && git commit -m "chore(web): 同步前端构�
 | `AGENT_LABEL` | `docker` | 构建节点标签 |
 | `ENVIRONMENT` | `staging` | `production` 时额外推 `latest`，并要求人工确认 |
 | `IMAGE_REGISTRY` | 空 | 留空 = 只构建不推送（此时部署改为目标机本地 `--build`） |
-| `IMAGE_TAG` | 空 | 留空 = `sha-<短SHA>`；**回滚时填上一个版本的标签** |
+| `IMAGE_TAG` | 空 | 留空 = `sha-<短SHA>`；**回滚请用 `GIT_REF`，只改这一项会得到「新代码 + 旧标签」** |
+| `GIT_REF` | 空 | **回滚开关**：检出到指定提交/分支/标签（须是 sha、分支名或标签名的字面量，不支持 `HEAD~2`）。留空 = 跟随 SCM 最新提交 |
 | `DEPLOY_HOST` / `DEPLOY_USER` / `DEPLOY_DIR` | 空 / `deploy` / `/opt/kontainkeeper` | 空 host = 不部署 |
 | `DEPLOY_HEALTH_URL` | 空 | 留空 = `http://<DEPLOY_HOST>:8443`；走反代或 HTTPS 时填完整地址 |
 | `ADMIN_USER` | `admin` | 部署验证登录用 |
@@ -200,16 +201,37 @@ git add server/src/kk_server/web && git commit -m "chore(web): 同步前端构�
 
 ## 7. 回滚
 
-服务端无状态，回滚 = 重新部署上一个镜像标签：
+**回滚 = 用 `GIT_REF` 重跑一次流水线，不是改 `IMAGE_TAG`。**
 
-1. 在 Jenkins 用参数 `IMAGE_TAG=<上一个标签>` 重跑（标签形如 `sha-1a2b3c4d5e6f`，
-   取上一次成功构建的 ① 阶段输出，或 `docker images` / 仓库的 tag 列表）；
-2. 勾上 `SKIP_TESTS` 可让回滚更快（镜像与产物都是既有的）；
-3. ⑩ 会把目标机 `git reset --hard` 到**对应提交**——注意 `IMAGE_TAG` 与提交需匹配，
-   否则会出现「新代码 + 旧镜像」的错配。**回滚时请用与目标标签对应的提交重跑**。
+旧实现里 ① 恒 `checkout scm`（最新提交），`IMAGE_TAG` 只换标签不换代码，
+于是「回滚」这件事在流水线里其实不可执行：填了旧标签，构建出来的仍是
+「新代码 + 旧标签」的镜像，⑩ 又把目标机 `git reset --hard` 到新提交（QR-P3）。
+现在 ① 可以把检出落到指定 ref，`GIT_SHA` / 自动标签 / 镜像的 OCI revision
+标签 / ⑩ 的 `git reset` 全部派生自它 —— 一次重跑就把**代码、镜像、compose 配置**一起回退。
 
-数据库侧无需动作：新增列由启动时 `_ensure_schema` 自动 ALTER，只增不减不删，
-代码回滚后遗留的新列无害（有 `server_default`）。
+1. **找坐标**：Jenkins 构建列表里每条构建的描述现在是 `<短SHA> | <镜像标签> | <环境>`
+   （① 写入），抄上一个成功构建的短 SHA 即可；也可 `git log --oneline -20`
+   或 `docker images kontainkeeper-server` 反查。
+2. **重跑并填 `GIT_REF=<那个短 SHA / 标签>`**，`IMAGE_TAG` **留空** ——
+   它会自动等于 `sha-<该提交>`，与仓库里既有的那个镜像同名，推过的话 ⑨ 直接复用。
+3. 其余参数与上次一致（`ENVIRONMENT` 别改）。回滚构建同样跑完整测试，
+   **别为了快勾 `SKIP_TESTS`**：那是应急后门（§6.1 / QR-P8），省下的时间不多，
+   代价是一次「没有任何验证的回滚」正上生产。
+4. 按 ⑪ 探活确认；Agent 侧不需要动作（Agent 只升不降，见文末）。
+
+参数守卫与失败口径：`GIT_REF` 只接受 sha / 分支 / 标签的字面量（首字符必须是字母或数字），
+`HEAD~2`、`--help` 这类会被直接拒绝——避免流水线参数变成 git 选项注入面；
+ref 解析不到提交时红在 ① 并打印 `GIT_REF 在本仓库解析不到提交：<ref>`，
+而不是让 `checkout` 抛一句晦涩的 `not a valid object name`。
+
+数据库侧无需动作：新增列由启动时 `_ensure_schema` 自动补，只增不减不删，
+旧代码不读新列，回滚后遗留它们无害。但**别给大字段列写默认值**：MySQL 拒绝
+`TEXT/LONGTEXT DEFAULT ''`（`1101`），`create_all` 与 `ALTER ADD COLUMN` 两条路
+都会当场炸（QR-S30）——默认值放写入侧，DDL 里只写类型。
+
+> 只回镜像、不动代码的应急做法（手工改 compose 的 `image:` 后 up）会留下
+> 「代码回滚了、配置没回滚」的漂移，只在 Jenkins 本身不可用时止血，
+> 事后必须按上面 1–4 正路重跑一次把三者对齐。
 
 > 更彻底的「让全网 Agent 退回旧版」不在这条流水线的能力内——Agent 只升不降，
 > 需上传版本号更高的包，详见[优化方案](optimization-plan-2026-09-12.md) B6.6。

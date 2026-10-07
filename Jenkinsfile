@@ -39,7 +39,11 @@ pipeline {
         string(name: 'IMAGE_REGISTRY', defaultValue: '',
                description: '镜像仓库前缀（如 harbor.ops.example.com/kk）。留空 = 只构建不推送，目标机改为本地构建')
         string(name: 'IMAGE_TAG', defaultValue: '',
-               description: '镜像标签。留空 = sha-<短SHA>；**回滚时填上一个版本的标签**')
+               description: '镜像标签。留空 = sha-<短SHA>；**回滚请用下面的 GIT_REF，只改这一项会得到「新代码 + 旧标签」**')
+        string(name: 'GIT_REF', defaultValue: '',
+               description: '检出到指定提交 / 分支 / 标签（**回滚用**）。留空 = 跟随 SCM 最新提交。' +
+                            '填了它，① 会 detach 到该 ref，镜像标签、目标机 git reset、镜像 revision 标签全部跟随，' +
+                            '一次重跑就把「代码 + 镜像 + compose」一起回退')
 
         string(name: 'DEPLOY_HOST', defaultValue: '', description: '部署目标机（SSH）。留空 = 不部署')
         string(name: 'DEPLOY_USER', defaultValue: 'deploy', description: '部署目标机 SSH 用户')
@@ -98,11 +102,42 @@ pipeline {
             steps {
                 checkout scm
                 script {
+                    // ---- 回滚检出（QR-P3）----
+                    // 只有 IMAGE_TAG 时流水线仍 checkout 最新提交 →「新代码 + 旧镜像」错配。
+                    // 这里把 ref 落到 checkout 上，后面的 GIT_SHA / IMAGE_TAG / ⑩ 的
+                    // git reset 全部派生自它，一次重跑就把代码、镜像、compose 一起回退。
+                    def wanted = params.GIT_REF?.trim()
+                    if (wanted) {
+                        // 流水线参数会进 shell：先卡字符集（且首字符必须是字母/数字，
+                        // 免得 `--help` 这类「看着像 ref 的选项」被 git 当参数解析）
+                        if (!(wanted ==~ /[A-Za-z0-9][A-Za-z0-9._\/-]*/)) {
+                            error "GIT_REF 非法：${wanted}（要 sha / 分支 / 标签的字面量，首字符须为字母或数字；不支持 HEAD~2 这类写法）"
+                        }
+                        sh """#!/usr/bin/env bash
+set -euo pipefail
+# 历史提交/标签不在「当前分支」这一次 fetch 里，所以按 refspec 取全量分支 + 标签；
+# checkout scm 若配了浅克，先补全历史，否则 detach 到老提交会报 not a valid object。
+if [ "\$(git rev-parse --is-shallow-repository 2>/dev/null || echo false)" = "true" ]; then
+  git fetch --quiet --unshallow origin '+refs/heads/*:refs/remotes/origin/*' '+refs/tags/*:refs/tags/*' \\
+    || git fetch --quiet --depth 5000 origin '+refs/heads/*:refs/remotes/origin/*' '+refs/tags/*:refs/tags/*'
+else
+  git fetch --quiet origin '+refs/heads/*:refs/remotes/origin/*' '+refs/tags/*:refs/tags/*'
+fi
+# 先把参数解析成提交，解析不出来就红在这里报清楚原因，而不是让 checkout 抛晦涩错误
+git rev-parse --verify --quiet '${wanted}^{commit}' >/dev/null \\
+  || { echo "!! GIT_REF 在本仓库解析不到提交：${wanted}（确认它已推到 origin，且是 sha/分支/标签字面量）"; exit 1; }
+git checkout --quiet --detach '${wanted}'
+echo ">> 回滚检出：已 detach 到 ${wanted}"
+"""
+                    }
+
                     env.GIT_SHA   = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
                     env.GIT_SHORT = sh(returnStdout: true, script: 'git rev-parse --short=12 HEAD').trim()
                     def branch    = env.BRANCH_NAME?.trim()
-                    env.GIT_REF   = branch ?: sh(returnStdout: true,
-                                                 script: 'git rev-parse --abbrev-ref HEAD').trim()
+                    // detach 之后 `--abbrev-ref HEAD` 只会返回 "HEAD"，回滚构建要另给标识
+                    env.GIT_BRANCH = wanted ? "detached @ ${wanted}".toString()
+                        : (branch ?: sh(returnStdout: true,
+                                        script: 'git rev-parse --abbrev-ref HEAD').trim())
 
                     env.IMAGE_TAG  = params.IMAGE_TAG?.trim() ?: "sha-${env.GIT_SHORT}"
                     env.LOCAL_IMAGE = "${env.IMAGE_NAME}:${env.IMAGE_TAG}"
@@ -114,12 +149,16 @@ pipeline {
                                         ?: (env.DEPLOY_HOST?.trim() ? "http://${env.DEPLOY_HOST}:8443" : '')
 
                     echo """================ 本次构建 ================
-提交      : ${env.GIT_SHA}  (${env.GIT_REF})
+提交      : ${env.GIT_SHA}  (${env.GIT_BRANCH})
 镜像      : ${env.FULL_IMAGE}
 环境      : ${env.ENVIRONMENT}
 部署目标  : ${env.DEPLOY_HOST ?: '（不部署）'}
 CI Broker : ${env.CI_MQTT_URL}
+回滚      : ${wanted ? '是 —— 检出 ' + wanted : '否'}
 =========================================="""
+                    // 下次回滚要填的东西就写在这里：让人不用翻控制台找上一次的标签
+                    currentBuild.description = "${env.GIT_SHORT} | ${env.IMAGE_TAG} | ${env.ENVIRONMENT}" +
+                        (wanted ? " | 回滚自 ${wanted}" : '')
                 }
             }
         }
