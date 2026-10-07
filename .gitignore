@@ -26,6 +26,14 @@ deploy/mosquitto/passwordfile
 # 本地工作日志（审查会话记忆），非项目产物
 .workbuddy/
 .trae/
+.zcode/
+.codegraph/
+# 编码工具自己的规划/会话目录与技能锁文件（QR-P6 仓库卫生：工具态不进产品仓库）
+.stepcode/
+.codeartsdoer/
+skills-lock.json
+# pnpm 本地 store 实验遗留（web/.npmrc 已不含 store-dir，根目录不该出现缓存壳）
+.pnpm-store/
 # CI 产物与构建缓存（Jenkins 流水线：测试报告、uv/pip 缓存、节点内的 uv 与构建 venv）
 reports/
 .ci-cache/
