@@ -111,13 +111,13 @@
 |---|---|---|---|---|
 | QR-W1 | **P1** | `utils/kkConfirm.ts:32-36` | 全仓唯一 HTML 注入 sink：`dangerouslyUseHTMLString:true` + 未转义注入 **Agent 自报 `pod`**。恶意/被控 Agent 上报含 `onerror` 的主机名即成管理员浏览器存储型 XSS（`v-html` 全仓 0 处，grep 证实） | **已修**（改 VNode 文本节点，交 Vue 转义） |
 | QR-W2 | P1 | `tsconfig.json:6-7`、`eslint.config.js:81` | `strict:false` + `strictFunctionTypes:false` + 关 `no-explicit-any`：`pnpm typecheck` 实质是弱检查，87 处 `any`（业务页 31 处）无人兜底 | 登记（渐进方案见优化方案） |
-| QR-W3 | P2 | `utils/http/index.ts:96-99` | 401 **和 403** 一律 `logOut()`：后端对越权返 403 时会误踢登录态（影响面需核 `deps.agent_ip_auth` 的返回码，标假设） | 登记 |
-| QR-W4 | P2 | 全 `src/views`（`AbortController\|sequence` grep = 0） | 零请求竞态防护：`CommandHistory.vue:145-156` 连点两行，慢响应可把抽屉里换成**另一条命令的输出** | 登记 |
-| QR-W5 | P2 | 5 个 `load()` | 后端宕机时每 3–10s 弹一次 `ElMessage.error`，toast 噪音淹没真实错误 | **总览页已修**（静默失败 → 表头同步读数变冷），其余 4 页登记 |
+| QR-W3 | P2 | `utils/http/index.ts:96-99` | 401 **和 403** 一律 `logOut()`：后端对越权返 403 时会误踢登录态（影响面需核 `deps.agent_ip_auth` 的返回码，标假设） | 假设已核实并修（工作树，并行前端批次 FE-1/FE-2，**未提交**）：实测后端业务接口越权一律 401，403 仅 `agent_ip_auth`；改为「401 且非登录接口」才登出 |
+| QR-W4 | P2 | 全 `src/views`（`AbortController\|sequence` grep = 0） | 零请求竞态防护：`CommandHistory.vue:145-156` 连点两行，慢响应可把抽屉里换成**另一条命令的输出** | **已修**（2026-10-07，`kkPoll.ts` 新增 `useSeq()`，七处手动入口赋值前校验票据：提交 2328cb3） |
+| QR-W5 | P2 | 5 个 `load()` | 后端宕机时每 3–10s 弹一次 `ElMessage.error`，toast 噪音淹没真实错误 | **已修**（五页统一：静默轮询失败 → 页头 `.kk-sync` 读数变冷并写明「可能已过期」，手动失败仍 toast；提交 bbc8ee2） |
 | QR-W6 | P2 | `shell/index.vue:53-67` | 深 watch 把 `cmdline` 实时写进 URL query：整条 shell 命令留在地址栏/复制链接/浏览器历史里 | **已修**（query 只留 pods/mode/timeout） |
-| QR-W7 | P2 | `api/containers.ts:73` + 5 处调用点 | `listHosts("summary")` 不带 limit → 500 台全量 JSON 喂非虚拟 el-table；monitor/welcome/shell/collect/HostPicker 各自重复全量拉取；`filtered` 每轮整体重算 | 登记（需后端分页配合） |
+| QR-W7 | P2 | `api/containers.ts:73` + 5 处调用点 | `listHosts("summary")` 不带 limit → 500 台全量 JSON 喂非虚拟 el-table；monitor/welcome/shell/collect/HostPicker 各自重复全量拉取；`filtered` 每轮整体重算 | **部分已修**（ bbc8ee2：总览前端分页 100/200/500 + `reserve-selection` 保跨页勾选；`HostPicker` 加可选 `:hosts` 复用父页清单）。**未修**：接口仍无 limit（后端分页要改 `store` 查询，与在途 v4 改动同区）；`el-table-v2` 虚拟表放弃——本环境内置浏览器不可截图，重写 9 列富单元格的视觉风险无法自证 |
 | QR-W8 | P2 | `views/login/index.vue:40-41` | 登录表单把 `admin/admin123` 预填进生产构建，向内网任何人出示入口凭据 | **已修** |
-| QR-W9 | P2 | `utils/print.ts`(223) / `utils/localforage/`(275) / `utils/sso.ts` / `globalPolyfills.ts`；`update/index.vue:52` | 四块零引用死代码（print.ts 集中了全部 9 处 `@ts-expect-error`）；`.vue` 段 eslint `no-unused-vars:"off"` 掩盖未用常量；`auth.ts:53-85` token 同时落 cookie（无 Secure/SameSite 显式声明）与 localStorage | 登记 |
+| QR-W9 | P2 | `utils/print.ts`(223) / `utils/localforage/`(275) / `utils/sso.ts` / `globalPolyfills.ts`；`update/index.vue:52` | 四块零引用死代码（print.ts 集中了全部 9 处 `@ts-expect-error`）；`.vue` 段 eslint `no-unused-vars:"off"` 掩盖未用常量；`auth.ts:53-85` token 同时落 cookie（无 Secure/SameSite 显式声明）与 localStorage | **部分已修**（be8cdec：四块死代码删除 −567 行，`.vue` 段规则改动后抓到两条真红灯——`update` 的 `SKIP_REASON_LABEL` 定义后从未使用、`welcome` 未用导入已清）。**未修**：eslint 规则改动因并行前端批次在 `update/index.vue` 留有未接线的 `upgradeSkipText` 导入，开启即红灯，暂扣未提交；`localforage` npm 依赖已无人引用但要动 lockfile，另步；`auth.ts` token 落 localStorage 属会话模型，登记 |
 
 ### 3.4 流水线 / 部署 / 卫生
 
@@ -162,7 +162,7 @@
 
 ---
 
-## 6. 本轮已落地的改动（前端，未提交）
+## 6. 本轮已落地的改动（前端）
 
 | 文件 | 改动 |
 |---|---|
@@ -230,3 +230,19 @@
 1. `test_full_chain`：`proto_ver` 落库为 4 而断言 3 —— 协议四件套（`PROTO_VER` ×2 + `proto/messages.md` + 用例）未同步。
 2. `test_summary_view_written_with_heartbeat`：`caps` / `os_name` / `docker*` 等元信息进了 `view="summary"`，摘要视图不再是「只读小列」（QR-S1 的口径）。
 3. 同批新增的 `labels` / `caps` 列形态触发 **QR-S30**：MySQL 上既建不出库也补不了列。
+
+### 8.4 前端批次（QR-W4 / W5 / W7 / W9）验证记录（2026-10-07）
+
+| 验证项 | 命令 | 结果 |
+|---|---|---|
+| 类型检查 | `pnpm typecheck`（`tsc --noEmit` + `vue-tsc --noEmit --skipLibCheck`） | 三个提交各自跑过，全绿 |
+| 构建 | `NODE_OPTIONS=--max-old-space-size=8192 pnpm exec vite build` | 通过；`dist` 2.78 MB（W4 切片）→ 2.79 MB（W5/W7 切片）→ 2.79 MB（W9 删 567 行后）。**包体没有可见下降**：死代码本就未被入口引用，Vite 早已摇掉，收益在可读性不在体积 |
+| 竞态守卫的「牙齿」 | 手工推理 + 代码路径：`begin()` 每调一次 `seq++`，旧票据 `mine !== seq` 恒假 | 连点两行时先发的那张票据必然失效，抽屉正文不会再被迟到包换掉；无浏览器可截图（内置浏览器是隐藏页），故未做视觉验证 |
+| lint 基线（改动前后对比） | `eslint -f json src/**/*.{vue,js,ts,tsx}` | 全量 141 条：`prettier/prettier` 138、`vue/attributes-order` 1、`.vue` 重启 `@typescript-eslint/no-unused-vars` 抓到 **2 条真红灯**（`update` 的 `SKIP_REASON_LABEL` 死常量、`welcome` 的未用导入），已清 |
+| 我新增行上的 lint | `git diff -U0` 行号 ∩ eslint 报告 | **0 条**（用临时脚本比对，避免把历史格式漂移算到本轮头上） |
+
+两条刻意的偏离，写在这里而不是藏在提交信息里：
+
+1. **总览用前端分页，没用 `el-table-v2`，也没做后端分页**。后端分页要改 `store` 的查询（与在途 v4 改动同区，改出来是给别人添冲突）；`el-table-v2` 要重写 9 列富单元格（勾选列 / 计量条 / 心跳三格 / 固定操作列），而本环境的内置浏览器无法截图取证（隐藏页），视觉回归没法自证——把一个不可验证的大改塞进「正确性」批次是不诚实的。前端分页把 DOM 行数从 500 压到 100，正好打在瓶颈（节点数）上，不是 JSON 大小。
+2. **`.vue` 的 eslint 规则改动暂扣未提交**：并行前端批次正在 `update/index.vue` 里把 skipped 文案收口成 `upgradeSkipText`，当前该导入尚未接线；规则一开就是一条属于别人的红灯。等它落地再开。
+
