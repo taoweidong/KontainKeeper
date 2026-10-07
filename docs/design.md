@@ -43,7 +43,9 @@
    这四件事，v1 是自研的（内存连接表 + 手写补发 + 超时判定 ≈ 200 行且有多处缺陷），
    现在全部由 MQTT Broker 承担。服务端因此**无状态**，可水平扩容。
 
-主题布局与帧格式见 [`proto/messages.md`](../proto/messages.md)（协议 v3：匿名 Broker + 服务端 IP 白名单）。
+主题布局与帧格式见 [`proto/messages.md`](../proto/messages.md)（协议 v4：匿名 Broker +
+服务端 IP 白名单；v4 只往 status 帧加可选的 `env`/`group`/`labels`/`caps`，并有 v3
+兼容窗口，接入管控沿用 v3）。
 
 ## 2. 为什么是 MQTT
 
@@ -187,7 +189,7 @@ KontainKeeper/
 ├── agent/                         # kk-agent（独立 UV 项目）
 ├── server/                        # kk-server（独立 UV 项目）
 ├── web/                           # Vue3 前端（独立 pnpm 工程）
-├── proto/messages.md              # 协议 v3（MQTT 主题与帧格式，匿名 Broker + IP 白名单）
+├── proto/messages.md              # 协议 v4（MQTT 主题与帧格式，匿名 Broker + IP 白名单）
 ├── scripts/                       # 构建与部署脚本
 └── pyproject.toml                 # UV 工作区虚拟根
 ```

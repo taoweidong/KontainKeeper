@@ -22,7 +22,7 @@ web/ Vue3 前端（REST 轮询 + ECharts，构建产物由 kk-server 托管）
 - `agent/src/kk_agent/` — 主机内客户端（**独立 UV 项目**）。**不再是纯标准库**：采集用 `psutil`（跨平台、8 个采集项），传输用 `paho-mqtt`（重连退避/保活/out-queue），可编译为单文件二进制嵌入镜像，常驻 RSS 口径 **25–35MB**。模块：`transport.py`（MQTT，替代已删的 `ws.py`+`conn.py`）、`collector.py`（psutil，含 `collect_items()` 按项采集）、`executor.py`、`updater.py`（自更新 sha256/HMAC）、`main.py`（事件循环）。
 - `server/src/kk_server/` — FastAPI 服务端，MVC 分层：`models/`（SQLAlchemy 2 Core + async engine，SQLite/PG/MySQL 三库通用）→ `services/`（`mqtt_bridge.py` 无状态桥接、命令黑名单 security）→ `controllers/`（REST `/api/*`）→ `web/`（Vue3 构建产物，随包打包、服务端直接托管）；`main.py` 的 `create_app` 只做装配。**没有 WS 入口**（`agent_ws.py`/`hub.py` 已删）。
 - `web/` — **独立 pnpm 工程**（Vue3 + TS + Element Plus + Vite + Pinia + ECharts，底座 pure-admin-thin v6.2.0）。`src/api/` 业务 API 层、`src/views/` 七个业务页（host/monitor 总览、host/detail 详情、host/update 版本与更新、command/shell 命令面板、command/collect 采集面板、audit 审计、system 系统统计）加 welcome 首页、`src/router/modules/kk.ts` 静态路由。`web/dist/` 被 .gitignore 忽略，产物需人工同步到 `server/src/kk_server/web/`。
-- `proto/messages.md` — 双端通信协议契约（**v3 = 去 token：匿名 Broker + 服务端 `KK_AGENT_IPS` 白名单，上行帧携带自报 `ip`**；可选 Broker 鉴权加固走双端 `KK_MQTT_USERNAME/PASSWORD`，见 deployment.md）。改协议必须同步：`agent/src/kk_agent/config.py` 的 `PROTO_VER`、`server/src/kk_server/__init__.py` 的 `PROTO_VER`、协议文档、双端测试。
+- `proto/messages.md` — 双端通信协议契约（**当前 v4：status 帧新增可选 `env`/`group`/`labels`/`caps`，主题布局与 QoS/retain 一个字节没改；接入管控沿用 v3 = 去 token、匿名 Broker + 服务端 `KK_AGENT_IPS` 白名单、上行帧携带自报 `ip`**。v3→v4 有兼容窗口 `ACCEPT_PROTO_VERS=(3,4)`，只有 `KK_DROP_PROTO_V3=1` 才关闭；关窗口前必须看统计里的 `proto_v3_received` 确认存量 Agent 已升完，否则是全网闪断。可选 Broker 鉴权加固走双端 `KK_MQTT_USERNAME/PASSWORD`，见 deployment.md）。改协议必须同步：`agent/src/kk_agent/config.py` 的 `PROTO_VER`、`server/src/kk_server/__init__.py` 的 `PROTO_VER`、协议文档、双端测试。
 - `agent/tests/`、`server/tests/`、`scripts/build.sh`（把 agent 叠加进 vscode-server 镜像）。
 - `scripts/install.sh` + `deploy/systemd/kk-agent.service` — **非容器 Linux 主机**（物理机/VM）的 Agent
   安装路径：同一个 `agent/dist/kk-agent` 二进制、同一套 `KK_*`，只把容器里的 supervisor 换成
@@ -87,7 +87,7 @@ bash scripts/ci_smoke.sh kontainkeeper-server:local agent/dist/kk-agent         
 
 ## 背景阅读
 
-改协议、Agent 资源策略或部署方式前先读 `docs/design.md`（总体设计）与 `proto/messages.md`（v3 MQTT 主题与帧格式）；执行路线图与缺陷账本在 `docs/completion-plan-mqtt.md`；生产部署流程在 `docs/deployment.md`，开发环境搭建在 `docs/development.md`，CI/CD 流水线在 `docs/ci-jenkins.md`。
+改协议、Agent 资源策略或部署方式前先读 `docs/design.md`（总体设计）与 `proto/messages.md`（v4 MQTT 主题与帧格式，§3.1.1 是兼容窗口与 v4 字段的契约）；执行路线图与缺陷账本在 `docs/completion-plan-mqtt.md`；生产部署流程在 `docs/deployment.md`，开发环境搭建在 `docs/development.md`，CI/CD 流水线在 `docs/ci-jenkins.md`。
 
 ## 约定
 
