@@ -8,7 +8,7 @@ import {
   watch
 } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { useWindowSize } from "@vueuse/core";
+import { useResizeObserver, useWindowSize } from "@vueuse/core";
 import { ElMessage } from "element-plus";
 import * as echarts from "echarts/core";
 import { LineChart } from "echarts/charts";
@@ -98,9 +98,10 @@ function renderChart(
           second: "2-digit",
           hour12: false
         };
-  const times = series.map(p =>
-    new Date(p.ts * 1000).toLocaleString("zh-CN", fmt)
-  );
+  const labelFmt = new Intl.DateTimeFormat("zh-CN", fmt);
+  // toLocaleString 每次都新建一个 DateTimeFormat，24h 窗口 1440 点就是 1440 次；
+  // 格式化器建一次、逐点复用，输出的文案与原来逐字相同（FE-16）。
+  const times = series.map(p => labelFmt.format(new Date(p.ts * 1000)));
   chart.value.setOption({
     tooltip: { trigger: "axis" },
     legend: { data: ["CPU %", "内存 MB"], right: 0 },
@@ -168,9 +169,9 @@ async function load(silent = false) {
   await loadMetrics(silent);
 }
 
-function onResize() {
-  chart.value?.resize();
-}
+/** 图表跟随容器宽度：侧边栏折叠、tabs 收放都只改容器尺寸、不触发 window resize，
+ *  原来只听 window.addEventListener("resize") 会在这些场景下留一条错位宽度的曲线（FE-15）。 */
+useResizeObserver(chartEl, () => chart.value?.resize());
 
 const exporting = ref(false);
 const upgrading = ref(false);
@@ -213,6 +214,11 @@ async function onUpgradeOne() {
 
 watch(hours, () => loadMetrics());
 
+/** 同页换主机（从别的入口改 route.params.pod）不会重建组件，
+ *  这里显式重载——原来只是碰巧靠底座 lay-content 的 :key="fullPath" 强制重建才没出事，
+ *  那份运气不属于本页（FE-14）。 */
+watch(pod, () => load());
+
 /** 在此主机执行命令：复用既有的 ?pods= 契约，不再从别处绕 */
 function gotoCommand() {
   router.push({ name: "CommandShell", query: { pods: pod.value } });
@@ -222,11 +228,9 @@ onMounted(async () => {
   await load();
   // 详情与图表 30s：曲线不需要秒级新鲜度
   setPoll("host-detail", () => load(true), 30000);
-  window.addEventListener("resize", onResize);
 });
 
 onBeforeUnmount(() => {
-  window.removeEventListener("resize", onResize);
   chart.value?.dispose();
   chart.value = undefined;
 });

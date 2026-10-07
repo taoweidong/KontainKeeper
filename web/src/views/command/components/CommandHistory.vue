@@ -106,16 +106,21 @@ async function loadBatches() {
   }
 }
 
+/** 是否有未终态命令：决定 3s / 10s 两档节奏 */
+const hasActive = computed(() =>
+  rows.value.some(r => ["pending", "sent", "running"].includes(r.status))
+);
+
 /** 自适应轮询：有未终态命令时 3s，否则 10s */
 function restartTimer() {
   if (!autoRefresh.value) return clearPoll(POLL_KEY);
-  const hasActive = rows.value.some(r =>
-    ["pending", "sent", "running"].includes(r.status)
-  );
-  setPoll(POLL_KEY, () => loadCommands(true), hasActive ? 3000 : 10000);
+  setPoll(POLL_KEY, () => loadCommands(true), hasActive.value ? 3000 : 10000);
 }
 
-watch([rows], restartTimer);
+// 只按「未终态 ↔ 全终态」的翻转重建定时器。挂到 rows 上等于每次回包都
+// clearPoll + 新建 setInterval：间隔变成「设定值 + 请求耗时」越跑越慢，
+// 而且是在自己的回调里拆掉自己（FE-11）。
+watch(hasActive, restartTimer);
 watch([statusFilter, batchFilter, pageSize], () => {
   offset.value = 0;
   loadCommands();
