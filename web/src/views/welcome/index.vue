@@ -6,7 +6,7 @@ import { ElMessage } from "element-plus";
 import { listHosts, type HostSummary } from "@/api/containers";
 import { getHealth, getStats, type HealthResult, type StatsResult } from "@/api/system";
 import { listCommands, type CommandRow } from "@/api/commands";
-import { ageText, durText, elapsedText, statusLabel, statusType, tsText } from "@/utils/kk";
+import { durText, elapsedText, statusLabel, statusType, tsText } from "@/utils/kk";
 import { usePolls, useSeq } from "@/utils/kkPoll";
 import { useRenderIcon } from "@/components/ReIcon/src/hooks";
 import MonitorIcon from "~icons/ri/dashboard-2-line";
@@ -137,7 +137,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="welcome" v-loading="loading">
+  <div v-loading="loading" class="welcome">
     <!-- 轮询失败只在页头说一次：后端宕机时 10s 一次的 toast 会把真正的告警淹成噪音（W5） -->
     <div v-if="pollFailed" class="kk-sync kk-sync--stale kk-mb">
       自动刷新失败，下方读数可能已过期
