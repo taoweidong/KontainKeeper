@@ -3,6 +3,8 @@ import ipaddress
 import os
 from dataclasses import dataclass
 
+from . import ACCEPT_PROTO_VERS, PROTO_VER
+
 DEFAULT_BLACKLIST = "rm -rf /,mkfs,reboot,shutdown,dd if=/dev/zero,chmod -R 777 /"
 
 # Agent 可请求的采集项白名单，须与 agent 侧 kk_agent.collector.ITEM_NAMES 一致。
@@ -60,6 +62,11 @@ class Settings:
     # 必须与 Agent 侧 KK_UPDATE_HMAC_KEY 一致；不配则推送路径默认被 Agent 拒绝
     # （Agent 配 KK_UPDATE_ALLOW_UNSIGNED=1 可放行未签名推送）。
     update_hmac_key: str = ""
+    # ---- 协议兼容窗口（P1）----
+    # 接受的 proto_ver 集合，默认 (3, 4)：v3 → v4 只新增可选字段，没必要让存量
+    # Agent 因版本号上涨而全部掉线。置 1 关闭窗口后仅接受 PROTO_VER=4 的帧，
+    # 存量 Agent 的上报会被拒并审计 proto_mismatch（升级完成后才该这么干）。
+    accept_proto_vers: tuple = ACCEPT_PROTO_VERS
 
 
 def _env_int(env, key, default):
@@ -163,4 +170,9 @@ def load_settings(env=None) -> Settings:
                     log_level=(env.get("KK_LOG_LEVEL") or "INFO").strip().upper(),
                     log_path=env.get("KK_LOG", "").strip(),
                     log_json=_env_bool(env, "KK_LOG_JSON"),
-                    update_hmac_key=env.get("KK_UPDATE_HMAC_KEY", "").strip())
+                    update_hmac_key=env.get("KK_UPDATE_HMAC_KEY", "").strip(),
+                    # 关窗口是单向门：关了再开也不影响已掉线的存量 Agent，所以这里
+                    # 只做显式开关，不做「自动探测全网升级完毕」的聪明逻辑
+                    accept_proto_vers=((PROTO_VER,)
+                                       if _env_bool(env, "KK_DROP_PROTO_V3")
+                                       else ACCEPT_PROTO_VERS))

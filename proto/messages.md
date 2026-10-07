@@ -29,16 +29,19 @@ kk/v1/{host}/cmd_ack   —— 仅登记主题位，未实现（见 §6）
 |---|---|---|---|---|
 | `status` | A→S | 1 | **是** | 新订阅者（服务端重启/扩容）必须立刻拿到全量在线现状；同时作为 LWT 主题 |
 | `hb` | A→S | 0 | **否** | 指标真相在数据库，Broker 只做搬运。retain 会让服务端每次建订阅时整批回放陈旧心跳，落库成幽灵数据点 |
-| `result` | A→S | 1 | 否 | 结果必须送达，但不需要保留历史 |
+| `result` | A→S | 1 | 否 | 结果必须送达，但不需要保留历史；**唯一的例外**是 `rc=-3` 的失败终态走 QoS0（见 §3.3） |
 | `cmd` | S→A | 1 | 否 | 命令必须送达；离线期间由 Broker 持久会话排队，重连自动补投 |
 
-两条容易踩的语义：
+三条容易踩的语义：
 
 - **`hb` 绝不 retain**。retained 心跳在服务端每次建立订阅时回放，而 `record_hb` 会因帧内
   `ts` 把陈旧数据写成「刚刚上报」——500 台能一次灌进 500 条幽灵点。
 - **QoS1 的 `result` 不要做 `is_connected()` 预检再丢弃**。paho 的 `publish()` 本身会把 QoS1
   消息投入 out-queue、重连后自动重发；前置判断等于把离线排队能力自己短路掉。成功判定应放宽为
   `rc in (MQTT_ERR_SUCCESS, MQTT_ERR_NO_CONN)`。
+- **服务端不得假设 `result` 恒为 QoS1**。失败终态故意降级为 QoS0 是为了抢在自己积压前面
+  （out-queue 满时 QoS1 终态会被同一次 `QUEUE_SIZE` 一起拒收）。服务端按 QoS1 订阅即可正常
+  收到 QoS0 帧（投递 QoS 取二者较小值），协议**帧结构不变**，因此不需要升 `proto_ver`。
 
 ## 2. 连接与在线判定
 
@@ -127,7 +130,7 @@ v1 的 WebSocket close code（`4400/4401/4402/4403/4404`）**已随 WS 删除**�
 - 服务端对 `cpu` / `mem_mb` 落 Float 列前做数值规整（非数字值记 `NULL`）——
   插件写坏单个指标**不会让整帧心跳丢弃**。
 
-### 3.3 `kk/v1/{host}/result`（QoS1，分块）
+### 3.3 `kk/v1/{host}/result`（QoS1 分块；失败终态 QoS0）
 
 ```json
 {"id":"c-123","seq":0,"total":3,"out_b64":"...","done":false,"ip":"10.0.0.5"}
@@ -142,11 +145,14 @@ v1 的 WebSocket close code（`4400/4401/4402/4403/4404`）**已随 WS 删除**�
 | `out_b64` | 该块输出的 base64（v1 的 `data_b64` 已改名） |
 | `ip` | v3 起所有上行帧统一携带的自报出口 IP，白名单校验与 status/hb 同一入口 |
 | `done` | 末块为 `true`，此时携带下方四个字段 |
-| `rc` | 进程退出码；超时被杀为 `-1`；spawn 失败 `126/127`；**`-3` 表示结果分块未能全部送达**（out-queue 溢出），服务端据此置 `failed` |
+| `rc` | 进程退出码；超时被杀为 `-1`；spawn 失败 `126/127`；**`-3` 表示 Agent 未能正常交出结果**——out-queue 溢出（分块没送达）或工作队列积压满（命令被限流拒绝，`out` 里带 `task queue full`），服务端据此置 `failed` |
 | `timed_out` / `elapsed_ms` / `truncated` | 是否超时、耗时毫秒、输出是否被截断 |
 
 关键收敛语义：**任一分块发送失败，Agent 必须补发一个 `rc=-3` 的失败终态**，
-绝不让服务端那一行命令永远停在 `running`。
+绝不让服务端那一行命令永远停在 `running`。补发的终态走 **QoS0**：此时 QoS1 队列已经满了，
+同规格的终态帧会被一起挡在门外，用「这一帧可能丢」换「不被自己的积压堵住」，真丢了还有
+服务端的命令超时清扫兜底。副作用可接受：已入队的低 `seq` 分块若晚于终态到达，会被服务端的
+`seq` 水位判为重复而丢弃，那一行只会「输出偏少」而不会错乱。
 
 ## 4. Server → Agent
 
@@ -231,5 +237,8 @@ sha256，边际收益有限）。`KK_UPDATE_INSECURE=1` 可关闭 TLS 校验（�
   v1 WS 解析器的 16MB 保护阈值已随 `ws.py` 删除，应用层不再有独立帧上限。
 - 所有 `ts` 为 Unix 秒。
 - 命令输出分块 48KB，总量超 4MB 截断并置 `truncated`。
-- Agent 侧离线 out-queue 上限 `MAX_QUEUED = 512`（可配）；超出会被淘汰，
-  因此大输出场景下 `send_result` 必须感知入队失败并回 `rc=-3`。
+- Agent 侧离线 out-queue 上限 `MAX_QUEUED = 128`（`KK_MAX_QUEUED` 可配，预算口径见
+  `transport.py` 注释）；队列里只可能有 status 与 result 分块，128 × ≈64KB ≈ 8MB 是断线窗口
+  内单台 Agent 的额外驻留上限。超出会被淘汰，因此大输出场景下 `send_result` 必须感知入队失败
+  并回 `rc=-3`（终态走 QoS0，见 §3.3）。
+  回归锁：`agent/tests/test_transport.py::test_max_queued_budget_stays_inside_agent_envelope`。

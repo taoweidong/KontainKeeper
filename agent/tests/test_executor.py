@@ -1,9 +1,14 @@
 """命令执行器单测。"""
+import os
 import queue
 import sys
+import threading
 import time
 
+import pytest
+
 from kk_agent import executor as ex
+from kk_agent.transport import RC_SEND_FAILED
 
 
 def test_run_shell_ok():
@@ -138,3 +143,80 @@ def test_runner_pool_is_bounded():
     for _ in range(12):
         done.get(timeout=20)
     assert active["max"] <= 3
+
+
+# ---- 积压有界（QR-A12）----
+
+def test_runner_rejects_when_pending_queue_is_full():
+    """队列必须有硬上限：旧实现无界，一次批量下发的内存占用由「点击数」决定。
+
+    溢出时当场回 rc=-3 的失败终态（同步 emit，不等 worker），让服务端那一行
+    收敛成 failed；被拒的任务函数一次都不许执行。
+    """
+    release = threading.Event()
+    started = threading.Event()
+    got = queue.Queue()
+    ran = []
+
+    def blocker():
+        started.set()                # 确认真的被唯一 worker 取走了再开始填队列
+        release.wait(10)
+
+    def parked():
+        release.wait(10)
+
+    def never_runs():
+        ran.append("rejected task ran anyway")
+
+    runner = ex.Runner(lambda cid, res: got.put((cid, res)),
+                       max_workers=1, max_pending=2)
+    runner.submit_fn("c-block", blocker)     # 被唯一 worker 取走并卡住
+    assert started.wait(5), "worker 没取走首个任务，后面的排队断言不成立"
+    runner.submit_fn("c-p1", parked)         # 占满队列（max_pending=2）
+    runner.submit_fn("c-p2", parked)
+    runner.submit_fn("c-reject", never_runs)  # 队列已满 → 当场拒绝
+
+    cid, res = got.get(timeout=5)            # 同步返回，不依赖 worker
+    assert cid == "c-reject"
+    assert res["rc"] == RC_SEND_FAILED
+    assert b"queue full" in res["out"], "回执要说清是被限流拒绝的，不是命令本身失败"
+    assert res["timed_out"] is False and res["truncated"] is False
+
+    release.set()
+    for _ in range(3):                       # block + p1 + p2 的正常回执
+        got.get(timeout=20)
+    assert ran == [], "被拒的任务不能被补执行"
+
+
+def test_pool_submit_reports_overflow():
+    """_Pool.submit 的返回值是调用方判断「要不要自己发回执」的唯一依据。"""
+    started = threading.Event()
+    release = threading.Event()
+    p = ex._Pool(max_workers=1, max_pending=1)
+    p.submit(lambda: (started.set(), release.wait(10)))   # 被 worker 占住
+    assert started.wait(5), "worker 未取走首个任务，容量断言不成立"
+    assert p.submit(lambda: None) is True                 # 填满容量 1 的队列
+    assert p.submit(lambda: None) is False                # 溢出：交回调用方处理
+    release.set()
+
+
+def test_default_pending_bound_is_explicit():
+    """默认积压上限是显式预算，不能退化成「反正一般用不到」。"""
+    assert 0 < ex.MAX_PENDING <= 128, \
+        "MAX_PENDING=%d：过大则批量下发击穿常驻内存口径" % ex.MAX_PENDING
+
+
+@pytest.mark.skipif(os.name != "posix", reason="killpg 分路仅 POSIX")
+def test_kill_tree_permission_error_does_not_break_result(monkeypatch):
+    """killpg 抛 PermissionError（进程已属他人/被守护）时必须吞掉，不能冒成 rc=125。
+
+    旧实现只捕 ProcessLookupError：Windows 上抛 AttributeError、受限环境下抛
+    PermissionError，都会把「超时」误报成「执行错误」并留下孤儿进程。
+    """
+    def deny(*a, **k):
+        raise PermissionError("operation not permitted")
+
+    monkeypatch.setattr(os, "killpg", deny)
+    r = ex.run_shell([sys.executable, "-c", "import time; time.sleep(2)"], timeout=1)
+    assert r["timed_out"] is True and r["rc"] == -1, "杀不掉也要收敛成超时，不能变 rc=125"
+

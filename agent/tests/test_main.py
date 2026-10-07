@@ -36,10 +36,12 @@ class FakeTransport:
         self.frames = []
         self.fail_calls = set(fail_calls)
         self.calls = 0
+        self.urgent = []        # 每次 publish_result 的 urgent 标记（QR-A6）
 
-    def publish_result(self, frame):
+    def publish_result(self, frame, urgent=False):
         i = self.calls
         self.calls += 1
+        self.urgent.append(urgent)
         if i in self.fail_calls:
             return False
         self.frames.append(frame)
@@ -99,6 +101,19 @@ def test_send_result_emits_failure_terminal_when_chunk_dropped():
     assert last["done"] is True
     assert last["rc"] == m.RC_SEND_FAILED
     assert last["truncated"] is True and last["out_b64"] == ""
+
+
+def test_send_result_terminal_retry_is_urgent():
+    """QR-A6：补发的失败终态走 QoS0——QoS1 会被同一个积压一起挡在门外。
+
+    挡住的后果不是「少一段输出」而是「服务端那一行永远停在 running」，
+    于是拿「终态帧可能丢一次」去换「不被自己的积压堵住」，真丢了有服务端超时清扫兜底。
+    """
+    tr = FakeTransport(fail_calls=[0])
+    assert m.send_result(tr, "c-urgent", {"rc": 0, "out": b"x",
+                                          "timed_out": False, "elapsed_ms": 0}) is True
+    assert tr.urgent == [False, True], "首块 QoS1，失败终态必须 urgent=True"
+    assert tr.frames[-1]["rc"] == m.RC_SEND_FAILED
 
 
 def test_send_result_reports_give_up_when_terminal_also_fails():

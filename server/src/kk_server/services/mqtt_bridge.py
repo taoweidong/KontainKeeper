@@ -27,10 +27,10 @@ import time
 
 import paho.mqtt.client as mqtt
 
+from .. import ACCEPT_PROTO_VERS, PROTO_VER
 from ..config import ip_in_whitelist
 from ..logsetup import get_logger
 from ..models.version import version_lt
-
 
 def _b64_text(raw):
     """结果帧里的输出是 base64：更新失败原因要走它回传。"""
@@ -56,11 +56,16 @@ AUDIT_THROTTLE = 60
 
 
 class MqttBridge:
-    def __init__(self, store, settings, agent_ips, loop=None, proto_ver=3):
+    def __init__(self, store, settings, agent_ips, loop=None, proto_ver=None,
+                 accept_proto_vers=None):
         self.store = store
         self.s = settings
         self.agent_ips = list(agent_ips)   # ip_network 对象列表；空 = 不设限
-        self.proto_ver = proto_ver
+        # proto_ver 缺省取包常量：测试显式传 3 时 accept 仍是窗口集合，存量 v3 帧照常受理
+        self.proto_ver = proto_ver if proto_ver is not None else PROTO_VER
+        # v4 兼容窗口（P1）：v3 → v4 只新增可选字段，不接收就等于一次升级全网闪断
+        self.accept_proto_vers = (tuple(accept_proto_vers)
+                                  if accept_proto_vers else ACCEPT_PROTO_VERS)
         self.loop = loop
         self.prefix = (settings.mqtt_prefix or "kk/v1").strip("/")
         self.connected = threading.Event()
@@ -83,6 +88,9 @@ class MqttBridge:
                       # 上报间隔低于 KK_INTERVAL_MIN 的心跳数：500 台规模下这是
                       # 发现「某批机器被误配成 1s 上报」的唯一手段
                       "interval_violation": 0,
+                      # v4 兼容窗口内收到的 v3 旧协议帧数：窗口关闭前据此确认存量
+                      # Agent 是否已全部升级（否则关窗口就是全网闪断）
+                      "proto_v3_received": 0,
                       "last_msg_ts": 0, "started_at": int(time.time())}
         # _result_locks 的最近使用时间（cid -> ts）：sweep 周期回收永不到终态的条目
         self._result_lock_ts = {}
@@ -227,7 +235,14 @@ class MqttBridge:
                               "kind": "status" if "online" in body else "hb"})
 
     async def _on_status(self, host, body):
-        if int(body.get("proto_ver") or 0) != self.proto_ver:
+        # v4 兼容窗口：proto_ver ∈ accept_proto_vers 才受理。窗口外的（更老的
+        # v1/v2 或更新但未开放的版本）一律拒收并审计——协议不匹配的帧按新语义
+        # 解析会得到错的在线状态，比丢掉更危险。
+        try:
+            proto = int(body.get("proto_ver") or 0)
+        except (TypeError, ValueError):
+            proto = 0
+        if proto not in self.accept_proto_vers:
             self.stats["rejected"] += 1
             if not self._audit_throttled(("proto_mismatch", host)):
                 await self.store.add_audit("mqtt", "proto_mismatch",
@@ -238,11 +253,20 @@ class MqttBridge:
             return
         online = bool(body.get("online"))
         agent_ver = str(body.get("agent_ver") or "")
-        # reason（B6.1）：Agent 自更新前会自报 reason=updating，落库后离线视图可辨
-        await self.store.set_online(host, online, ts=body.get("ts"),
-                                    image=str(body.get("image") or ""),
-                                    agent_ver=agent_ver,
-                                    reason=str(body.get("reason") or ""))
+        # v4 主机元信息：env/group/labels/caps/proto_ver/docker 摘要。
+        # 只在 online 路径落库（离线帧可能是缺字段的 LWT），见 Store.set_online。
+        await self.store.set_online(
+            host, online, ts=body.get("ts"),
+            image=str(body.get("image") or ""),
+            agent_ver=agent_ver,
+            reason=str(body.get("reason") or ""),
+            ip=body.get("ip") or "",
+            env=body.get("env") if isinstance(body.get("env"), dict) else {},
+            group=body.get("group") or "",
+            labels=body.get("labels") if isinstance(body.get("labels"), dict) else {},
+            caps=body.get("caps") if isinstance(body.get("caps"), dict) else {},
+            proto_ver=proto,
+            docker=body.get("docker") if isinstance(body.get("docker"), dict) else {})
         self.stats["status"] += 1
         if online:
             # 状态帧是升级成功与否的**权威佐证**：execv 前的回执帧可能来不及发出，

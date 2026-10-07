@@ -35,6 +35,61 @@ _UPDATING_REASON_GRACE = 120
 _DUMMY_SALT = "0" * 32
 
 
+def _clip(value, n):
+    """收敛到列宽：os/kernel 这类字符串由 Agent 自报，超长会在 MySQL 严格模式下报错。"""
+    s = str(value or "").strip()
+    return s[:n]
+
+
+def _jtext(obj):
+    """结构化字段（labels / caps）入库：空对象落空串，前端按「空 = 未上报」处理。"""
+    return json.dumps(obj, ensure_ascii=False) if obj else ""
+
+
+# v4 机队筛选：主机类型白名单与排序白名单。
+# 两者都是「用户输入直接拼进 SQL 的地方」——列名无法参数化，类型枚举不可信，
+# 所以宁可在这里显式穷举，也不在控制器里做 if/else 拼条件。
+_HOST_TYPES = ("container", "vm", "metal")
+_SORTS = ("last_seen", "cpu", "mem_mb", "disk_pct", "pod")
+
+
+def _host_filters(group=None, host_type=None, docker_unhealthy=None,
+                  proto_ver=None, online=None, keyword=None):
+    """主机筛选条件列表（list_containers 与 count_containers 共用，避免两处漂移）。"""
+    conds = []
+    if group is not None and str(group).strip():
+        conds.append(containers.c.group_name == str(group).strip()[:64])
+    if host_type is not None and str(host_type).strip():
+        # 不在白名单内的类型直接忽略：静默查不到比 500 更难排查
+        ht = str(host_type).strip().lower()
+        if ht in _HOST_TYPES:
+            conds.append(containers.c.host_type == ht)
+    if docker_unhealthy:
+        # 只要「有异常容器」这一种语义：0 与未探测（同为 0）在此场景等价
+        conds.append(containers.c.docker_unhealthy > 0)
+    if online is not None:
+        conds.append(containers.c.online == (1 if online else 0))
+    if proto_ver is not None:
+        try:
+            conds.append(containers.c.proto_ver == int(proto_ver))
+        except (TypeError, ValueError):
+            pass
+    kw = str(keyword or "").strip()
+    if kw:
+        # autoescape：用户搜 "100%" 时 % 是字面量而不是通配符
+        like = kw[:64]
+        conds.append(or_(containers.c.pod.contains(like, autoescape=True),
+                        containers.c.image.contains(like, autoescape=True),
+                        containers.c.os_name.contains(like, autoescape=True),
+                        containers.c.group_name.contains(like, autoescape=True)))
+    return conds
+
+
+def _sort_col(sort):
+    """排序字段归一：未知值回落 last_seen（列表的默认语义）。"""
+    return sort if sort in _SORTS else "last_seen"
+
+
 class Store:
     """异步存储。全部方法是协程——调用方 await，事件循环不再被数据库拖住。"""
 
@@ -189,14 +244,42 @@ class Store:
              "last_metrics": "", "online": 0, "status_ts": 0},
             ["pod"], ["image", "agent_ver", "hb_interval", "last_seen"])
 
-    async def set_online(self, pod, online, ts=None, image="", agent_ver="", reason=""):
+    async def set_online(self, pod, online, ts=None, image="", agent_ver="",
+                         reason="", ip="", env=None, group="", labels=None,
+                         caps=None, proto_ver=None, docker=None):
         """在线真相来自 Broker：上线是 retained status，下线是 LWT 或优雅 stop。
 
         reason 是 Agent 自报的状态原因（B6.1：自更新前自报 reason=updating）。LWT
         的 reason 恒为空且紧随 updating 之后到达，这里对「空 reason 覆盖刚写入的
         updating」做一次宽限保留，否则升级窗口仍会显示成「原因未知的离线」。
+
+        v4 起 status 帧另带主机元信息（env/group/labels/caps/proto_ver/docker 摘要），
+        全部**只在上线路径落库**：离线帧可能是 LWT（Broker 在断连后补发，字段可能缺失
+        或来自旧版本 Agent），拿旧数据覆盖新元信息只会把机队视图改脏。
         """
         now = int(ts or time.time())
+        # v4 元信息归一：env 里挑列表/详情要用的标量，坏值一律回落空串
+        env = env if isinstance(env, dict) else {}
+        meta = {
+            "host_type": _clip(env.get("virt") or "container", 16) or "container",
+            "os_name": _clip(env.get("os"), 80),
+            "kernel": _clip(env.get("kernel"), 80),
+            "arch": _clip(env.get("arch"), 20),
+            "ip": _clip(ip, 64),
+            "group_name": _clip(group, 64),
+            "labels": _jtext(labels if isinstance(labels, dict) else {}),
+            "caps": _jtext(caps if isinstance(caps, dict) else {}),
+        }
+        try:
+            meta["proto_ver"] = int(proto_ver) if proto_ver is not None else 3
+        except (TypeError, ValueError):
+            meta["proto_ver"] = 3
+        dk = docker if isinstance(docker, dict) else {}
+        for key in ("total", "running", "unhealthy"):
+            try:
+                meta["docker_" + key] = max(0, int(dk.get(key) or 0))
+            except (TypeError, ValueError):
+                meta["docker_" + key] = 0
         if not online:
             keep = ""
             if not reason:
@@ -213,9 +296,9 @@ class Store:
             {"pod": pod, "image": image or "", "agent_ver": agent_ver or "",
              "hb_interval": 60, "first_seen": now, "last_seen": now,
              "last_metrics": "", "online": 1, "status_ts": now,
-             "status_reason": str(reason or "online")},
+             "status_reason": str(reason or "online"), **meta},
             ["pod"], ["online", "status_ts", "last_seen", "image", "agent_ver",
-                      "status_reason"])
+                      "status_reason"] + list(meta.keys()))
 
     async def touch(self, pod):
         return await self._run(update(containers).where(containers.c.pod == pod)
@@ -245,6 +328,7 @@ class Store:
             await conn.execute(update(containers).where(containers.c.pod == pod).values(
                 last_seen=now, status_ts=now,
                 hb_interval=int(msg.get("interval") or 60), last_metrics=raw,
+                ip=_clip(msg.get("ip"), 64),
                 **summary))
         return ts
 
@@ -259,27 +343,48 @@ class Store:
         return {"cpu": _num(metrics.get("cpu")), "mem_mb": _num(metrics.get("mem_mb")),
                 "disk_pct": max(pcts) if pcts else 0.0}
 
-    async def list_containers(self, view="full", limit=None, offset=None):
+    async def list_containers(self, view="full", limit=None, offset=None,
+                              group=None, host_type=None, docker_unhealthy=None,
+                              proto_ver=None, online=None, keyword=None,
+                              sort="last_seen"):
         """full = 全列（含完整 last_metrics），summary = 只读摘要列。
 
         摘要视图存在的理由：500 台 × 每帧 2~4KB 的 last_metrics 全量解析是列表接口
         的主要开销，而列表页只显示在线/CPU/内存/磁盘告警几个标量。
 
         limit/offset 用于 full 视图分页（P2：无上限时 500 台完整指标一次性拉回过量）。
+
+        v4 起筛选全部下推 SQL：分组、主机类型、Docker 异常、协议版本、关键字。
+        前端再本地过一遍会让「导出」与「所见」不一致，500 台时还会把整个机队拖进
+        浏览器。排序走 _SORTS 白名单——列名无法参数化，裸拼等于开注入口。
         """
         if view not in ("full", "summary"):
             raise ValueError("view 需为 full 或 summary，收到 %r" % view)
         q = (select(*(containers.c[c] for c in _SUMMARY_COLS))
              if view == "summary" else select(containers))
-        q = q.order_by(containers.c.last_seen.desc())
+        for cond in _host_filters(group=group, host_type=host_type,
+                                  docker_unhealthy=docker_unhealthy,
+                                  proto_ver=proto_ver, online=online, keyword=keyword):
+            q = q.where(cond)
+        col = containers.c[_sort_col(sort)]
+        q = q.order_by(col.asc() if sort == "pod" else col.desc())
         if limit is not None:
             q = q.limit(int(limit))
         if offset:
             q = q.offset(int(offset))
         return await self._all(q)
 
-    async def count_containers(self):
-        row = await self._one(select(func.count().label("n")).select_from(containers))
+    async def count_containers(self, group=None, host_type=None,
+                               docker_unhealthy=None, proto_ver=None,
+                               online=None, keyword=None):
+        """筛选后的台数：与 list_containers 共用同一套条件，分页控件才不会说谎。"""
+        conds = _host_filters(group=group, host_type=host_type,
+                              docker_unhealthy=docker_unhealthy,
+                              proto_ver=proto_ver, online=online, keyword=keyword)
+        q = select(func.count().label("n")).select_from(containers)
+        for cond in conds:
+            q = q.where(cond)
+        row = await self._one(q)
         return row["n"] if row else 0
 
     async def agent_versions(self, pods):

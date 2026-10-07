@@ -17,9 +17,15 @@ import subprocess
 import threading
 import time
 
+from .transport import RC_SEND_FAILED
+
 SPAWN_ERRORS = (FileNotFoundError, PermissionError, NotADirectoryError, ValueError)
 
 _READ_CHUNK = 65536  # 读取线程的单次排水块大小
+# 工作线程之外允许积压的任务数（QR-A12）。旧实现队列无界：服务端一次点 500 台
+# ×大输出命令，内存占用就由「点击数」决定，与 25–35MB 的常驻口径完全脱钩。
+# 溢出当场回 rc=-3 的失败终态，让服务端那一行收敛成 failed。
+MAX_PENDING = 64
 
 
 def run_shell(argv, timeout=30, max_out=4 * 1024 * 1024, use_shell=False):
@@ -150,8 +156,8 @@ class _Pool:
     任务异常必须记日志而不是静默吞掉——回调签名不匹配这类 bug 曾因此隐身数个版本。
     """
 
-    def __init__(self, max_workers=8, log=None):
-        self._q = queue.Queue()
+    def __init__(self, max_workers=8, log=None, max_pending=MAX_PENDING):
+        self._q = queue.Queue(maxsize=max_pending)
         self._log = log
         for _ in range(max(1, max_workers)):
             threading.Thread(target=self._loop, daemon=True, name="kk-task").start()
@@ -166,23 +172,30 @@ class _Pool:
                     self._log.exception("task raised in worker thread")
 
     def submit(self, fn):
-        self._q.put(fn)
+        """入队成功返回 True；队列满返回 False，由调用方负责回执。"""
+        try:
+            self._q.put_nowait(fn)
+            return True
+        except queue.Full:
+            return False
 
 
 class Runner:
     """把命令派发到后台线程池，结果经 emit(cmd_id, result) 回调送出。"""
 
-    def __init__(self, emit, max_out=4 * 1024 * 1024, max_workers=8, allow_shell=True, log=None):
+    def __init__(self, emit, max_out=4 * 1024 * 1024, max_workers=8, allow_shell=True, log=None,
+                 max_pending=MAX_PENDING):
         self.emit = emit
         self.max_out = max_out
         self.allow_shell = allow_shell
         self._log = log
         self._pool = None
         self._max_workers = max_workers
+        self._max_pending = max_pending
 
     def _get_pool(self):
         if self._pool is None:
-            self._pool = _Pool(self._max_workers, self._log)
+            self._pool = _Pool(self._max_workers, self._log, self._max_pending)
         return self._pool
 
     def submit(self, cmd):
@@ -199,7 +212,11 @@ class Runner:
                        lambda: run_shell(argv, timeout, self.max_out, use_shell))
 
     def submit_fn(self, cmd_id, fn):
-        """通用后台任务（shell 命令、collect 采集、插件重载）。"""
+        """通用后台任务（shell 命令、collect 采集、插件重载）。
+
+        结果帧的**唯一**出口是这里的 `emit`：任务函数只返回结果，不要再自己发帧
+        （QR-A19 就是 update 分支两处都发导致台账计数翻倍）。
+        """
 
         def work():
             try:
@@ -209,4 +226,12 @@ class Runner:
                        "timed_out": False, "elapsed_ms": 0, "truncated": False}
             self.emit(cmd_id, res)
 
-        self._get_pool().submit(work)
+        if self._get_pool().submit(work):
+            return
+        # 积压满：当场拒绝并回失败终态，比让命令在内存里排队更诚实（QR-A12）
+        if self._log:
+            self._log.bind(cmd=cmd_id).warning(
+                "task queue full (%d pending), command rejected", self._max_pending)
+        self.emit(cmd_id, {"rc": RC_SEND_FAILED,
+                           "out": b"kk-agent: task queue full, try again later",
+                           "timed_out": False, "elapsed_ms": 0, "truncated": False})

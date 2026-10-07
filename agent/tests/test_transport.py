@@ -34,6 +34,19 @@ class _NullLog:
         return lambda *a, **k: None
 
 
+class _RecLog:
+    """记录 warning 的日志替身：退出路径的静默失败是本批次要修的缺陷，得有东西能看见。"""
+
+    def __init__(self):
+        self.warnings = []
+
+    def warning(self, msg, *args):
+        self.warnings.append(msg % args if args else msg)
+
+    def __getattr__(self, _name):
+        return lambda *a, **k: None
+
+
 class _Info:
     """paho publish() 返回的 MQTTMessageInfo 的替身：记录 wait_for_publish 的调用。"""
 
@@ -49,18 +62,23 @@ class _Info:
 class FakeClient:
     """记录所有对外调用；publish 的返回码由测试指定。"""
 
-    def __init__(self, publish_rc=mqtt.MQTT_ERR_SUCCESS, connected=False):
+    def __init__(self, publish_rc=mqtt.MQTT_ERR_SUCCESS, connected=False,
+                 publish_exc=None):
         self.published = []
         self.subscribed = []
         self.will = None
         self.publish_rc = publish_rc
+        self.publish_exc = publish_exc
         self._connected = connected
         self.tls_calls = []
         self.max_queued = None
         self.reconnect_delay = None
         self.clean_session = None
         self.client_id = None
-        self.waited = None          # announce_update 等 PUBACK 的超时值（B6.1）
+        self.waited = None          # 进程消失前的 PUBACK 等待超时值（B6.1 / QR-A14）
+        self.disconnected = False   # stop() 是否真的走到了 disconnect
+        self.stopped = False        # stop() 是否关掉了网络循环
+        self.events = []            # publish / disconnect / loop_stop 的先后顺序
 
     def tls_set(self, **kw):
         self.tls_calls.append(kw)
@@ -81,17 +99,28 @@ class FakeClient:
         self.subscribed.append((topic, qos))
 
     def publish(self, topic, payload, qos=0, retain=False):
+        self.events.append("publish")
+        if self.publish_exc is not None:
+            raise self.publish_exc
         self.published.append({"topic": topic, "payload": payload, "qos": qos, "retain": retain})
         return _Info(self.publish_rc, self)
+
+    def disconnect(self):
+        self.events.append("disconnect")
+        self.disconnected = True
+
+    def loop_stop(self):
+        self.events.append("loop_stop")
+        self.stopped = True
 
     def is_connected(self):
         return self._connected
 
 
-def make_transport(monkeypatch, cfg=None, **fake_kw):
+def make_transport(monkeypatch, cfg=None, log=None, **fake_kw):
     fake = FakeClient(**fake_kw)
     monkeypatch.setattr(tp.mqtt, "Client", lambda *a, **k: fake)
-    tr = tp.Transport(dict(CFG, **(cfg or {})), _NullLog())
+    tr = tp.Transport(dict(CFG, **(cfg or {})), log or _NullLog())
     return tr, fake
 
 
@@ -309,6 +338,72 @@ def test_stop_announces_offline_before_disconnect(monkeypatch):
     body = json.loads(fake.published[-1]["payload"])
     assert body["online"] is False and body["reason"] == "stopping"
     assert tr.connected.is_set() is False
+
+
+# ---- 退出路径（QR-A14）----
+
+def test_stop_waits_for_puback_before_disconnecting(monkeypatch):
+    """优雅退出的三连：发 offline 帧 → 等 PUBACK → 才 disconnect。
+
+    干净的 DISCONNECT 不触发 LWT，服务端只能靠这一帧判下线；而 disconnect 会掐断
+    还在发送队列里的帧。不等 PUBACK 就等于发了个寂寞 —— 顺序 + 等待都是回归锁。
+    """
+    tr, fake = make_transport(monkeypatch, connected=True)
+    tr.stop()
+    assert fake.waited == 1.0, "必须等 PUBACK，否则 offline 帧会随 disconnect 丢失"
+    assert fake.events == ["publish", "disconnect", "loop_stop"], \
+        "收尾顺序不能颠倒：publish → disconnect → loop_stop"
+    assert fake.disconnected and fake.stopped
+
+
+def test_stop_is_idempotent_when_disconnected(monkeypatch):
+    """已断线时别再发状态帧（否则 rc 分支掩盖真实原因），但仍要收尾。"""
+    tr, fake = make_transport(monkeypatch, connected=False)
+    tr.stop()
+    assert fake.published == []
+    assert fake.events == ["disconnect", "loop_stop"]
+
+
+def test_stop_logs_failures_instead_of_swallowing_them(monkeypatch):
+    """三段收尾过去全静默 `except: pass`：退出路径炸了现场什么都没有。
+
+    现在 publish 抛错必须留下 warning，且后续 disconnect/loop_stop 照常执行
+    ——不能因为一帧没发出去就卡住退出。
+    """
+    rec = _RecLog()
+    tr, fake = make_transport(monkeypatch, connected=True, log=rec,
+                              publish_exc=RuntimeError("broker went away"))
+    tr.stop()
+    assert any("offline frame failed" in w for w in rec.warnings), rec.warnings
+    assert fake.disconnected and fake.stopped, "收尾不能被单点失败打断"
+
+
+# ---- 失败终态的绕行通道（QR-A6）----
+
+def test_publish_result_urgent_bypasses_offline_queue(monkeypatch):
+    """urgent=True 走 QoS0：out-queue 被大输出塞满时，QoS1 终态会一起被拒收。"""
+    tr, fake = make_transport(monkeypatch, connected=True)
+    tr.publish_result({"id": "c1", "done": True})
+    assert fake.published[-1]["qos"] == tp.QOS_CMD
+    tr.publish_result({"id": "c1", "done": True, "rc": tp.RC_SEND_FAILED}, urgent=True)
+    assert fake.published[-1]["qos"] == tp.QOS_HB, "失败终态必须绕开排队，当场发出"
+
+
+def test_publish_result_default_is_qos1(monkeypatch):
+    """默认路径不许被 urgent 优化带跑偏：常规分块仍然必须保证送达。"""
+    tr, fake = make_transport(monkeypatch, connected=True)
+    tr.publish_result({"id": "c1"})
+    assert fake.published[-1]["qos"] == tp.QOS_CMD
+
+
+def test_max_queued_budget_stays_inside_agent_envelope():
+    """离线排队的最坏内存占用是显式预算（QR-A22），不能靠「反正一般用不满」。
+
+    单块 base64 后 ≈64KB：队列上限 × 64KB 就是断线窗口内 Agent 能撑到的额外 RSS。
+    调大它必须先调这条预算，否则 25–35MB 的常驻口径会被一条长断网击穿。
+    """
+    worst_mb = tp.MAX_QUEUED * 64 * 1024 / (1024 * 1024)
+    assert worst_mb <= 10, "out-queue 最坏占用 %.1fMB，超出主机额外预算" % worst_mb
 
 
 # ---- 版本治理契约（D1.4）----

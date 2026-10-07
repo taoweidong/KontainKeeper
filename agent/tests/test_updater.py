@@ -304,6 +304,54 @@ def test_download_binary_enforces_size_cap():
         srv.server_close()   # 不关监听套接字，GC 时 ResourceWarning 会炸到后面的用例
 
 
+def test_manifest_fetch_is_size_capped():
+    """QR-A23：清单侧必须有与二进制侧对称的帽子。
+
+    `KK_UPDATE_URL` 一旦指向异变的源，旧的 `resp.read()` 会把整段超大响应一次性
+    成形，Agent 直接被顶出内存。正常清单是 KB 级 JSON，1MB 之外只能是坏数据。
+    """
+    import http.server
+    import threading
+
+    class _H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(4096))
+            self.end_headers()
+            self.wfile.write(b"z" * 4096)   # 不带 Content-Length 也照样要封顶
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), _H)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        with pytest.raises(RuntimeError, match="manifest too large"):
+            updater._http_get("http://127.0.0.1:%d/latest" % port, max_bytes=1024)
+        # 同样载荷，在默认上限内必须正常返回（证明拒绝来自封顶而非读取本身）
+        assert updater._http_get("http://127.0.0.1:%d/latest" % port,
+                                 max_bytes=64 * 1024) == "z" * 4096
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_manifest_cap_is_explicit_and_small():
+    """清单上限是显式预算，不许和 64MB 的二进制帽子混用。"""
+    assert updater.MAX_MANIFEST_BYTES <= 1024 * 1024
+    assert updater.MAX_MANIFEST_BYTES < updater.MAX_BIN_BYTES
+
+
+def test_spawn_apply_gate_is_gone():
+    """QR-A18′：曾经有个绕过形态闸门的入口（spawn_apply → apply_manifest(unsafe)）。
+
+    保留它就等于留了一条「任何调用点都能跳过 P0-1 判定」的暗道；实际无人调用，
+    已删除。这条用例是防复活的回归锁。
+    """
+    assert not hasattr(updater, "spawn_apply")
+
+
 # ---- A6.1：下载 url 解析（绝对即用 / 相对才回落）----
 
 def test_update_absolute_url_used_directly(tmp_path, monkeypatch):

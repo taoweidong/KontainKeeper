@@ -26,7 +26,8 @@ from .transport import RC_SEND_FAILED, Transport, TransportError
 
 CHUNK = 48 * 1024  # 命令输出分块大小（base64 前）
 # 命令 id 去重窗口（QR-A1）：QoS1 持久会话是至少一次投递，PUBACK 竞态窗口内
-# Broker 会重发同一命令。有界 LRU 防 cid 无限累积；512 覆盖 max_queued 的量级。
+# Broker 会重发同一命令。有界 LRU 防 cid 无限累积；512 项 × 短 id 只有几十 KB，
+# 且覆盖得住离线队列上限（KK_MAX_QUEUED，默认 128）内所有命令的重投。
 DEDUP_MAX = 512
 
 
@@ -63,7 +64,9 @@ def send_result(tr, cmd_id, res):
                          elapsed_ms=int(res.get("elapsed_ms", 0)),
                          truncated=bool(res.get("truncated")))
         if not tr.publish_result(frame):
-            return tr.publish_result(_fail_frame(cmd_id, i, total, res))
+            # 分块没能进队列 → 补发失败终态，并且走 QoS0 抢在自己的积压前面
+            # （QR-A6：QoS1 终态帧同样会被 QUEUE_SIZE 挡下，那一行就永远 running）
+            return tr.publish_result(_fail_frame(cmd_id, i, total, res), urgent=True)
     return True
 
 

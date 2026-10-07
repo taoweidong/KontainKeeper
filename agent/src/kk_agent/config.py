@@ -5,7 +5,9 @@ import socket
 import sys
 
 AGENT_VER = "0.3.0"
-PROTO_VER = 3  # MQTT 主题布局与帧格式（v3 = 去 token，上行帧携带 ip 供白名单校验）
+# v4 = 上报对象从「K8S 容器 IDE」扩为任意 Linux 主机：status 帧新增 env/group/labels/caps，
+#     服务端接受 v3/v4 双版本窗口（见 kk_server.ACCEPT_PROTO_VERS）
+PROTO_VER = 4
 
 DEFAULT_TOPIC_PREFIX = "kk/v1"
 
@@ -17,6 +19,25 @@ _HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,118}$")
 
 def _env_bool(env, key, default=False):
     return env.get(key, "").strip().lower() in ("1", "true", "yes", "on") if env.get(key) else default
+
+
+def _parse_labels(raw):
+    """`KK_LABELS` → dict：`k=v,k2=v2`。
+
+    标签是机队筛选的主入口（500 台只按名字搜等于没有筛选），因此解析要宽容：
+    无 `=` 的片段按 `key: ""` 收下、重复 key 后者覆盖、非法字符不影响其余项。
+    """
+    out = {}
+    for part in (raw or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        key, _, val = part.partition("=")
+        key = key.strip()
+        if not key:
+            continue
+        out[key[:64]] = val.strip()[:128]
+    return out
 
 
 def load(env=None, **overrides):
@@ -51,6 +72,10 @@ def load(env=None, **overrides):
                  or env.get("KK_POD_NAME", "").strip()  # 兼容旧变量名
                  or socket.gethostname()),
         "image": env.get("KK_IMAGE", "").strip(),
+        # 机队分组与标签（v4）：只来自环境变量，不引入配置文件（项目约定）。
+        # group 是单值长串维度（一个组），labels 是 k=v 多值维度（可多维筛选）
+        "group": env.get("KK_GROUP", "").strip()[:64],
+        "labels": _parse_labels(env.get("KK_LABELS", "")),
 
         # ---- 采集 ----
         "interval": max(1, _int("KK_INTERVAL", 60)),
@@ -68,9 +93,10 @@ def load(env=None, **overrides):
         # ---- 命令执行 ----
         "max_out_mb": max(1, _int("KK_MAX_OUT_MB", 4)),
         "max_workers": max(1, min(_int("KK_MAX_WORKERS", 8), 64)),
-        # 断线期间 paho out-queue 的消息上限。一条 4MB 输出约 86 块，
-        # 默认 512 可缓约 6 条大命令；超量回 rc=-3 失败终态而非静默丢弃。
-        "max_queued": max(16, _int("KK_MAX_QUEUED", 512)),
+        # 断线期间 paho out-queue 的消息上限（预算口径见 transport.MAX_QUEUED 注释）：
+        # 一条 4MB 输出约 86 块，默认 128 可缓约 1.5 条大命令 ≈8MB，够装下一轮
+        # 应急回执；超量回 rc=-3 失败终态而非静默丢弃，也不把 RSS 顶出 25–35MB 口径。
+        "max_queued": max(16, _int("KK_MAX_QUEUED", 128)),
 
         # ---- 自更新（独立二进制形态下生效）----
         "update_url": env.get("KK_UPDATE_URL", "").strip(),

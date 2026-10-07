@@ -36,7 +36,8 @@ def create_app(env=None):
     store = Store(normalize_url(settings.db_url, settings.db_path))
 
     # 未配 Broker 时允许只做只读管理（老库查看、数据导出），不拦启动
-    bridge = (MqttBridge(store, settings, settings.agent_ips, proto_ver=PROTO_VER)
+    bridge = (MqttBridge(store, settings, settings.agent_ips, proto_ver=PROTO_VER,
+                         accept_proto_vers=settings.accept_proto_vers)
               if settings.mqtt_url else None)
     if bridge is None:
         log.warning("KK_MQTT_URL 未配置：不连接 Broker，Agent 指标与命令通道不可用")

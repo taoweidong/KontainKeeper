@@ -33,6 +33,7 @@ from . import config as kk_config
 
 UPDATE_PATH = "/api/system/agent"
 MAX_BIN_BYTES = 64 * 1024 * 1024  # 单文件上限 64MB，防 OOM
+MAX_MANIFEST_BYTES = 1024 * 1024  # 清单上限 1MB（QR-A23）：正常清单不到它的零头
 _CHUNK = 256 * 1024
 
 # 串行化自更新（轮询检查与服务端推送可能并发触发），避免两次下载竞争同一二进制
@@ -157,10 +158,25 @@ def _build_opener(insecure):
     return urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
 
 
-def _http_get(url, timeout=15, as_bytes=False, insecure=False):
+def _http_get(url, timeout=15, as_bytes=False, insecure=False,
+              max_bytes=MAX_MANIFEST_BYTES):
+    """流式读取并**硬性封顶**（QR-A23）。
+
+    二进制侧早有 MAX_BIN_BYTES 帽子，清单侧漏了同一半：`KK_UPDATE_URL` 一旦指向
+    异变的源，超大响应体会在 `resp.read()` 里一次性成形，把 Agent 直接顶出内存。
+    清单是 KB 级 JSON，1MB 之外只能是坏数据。
+    """
     req = urllib.request.Request(url)
+    buf = bytearray()
     with _build_opener(insecure).open(req, timeout=timeout) as resp:
-        data = resp.read()
+        while True:
+            chunk = resp.read(_CHUNK)
+            if not chunk:
+                break
+            buf.extend(chunk)
+            if len(buf) > max_bytes:
+                raise RuntimeError("manifest too large: >%d bytes" % max_bytes)
+    data = bytes(buf)
     return data if as_bytes else data.decode("utf-8", "replace")
 
 
@@ -440,8 +456,3 @@ def check_update(cfg, log, on_before_restart=None):
 def spawn_check(cfg, log, on_before_restart=None):
     threading.Thread(target=check_update, args=(cfg, log, on_before_restart),
                      daemon=True, name="kk-update").start()
-
-
-def spawn_apply(cfg, log, manifest):
-    threading.Thread(target=apply_manifest, args=(cfg, log, manifest), daemon=True,
-                     name="kk-update-push").start()

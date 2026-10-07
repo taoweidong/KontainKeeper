@@ -40,6 +40,27 @@ containers = Table(
     Column("cpu", Float),
     Column("mem_mb", Float),
     Column("disk_pct", Float),
+    # ---- v4：任意 Linux 主机（不再只是 K8S 容器 IDE）----
+    # host_type：container / vm / metal。存量行由 _ADD_COLUMNS 回落 container，
+    #            既保持旧语义又无需数据迁移。
+    Column("host_type", String(16), nullable=False, server_default="container"),
+    Column("os_name", String(80), nullable=False, server_default=""),
+    Column("kernel", String(80), nullable=False, server_default=""),
+    Column("arch", String(20), nullable=False, server_default=""),
+    # ip：最近一帧自报出口 IP（v3 白名单校验用），总览页副行展示
+    Column("ip", String(64), nullable=False, server_default=""),
+    # group_name / labels：机队筛选的两个维度（来自 Agent KK_GROUP / KK_LABELS）
+    Column("group_name", String(64), nullable=False, server_default=""),
+    Column("labels", _long_text(), nullable=False, server_default=""),
+    # caps：能力声明 JSON（{"shell":true,"docker":true,...}）。服务端据此在源头
+    #       拦住「这台机器干不了」的命令，而不是让它降级执行
+    Column("caps", _long_text(), nullable=False, server_default=""),
+    # docker_*：Docker 摘要冗余列（v4 后的容器阶段写入，此阶段恒 0）
+    Column("docker_total", Integer, nullable=False, server_default="0"),
+    Column("docker_running", Integer, nullable=False, server_default="0"),
+    Column("docker_unhealthy", Integer, nullable=False, server_default="0"),
+    # 该主机上报的协议版本：兼容窗口期据此把「待升级」标出来
+    Column("proto_ver", Integer, nullable=False, server_default="3"),
 )
 
 heartbeats = Table(
@@ -158,15 +179,33 @@ ONLINE_GRACE = 180
 
 # 列表摘要视图只读这几列：完整 last_metrics（每帧 2~4KB JSON）不进列表响应。
 # 500 台 × 4KB = 2MB 的 JSON 解析开销，占了列表接口耗时的绝大部分。
+# v4 追加的仍是**标量或极小 JSON**（caps/labels 里 labels 可能被运维写大，故不入列）：
+# 分组/类型/Docker 异常/协议版本都是总览页的筛选与列，第二次查询换它们就是 N+1。
 _SUMMARY_COLS = ["pod", "image", "agent_ver", "hb_interval", "online",
-                 "last_seen", "cpu", "mem_mb", "disk_pct", "status_reason"]
+                 "last_seen", "cpu", "mem_mb", "disk_pct", "status_reason",
+                 "host_type", "os_name", "ip", "group_name", "caps",
+                 "docker_total", "docker_running", "docker_unhealthy", "proto_ver"]
 
 # 既有库补列清单：create_all 不会给已存在的表加列，升级后必须自己 ALTER。
 # 类型写三库都认的写法（DOUBLE PRECISION / BIGINT），避免再分支。
 _ADD_COLUMNS = {
     "kk_containers": [("cpu", "DOUBLE PRECISION"), ("mem_mb", "DOUBLE PRECISION"),
                       ("disk_pct", "DOUBLE PRECISION"),
-                      ("status_reason", "VARCHAR(20) DEFAULT ''")],
+                      ("status_reason", "VARCHAR(20) DEFAULT ''"),
+                      # v4：host_type 缺省 container —— 旧库里的行本来就是容器，
+                      # 回落值必须与旧语义一致，不能图省事落空串
+                      ("host_type", "VARCHAR(16) DEFAULT 'container'"),
+                      ("os_name", "VARCHAR(80) DEFAULT ''"),
+                      ("kernel", "VARCHAR(80) DEFAULT ''"),
+                      ("arch", "VARCHAR(20) DEFAULT ''"),
+                      ("ip", "VARCHAR(64) DEFAULT ''"),
+                      ("group_name", "VARCHAR(64) DEFAULT ''"),
+                      ("labels", "TEXT DEFAULT ''"),
+                      ("caps", "TEXT DEFAULT ''"),
+                      ("docker_total", "INTEGER DEFAULT 0"),
+                      ("docker_running", "INTEGER DEFAULT 0"),
+                      ("docker_unhealthy", "INTEGER DEFAULT 0"),
+                      ("proto_ver", "INTEGER DEFAULT 3")],
     "kk_commands": [("out_purged", "INTEGER DEFAULT 0"),
                     ("last_seq", "INTEGER DEFAULT -1"),
                     # 不带引号：MySQL 严格模式下 'VARCHAR' 被引号包住会解析失败
@@ -180,4 +219,7 @@ _ADD_COLUMNS = {
 # 名字三库通用（MySQL 索引名表内唯一，PG/SQLite schema 内唯一，全库小写不冲突）。
 _ADD_INDEXES = {
     "kk_heartbeats": [("idx_hb_ts", ("ts",))],
+    # v4：分组与主机类型是总览页的常驻筛选项，500 台时靠表扫会拖慢列表接口
+    "kk_containers": [("idx_ct_group", ("group_name",)),
+                      ("idx_ct_host_type", ("host_type",))],
 }

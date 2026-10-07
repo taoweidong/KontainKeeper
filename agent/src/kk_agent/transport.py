@@ -14,12 +14,12 @@ Agent 主线程只做「定时采集 + 发布」。
 
 主题布局（前缀可通过 KK_TOPIC_PREFIX 调整）：
 
-    kk/v1/{host}/status    Agent → Server  在线状态，QoS1 + retain + LWT
+    kk/v1/{host}/status    Agent → Server  在线状态 + 主机元信息（v4），QoS1 + retain + LWT
     kk/v1/{host}/hb        Agent → Server  心跳指标，QoS0，不 retain
     kk/v1/{host}/result    Agent → Server  命令结果，QoS1
     kk/v1/{host}/cmd       Server → Agent  命令下发，QoS1
 
-帧格式与语义以 proto/messages.md（协议 v3）为准。
+帧格式与语义以 proto/messages.md（协议 v4）为准。
 """
 import json
 import socket
@@ -30,12 +30,17 @@ import time
 import paho.mqtt.client as mqtt
 
 from . import config as kk_config
+from . import hostinfo
 
 PROTO = mqtt.MQTTv311
 QOS_HB = 0
 QOS_CMD = 1
-# 离线时最多缓存的结果/命令条数，防止长时间断网把内存撑爆
-MAX_QUEUED = 512
+# 离线时最多缓存的 QoS1 帧数（QR-A22 的显式预算）。心跳是 QoS0 且断线时直接丢弃
+# （见 _pub），所以这条队列里只有 status 帧与命令结果分块：单块 base64 后 ≈64KB，
+# 512 块就是 ≈32MB，一台 Agent 光靠排队就能越过 25–35MB 的常驻口径。128 块把最坏
+# 情况压到 ≈8MB；断网期超长时宁可让后排分块溢出（`send_result` 会补发截断终态，
+# 服务端拿到 failed+truncated 而不是永远 running），也不吃内存。
+MAX_QUEUED = 128
 # paho 内置指数退避重连的区间（秒）
 RECONNECT_MIN, RECONNECT_MAX = 1, 60
 # 结果分块无法送达（out-queue 溢出等）时回传的失败退出码：
@@ -123,6 +128,15 @@ class Transport:
         # 发布者真实 TCP 源 IP，自报是协议约束下的务实解，适合内网可信环境）
         self.ip = (cfg.get("advertise_ip") or
                    detect_outbound_ip(broker["host"], broker["port"]))
+        # v4 主机元信息：只在启动时探测一次并缓存。status 帧在重连/优雅停机时都会
+        # 发，而 /proc 与 platform 探测虽然便宜，重试循环里反复做也是纯浪费；
+        # 且整帧进程生命周期内几乎不可能变（OS 不会在运行时换）。
+        self.env = hostinfo.host_env()
+        self.group = str(cfg.get("group") or "")
+        self.labels = dict(cfg.get("labels") or {})
+        # 能力声明：服务端据此在源头拦住「这台机器干不了」的命令（v4 关键防线）。
+        # 目前只声明 shell；docker 能力随 v4 之后的容器阶段接入。
+        self.caps = {"shell": bool(cfg.get("allow_shell", True))}
 
         # client_id 必须稳定：Broker 靠它识别「同一个 Agent」并保留离线命令队列
         client_id = "%s-%s" % (cfg.get("client_id") or "kk", self.host)
@@ -172,6 +186,8 @@ class Transport:
     def _status_payload(self, online, reason=""):
         # 带 ip（v3）：服务端据 KK_AGENT_IPS 白名单校验，白名单外的上报全部
         # 拒绝并审计。Broker 匿名模式下这是唯一的接入管控手段。
+        # v4 起另带 env/group/labels/caps：管理面据此把「K8S 容器 IDE 专用」
+        # 扩成「任意 Linux 主机」的机队视图与能力门禁。
         return json.dumps({
             "online": online,
             "host": self.host,
@@ -182,6 +198,10 @@ class Transport:
             "interval": self.cfg.get("interval", 60),
             "reason": reason,
             "ts": int(time.time()),
+            "env": self.env,
+            "group": self.group,
+            "labels": self.labels,
+            "caps": self.caps,
         }, ensure_ascii=False, separators=(",", ":"))
 
     # ---- 生命周期 ----
@@ -207,20 +227,27 @@ class Transport:
                 return self.connected.is_set()
 
     def stop(self, reason="stopping"):
+        """优雅退出：先把 offline 状态帧送到 Broker 并等它落网，再断开。
+
+        为什么必须等（QR-A7/A14）：干净的 DISCONNECT **不会触发 LWT**，服务端只能
+        靠这一帧判下线；而紧接着的 `disconnect()` 会掐断还在发送队列里的帧——
+        不等就等于发了个寂寞。三段收尾过去全静默 `except: pass`，退出路径出问题
+        时现场什么都没有，现在至少留一行 warning。
+        """
         self._stopping.set()
         try:
             if self.cli.is_connected():
-                self.publish_status(False, reason)
-        except Exception:
-            pass
+                self.publish_status(False, reason, wait=True)
+        except Exception as e:
+            self.log.warning("stop: offline frame failed: %s", e)
         try:
             self.cli.disconnect()
-        except Exception:
-            pass
+        except Exception as e:
+            self.log.warning("stop: disconnect failed: %s", e)
         try:
             self.cli.loop_stop()
-        except Exception:
-            pass
+        except Exception as e:
+            self.log.warning("stop: loop_stop failed: %s", e)
         self.connected.clear()
 
     # ---- 发布 ----
@@ -237,8 +264,23 @@ class Transport:
         # NO_CONN = 已入队待重连补发，同样算尽责；QUEUE_SIZE 等真失败才返回 False
         return info.rc in (mqtt.MQTT_ERR_SUCCESS, mqtt.MQTT_ERR_NO_CONN)
 
-    def publish_status(self, online, reason=""):
-        return self._pub("status", self._status_payload(online, reason), QOS_CMD, True)
+    def publish_status(self, online, reason="", wait=False):
+        """发布状态帧（QoS1 + retain）。
+
+        `wait=True` 用于**进程即将消失**的路径（优雅停止、execv 自更新）：不等
+        PUBACK 的话，紧随其后的断开会把还在队列里的这一帧一起带走，服务端就只剩
+        一条空 reason 的记录可看。常规上线不需要等，别默认打开。
+        """
+        payload = self._status_payload(online, reason)
+        if not wait:
+            return self._pub("status", payload, QOS_CMD, True)
+        info = self.cli.publish(self.topic("status"), payload, qos=QOS_CMD, retain=True)
+        if info.rc == mqtt.MQTT_ERR_SUCCESS:
+            try:
+                info.wait_for_publish(1.0)
+            except Exception as e:
+                self.log.warning("status frame PUBACK wait failed: %s", e)
+        return info.rc == mqtt.MQTT_ERR_SUCCESS
 
     def announce_update(self):
         """自更新前的优雅离线宣告（B6.1）：发 reason=updating 并**等它真正送达**。
@@ -252,12 +294,7 @@ class Transport:
         try:
             if not self.cli.is_connected():
                 return
-            payload = self._status_payload(False, "updating")
-            info = self.cli.publish(self.topic("status"), payload, qos=QOS_CMD, retain=True)
-            try:
-                info.wait_for_publish(1.0)
-            except Exception:
-                pass
+            self.publish_status(False, "updating", wait=True)
         except Exception:
             pass
 
@@ -275,12 +312,18 @@ class Transport:
         # 而指标真相在数据库里，Broker 只该做搬运而非存档。
         return self._pub("hb", payload, QOS_HB, False)
 
-    def publish_result(self, result):
-        """命令结果分块回传；每块 QoS1，末块带 done 标记。"""
+    def publish_result(self, result, urgent=False):
+        """命令结果分块回传；每块 QoS1，末块带 done 标记。
+
+        `urgent=True` 只留给**失败终态**（QR-A6）：out-queue 被大输出的分块塞满时，
+        QoS1 的终态帧会被一起拒收（MQTT_ERR_QUEUE_SIZE），服务端那一行就永远停在
+        running。QoS0 不入队、连着就当场发出——用「这一帧可能丢」换「不被自己的
+        积压挡在门外」，真丢了还有服务端 30min 超时清扫兜底。
+        """
         frame = dict(result)
         frame["ip"] = self.ip   # v3：上行帧统一携带自报 ip 供白名单校验
         payload = json.dumps(frame, ensure_ascii=False, separators=(",", ":"))
-        return self._pub("result", payload, QOS_CMD, False)
+        return self._pub("result", payload, QOS_HB if urgent else QOS_CMD, False)
 
     # ---- 回调（运行在 paho 网络线程）----
     def _on_connect(self, client, userdata, flags, reason_code, properties=None):
