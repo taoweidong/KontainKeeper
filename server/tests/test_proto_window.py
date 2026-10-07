@@ -7,8 +7,11 @@
 - 窗口外（`KK_DROP_PROTO_V3=1`）：v3 帧拒收并审计，关窗前要先用统计确认存量升完；
 - v4 新增的 env/group/labels/caps/docker 是**可选字段**，落库与「离线不覆盖」都要钉住。
 """
+import inspect
 import json
+import re
 import time
+from pathlib import Path
 
 import pytest
 
@@ -155,3 +158,29 @@ async def test_offline_frame_does_not_clobber_v4_meta(mk):
     assert row["online"] == 0
     assert row["host_type"] == "metal" and row["os_name"] == "Debian 12"
     assert row["group_name"] == "edge"
+
+
+def test_live_counter_has_frontend_reading_slot():
+    """QR-S31 的另一半：计数器只有在运维看得见的地方才算门禁。
+
+    `COUNTER_META` 漏收一个键只会退化成「本页尚未收录说明」——看得见、缺个解释；
+    一旦被 `SUPPRESSED` 藏掉就彻底读不到。`proto_v3_received` 正是这样被藏过：
+    它是「能否关闭 v3 兼容窗口」的唯一判据，页面不给读数位就等于让运维凭感觉
+    设 `KK_DROP_PROTO_V3`，那是一次全网闪断。
+    """
+    src = inspect.getsource(MqttBridge)
+    # 会被累加的就是计数器；纯赋值的 epoch（last_msg_ts / started_at）不算
+    live = set(re.findall(r'stats\["([a-z0-9_]+)"\][^\n]*\+=', src))
+    live |= set(re.findall(r'stats\.get\("([a-z0-9_]+)", 0\) \+', src))
+    assert live, "静态扫描没扫到任何计数器：正则先失效了，别让这条锁假通过"
+    assert "proto_v3_received" in live, "累加点写法变了，这条锁要看的是被累加的键"
+
+    vue = (Path(__file__).resolve().parents[2]
+           / "web" / "src" / "views" / "system" / "index.vue")
+    text = vue.read_text(encoding="utf-8")
+    listed = set(re.findall(r'key:\s*"([a-z0-9_]+)"', text))
+    hidden = set(re.findall(
+        r'"([a-z0-9_]+)"', re.search(r"const SUPPRESSED = \[([^\]]*)\]", text).group(1)))
+
+    assert not (live & hidden), "关窗口的判据被藏进 SUPPRESSED，运维读不到：%s" % sorted(live & hidden)
+    assert not (live - listed), "后端在累加、这页却没收录：%s" % sorted(live - listed)
