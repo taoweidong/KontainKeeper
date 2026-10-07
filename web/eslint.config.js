@@ -150,7 +150,16 @@ export default defineConfig([
       ...pluginVue.configs.essential.rules,
       ...pluginVue.configs.recommended.rules,
       "no-undef": "off",
+      // .vue 里用 TS 版规则：核心 no-unused-vars 解析不了 <script lang="ts"> 的类型语法，
+      // 而模板里的引用由 vue-eslint-parser 记为 usage（QR-W9 重启这条检查）
       "no-unused-vars": "off",
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        {
+          argsIgnorePattern: "^_",
+          varsIgnorePattern: "^_"
+        }
+      ],
       "vue/no-v-html": "off",
       "vue/require-default-prop": "off",
       "vue/require-explicit-emits": "off",

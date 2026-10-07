@@ -15,7 +15,7 @@
 | ② | 工具链自检 | — | 节点缺 docker/node/pnpm 时**立刻**说清缺什么，而不是跑到一半报 `command not found` |
 | ③ | 后端测试 | `pytest agent/tests server/tests` | 起一个真 Broker，把 4 条集成用例从 **skipped** 变成**真跑**（见 §3） |
 | ④ | Broker 端到端冒烟 | `scripts/mqtt_e2e.py` | 单测证不到的语义：retain 只落 status、LWT 触发、离线命令由 Broker 排队、大输出分块重组 |
-| ⑤ | 前端构建与产物同步 | `pnpm typecheck && pnpm build` | 产物同步进 `server/src/kk_server/web/`（镜像靠它带 UI），并检查**产物漂移** |
+| ⑤ | 前端构建与产物同步 | `pnpm lint`（棘轮门禁）+ `pnpm typecheck && pnpm build` | 产物同步进 `server/src/kk_server/web/`（镜像靠它带 UI），并检查**产物漂移**；lint 让格式漂移不再攒到无人看见（QR-2.2） |
 | ⑥ | Agent 二进制 | `agent/build/build_binary.sh` | PyInstaller 单文件二进制，供镜像内置与冒烟使用 |
 | ⑦ | 构建服务端镜像 | `server/Dockerfile` | 构建上下文是仓库根（uv workspace 锁在根），并打上 git 修订标签 |
 | ⑧ | 镜像部署冒烟 | `scripts/ci_smoke.sh` | **真起容器 + 真跑 Agent 二进制**走完整链路；跑不过就不许推送、不许部署 |
@@ -32,6 +32,12 @@
 **⑬ 与阶段一~⑫ 刻意解耦**：真库建表扩列、500 连接压测、Agent RSS 基线都**耗时长且与部署无关**，
 每次 push 都跑只会拖慢反馈。因此它只挂在 `TimerTrigger`（默认每日）上；调试时打 `FORCE_NIGHTLY=true`
 可强制触发。它的失败**不阻断**①②③…⑫ 的发布链路——但会独立在每日报告中红出来，逼你修（见 §9）。
+
+**⑤ 的 lint 是棘轮，不是全量门禁**（QR-2.2）。历史上 lint 不在任何门禁里，格式违规攒到 140 条且无人发现
+（`audit/index.vue` 的表格缩进错位就是这么来的）。存量脏的 8 个文件列在 Jenkinsfile 的 `LINT_DIRTY` 里被豁免，
+其余 120+ 个文件新增违规即红；**清单只许缩短，不许加长**——修干净一个页面就把它从 `LINT_DIRTY` 删掉。
+门禁刻意不带 `--fix`：CI 里改写工作区会污染紧随其后的产物漂移检查（同 §6.1 的「静默绿灯」一类问题），
+也不要对全仓跑 `pnpm lint`（那是一条 `--fix` 链，会重写别人正在改的页面）。
 
 ## 2. 接入准备
 
@@ -258,8 +264,10 @@ KK_MQTT_URL=mqtt://127.0.0.1:18830 .venv/bin/python scripts/mqtt_e2e.py
 .venv/bin/python scripts/loadtest.py 200 127.0.0.1 18830 8443
 KK_BENCH_MQTT=mqtt://127.0.0.1:18830 .venv/bin/python scripts/bench_agent.py 15
 
-# 3) 前端
+# 3) 前端（pnpm build 已改跨平台，Windows cmd 与 Git Bash 同一条命令，见 QR-2.2）
 cd web && pnpm install --frozen-lockfile && pnpm typecheck && pnpm build && cd ..
+#    ⑤ 的 lint 棘轮豁免清单写在 Jenkinsfile 的 LINT_DIRTY 里；本地直接跑全量 eslint 会因这
+#    8 个存量脏文件报红，属预期。要本地复现门禁，照抄 Jenkinsfile ⑤ 段里那段 bash。
 rm -rf server/src/kk_server/web/* && cp -r web/dist/* server/src/kk_server/web/
 
 # 4) Agent 二进制 + 服务端镜像

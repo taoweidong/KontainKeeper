@@ -311,6 +311,28 @@ KK_MQTT_URL="$CI_MQTT_URL" .venv/bin/python scripts/mqtt_e2e.py | tee reports/mq
                 dir('web') {
                     sh 'pnpm install --frozen-lockfile'
                     sh 'pnpm typecheck'
+                    sh '''#!/usr/bin/env bash
+set -euo pipefail
+# 前端 lint 门禁（QR-2.2）：以前 lint 不在任何门禁里，格式漂移攒到 140 条没人看见。
+# 存量违规集中在下列页面（并行批次正在改这些文件，一次性 --fix 会撞上在途编辑），
+# 所以先按「棘轮」上锁：除清单外的 120+ 个文件新增违规即红，清单只许缩短不许加长。
+# 门禁不带 --fix：CI 里改写工作区会污染后续漂移检查（同 QR-P7 的教训）。
+LINT_DIRTY="
+src/utils/kk.ts
+src/views/audit/index.vue
+src/views/command/collect/index.vue
+src/views/command/components/CommandHistory.vue
+src/views/command/components/HostPicker.vue
+src/views/host/detail/index.vue
+src/views/host/update/index.vue
+src/views/welcome/index.vue
+"
+args=()
+n=0
+for f in $LINT_DIRTY; do args+=(--ignore-pattern "$f"); n=$((n + 1)); done
+pnpm exec eslint --max-warnings 0 "${args[@]}" "{src,mock,build}/**/*.{vue,js,ts,tsx}"
+echo ">> lint 棘轮通过（豁免 $n 个存量脏文件；清单只许缩短，不许加长）"
+'''
                     sh 'pnpm build'
                 }
                 sh '''#!/usr/bin/env bash
