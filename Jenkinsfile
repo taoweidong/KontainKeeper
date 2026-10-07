@@ -314,19 +314,11 @@ KK_MQTT_URL="$CI_MQTT_URL" .venv/bin/python scripts/mqtt_e2e.py | tee reports/mq
                     sh '''#!/usr/bin/env bash
 set -euo pipefail
 # 前端 lint 门禁（QR-2.2）：以前 lint 不在任何门禁里，格式漂移攒到 140 条没人看见。
-# 棘轮的规矩：除清单外的 120+ 个文件新增违规即红，**清单只许缩短，不许加长**——
-# 清干净一个文件就删掉它这一行，门禁立刻开始护它。
-# 门禁不带 --fix：CI 里改写工作区会污染后续漂移检查（同 QR-P7 的教训）。
-LINT_DIRTY="
-src/utils/kk.ts
-src/views/host/detail/index.vue
-src/views/host/update/index.vue
-"
-args=()
-n=0
-for f in $LINT_DIRTY; do args+=(--ignore-pattern "$f"); n=$((n + 1)); done
-pnpm exec eslint --max-warnings 0 "${args[@]}" "{src,mock,build}/**/*.{vue,js,ts,tsx}"
-echo ">> lint 棘轮通过（豁免 $n 个存量脏文件；清单只许缩短，不许加长）"
+# 现在**零豁免**护全域：QR-W10 把存量脏文件逐页清完，棘轮的豁免清单随之删除，
+# 任何新增违规直接红——不再靠清单兜着。
+# 门禁不带 --fix：CI 里改写工作区会污染紧随其后的产物漂移检查（同 QR-P7 的教训）。
+pnpm exec eslint --max-warnings 0 "{src,mock,build}/**/*.{vue,js,ts,tsx}"
+echo ">> lint 全域通过（零豁免）"
 '''
                     sh 'pnpm build'
                 }
