@@ -143,6 +143,7 @@
 | QR-P8 | P2 | `Jenkinsfile:57,181` | `SKIP_TESTS=true` 直通部署且生产可 `AUTO_APPROVE`，应急后门无留痕 |
 | QR-P9 | P3 | `ci_smoke.sh:233,236` | 「生产自检通过」是硬编码 `PASS(1)` 无证据断言；登录口令进 curl argv（本机 `ps` 可见）。凭据总体处理合格（`--password-stdin`、stdin + `umask 077`、`--data @-`） |
 | **QR-P10**（2026-10-07 真库复现） | **P1** | `scripts/db_smoke.py:30-36`（修复前）、`Jenkinsfile:542-547` | **真库门禁从未成立**：脚本用「随机库名」隔离跨 run 污染，却没有任何地方 `CREATE DATABASE`，跑冒烟的账号也没有这个权限 → PG 报 `database "kk_smoke_…" does not exist`、MySQL 报 `Access denied for user 'kk'@'%' to database`，Jenkins ⑬ 的 dialects 循环两次都是必炸（历史里从未通过）。第二重假绿：所谓「大字段路径」只写 4KB base64，**连 MySQL TEXT 的 64KB 上限都没触到**，LONGTEXT 这条红线等于没验。已修（用 `KK_DB_URL` 原样 + uuid 主机 id 隔离并自清理；266,660 字符分两帧往返 + 同 seq 重投断言），并在 Mosquitto 2.1.2 / PG 16 / MySQL 8.4.11 / SQLite 上实跑绿、四条变异全红 |
+| **QR-P11**（2026-10-07 实测） | **P2** | `git ls-files -s -- '*.sh'`（全部 7 个都是 100644）、`docs/deployment.md:304,339`、`docs/development.md:203` | **脚本的可执行位从未进过版本库，新主机第一步就撞墙**：Windows 开发机上 `core.filemode=false`，磁盘上 `ls -l` 看着是 `-rwxr-xr-x`，索引里却是 `100644`。实测在 WSL 里 `git clone --no-hardlinks` 本仓库 → `scripts/build.sh` 与 `agent/build/build_binary.sh` 落地为 `-rw-r--r--`，随后 `./scripts/build.sh` 报 **`Permission denied`**；而 `docs/deployment.md` §7.2 与 `docs/development.md` 教的正是 `./scripts/build.sh ...` / `cd agent && ./build/build_binary.sh`。这是一条「只在全新机器上才现形」的坑——开发机上永远复现不了，所以一直没被发现。**修法**（二选一，建议都做）：`git update-index --chmod=+x` 补上被直接执行的 5 个脚本（`scripts/build.sh`、`scripts/ci_smoke.sh`、`agent/build/build_binary.sh`、`agent/deploy/entrypoint-wrapper.sh`、`deploy/offline/pack.sh`），或把文档里的调用统一改成 `bash scripts/x.sh`。**本轮只动自己新增的 `scripts/install.sh`（设为 100755）并把脚本内的提示语改成 `bash build/build_binary.sh`（今天就能跑通的形态）**；其余文件分别属并行会话与文档区，登记不越界代改 |
 | **QR-S30**（2026-10-07 真库暴露，未提交代码） | **P1** | 工作区 `tables.py` 的 `labels` / `caps` 列 + `_ADD_COLUMNS` 的 `("labels", "TEXT DEFAULT ''")` | **MySQL 上建不出库**：`_long_text()` 列同时带 `server_default=""`，MySQL 直接拒绝 `1101 BLOB/TEXT column 'labels' can't have a default value`（PG / SQLite 完全无感）。两条路径都炸——`create_all` 建新库、`_ensure_schema` 给既有库 `ALTER ADD COLUMN ... TEXT DEFAULT ''`。HEAD 没有这个形态（历史 LONGTEXT 列一律不带默认值），属 v4 主机元信息引入；只有真连 MySQL 才暴露，正是 QR-P10 修好之后门禁的第一件战果。**修法**：去掉 `server_default`，写入侧给 `""` / `{}` 字面量（与 `out_b64`、`last_metrics` 同风格），`_ADD_COLUMNS` 同步只写类型不写默认值。**2026-10-07 复核：仍未修**，且不需要驱动就能复现——`CreateTable(containers).compile(dialect=mysql.dialect())` 直接吐出 `labels LONGTEXT NOT NULL DEFAULT ''` 与 `caps LONGTEXT NOT NULL DEFAULT ''`（本轮 `.venv` 无 `aiomysql`，未擅自装驱动，故用静态编译取证） |
 | **QR-S31**（2026-10-07 在途 v4 代码） | **P1** | `mqtt_bridge.py:93`（`proto_v3_received` 定义处） | **判断「能否关闭 v3 窗口」的唯一依据是个死计数器**：`stats` 里初始化了 `proto_v3_received`，注释写明用途是「窗口关闭前据此确认存量 Agent 是否已全部升级，否则关窗口就是全网闪断」，但全文件（含 `_on_status`）**没有任何一处累加它** —— 永远读 0。运维按文档流程「看到 0 就关窗口」会直接把存量 v3 Agent 全部判为不匹配、全网掉线，而 `/api/health` 上一片绿。这属 QR-P1「观测剧场」同族：计数器的存在让人以为门禁在守，实际没人数。**修法**：`_on_status` 受理分支里 `if proto < PROTO_VER: self.stats["proto_v3_received"] += 1`，并把它并进 `/api/system/stats` 的 Broker 组；回归锁：`test_proto_window.py` 里断言收到 v3 帧后该计数为 1。**未修**：`mqtt_bridge.py` 由并行会话持有（工作区脏），本轮只在测试与账本侧登记 |
 | **QR-S32**（2026-10-07 在途 v4 代码） | **P2** | `proto/messages.md:3,83,92`、`kk_server/__init__.py:11` | **协议四件套只做了三件**：双端 `PROTO_VER` 已抬 4、服务端有 `ACCEPT_PROTO_VERS=(3,4)` 窗口、`_on_status` 按窗口受理，但 `proto/messages.md` 头部仍写「`proto_ver = 3`」、示例帧仍是 `"proto_ver":3`、字段表仍写「`proto_ver` 必须为 `3`」，且 §3.2 完全没有 `env`/`group`/`labels`/`caps`/`docker` 这些 v4 新字段的定义 —— 照文档实现第二个 Agent 会做出 v3 帧。另外 `__init__.py` 的注释指向 `_accept_proto_vers()`，这个函数不存在（实际是 `config.load_settings()` 里按 `KK_DROP_PROTO_V3` 现算）。**修法**：文档补 v4 字段表 + QoS/retain 不变声明、三处 3 改 4 并写明窗口语义、注释里的假函数名改掉。**未修**：`proto/messages.md` 由并行会话持有 |
@@ -303,6 +304,40 @@ v4 的 P1 阶段把 `PROTO_VER` 抬到 4、开了 `(3,4)` 双版本窗口。窗�
 | 副本复原后基线 | GREEN | `test_proto_window.py + test_store.py` **38 passed**，副本已删 |
 
 最后一条变异值得单独记：它同时点亮新旧两条断言，说明 §8.3 里那条「摘要视图边界从『只读小列』改成『只读定长/小列』」的裁决**不是把守卫松掉了**，而是把边界挪到了新位置并且两边都在守——`labels` 一旦被塞进列表响应，两处都会立刻红。
+
+### 8.7 v4 P1 §5.5：非容器 Linux 主机的安装路径（2026-10-07）
+
+v4 的卖点是「所有 Linux 主机 + 其上的容器」，但在途 P1 只做了协议 / Agent / DB，装机侧仍停在 `docs/deployment.md` §7.3 的**手工三步**（scp → chmod → 手抄一段 unit）。本轮补齐方案点名的两件：新增 `scripts/install.sh` 与 `deploy/systemd/kk-agent.service`，与镜像叠加方案（`scripts/build.sh`）**共用同一份二进制、同一套 `KK_*`**，只是把 supervisor 换成 systemd。
+
+四条设计决定，都不是审美：
+
+1. **env 文件只创建、绝不覆盖**——装机后运维手工改的值（换掉的 Broker 地址、为多网卡定的 `KK_ADVERTISE_IP`）比一次重装值钱；重装抹掉它们属于事故。
+2. **二进制内容没变就不 restart**（`sha256sum` 比对）——一次 restart = 一段离线窗口 + 一次 LWT，总览页会闪一下「离线」；`systemctl start` 保持「停掉了就复活、在跑就不动」。
+3. **单元里刻意不写任何 systemd 沙箱指令**，并在文件里写明原因：这个进程的职责就是「以 root 执行运维下发的命令 + 读全量 /proc + 可能挂 docker.sock」，文件系统一收口，命令通道与采集就**静默失效**（服务照样 active(running)，比崩了更难发现）。真正的边界是出站单向连接、`KK_AGENT_IPS` 白名单、双端黑名单 + 审计。
+4. **权限面**：目录/二进制 `0755 root:root`，env `0600 root:root`（里面可能有 Broker 口令）——能写二进制的人，下次 `Restart=always` 就拿到 root。脚本自己不做 `User=`：自更新走 `execv` 原地替换，换用户会让新进程权限与台账的版本判定错位（B6 的离线语义依赖它）。
+
+验证（Ubuntu-22.04 on WSL；`systemctl` 换成把调用记进文件的 stub，避免在开发机的 WSL 里真起服务；单元本身另由**真 systemd** 验过可加载、可启动）：
+
+| 用例 | 期望 | 实测 |
+|---|---|---|
+| 首次安装 | rc=0，调用序列 `daemon-reload → enable → restart → is-active` | ✓ 权限面 `755/755/600/644`，属主全 `root:root` |
+| 原样重跑 | 不换二进制、不 `daemon-reload`、不 `restart`，只做 `enable + start` | ✓ 输出「一致，跳过替换 / 保留既有配置」；手工追加进 env 的 `KK_INTERVAL=15` 仍在 |
+| 换二进制 | 替换 + `restart`，单元没变则不 `daemon-reload` | ✓ |
+| 缺 `KK_SERVER` | 拒绝 | rc=1「装了但连不上等于机队里多一台永远离线的主机」 |
+| 拿错平台的二进制 | 拒绝 | rc=1，直接点名「误拿了 Windows 的 `agent/dist/kk-agent.exe`」——不依赖 `file`，读 ELF 头 + `e_machine`，因为裸机最小镜像常常没有 `file` |
+| 目标路径是文件 | 可读拒绝 | ✓ 正是 §7.3 手工形态（`/opt/kk-agent` 是文件）会撞上的情况，`mkdir` 那句 `Not a directory` 换成了「移走它 / 换个目标」 |
+| 没有 systemd 的机器 | 拒绝并指路 | ✓ 指向 `scripts/build.sh` 的镜像叠加方案 |
+| 中途失败不留暂存文件 | 目标目录不出现 `kk-agent.new` | ✓ 用变异证明：把 `die` 注入到「暂存之后」，rc=1 且 `[$(ls -A)] = []`；再做**反向变异**（删掉 trap）→ 残留 `kk-agent.new`，证明这条断言有牙齿 |
+| 值含空格的 env 项 | 原样进环境 | ✓ `KK_MQTT_PASSWORD=p@ss with space` 未被拆开 |
+| dry-run 拿到 Windows 二进制 | 也拒绝 | ✓ 第一版把架构检查圈在 `if [ -z "$DRY_RUN" ]` 里，等于「预演」检不出它最该检的东西（头部写着给 CI 与装机前自检用）；改成只把 root / `/run/systemd` 留在真装分支，架构检查两边都跑 |
+| 传新 `KK_SERVER` 但 env 已存在 | 当场说破 | ✓ 这条原本会**静默失效**：env 只创建不覆盖，运维以为改了 Broker、Agent 还在连旧的。现在打 `!!` 到 stderr 并给出「编辑哪一行 + restart」，rc 仍为 0（配置管理工具持有 env 时是合法场景） |
+| 单元内容一致 | 不重写文件 | ✓ `cmp -s` 命中则跳过 `cp`（只归一 `chmod 0644`），日志「单元与现有文件一致，跳过写入」；重跑调用序列实测 `enable → start → is-active`，无 `daemon-reload`、无 `restart` |
+
+补一条**只做不说就会再撞一次**的教训：第一版把单元路径写死成 `/etc/systemd/system/kk-agent.service`，我在 WSL 里验证时它就真的装进了系统目录，配上 `Restart=always` 把 `/bin/ls` 当 Agent 反复拉起（当场 stop/disable/reset-failed 清理干净）。现在架构检查、目标目录、单元目录都可用 `KK_INSTALL_BIN` / `KK_INSTALL_UNIT_DIR` / `KK_INSTALL_DRY_RUN` 三个钩子改道，测试只需把 PATH 指向 `systemctl` stub——上面这张表全部在**不接触真 systemd** 的前提下复现，单元本身能加载另由真 systemd 单独验过。
+
+
+顺带纠正一条我自己差点写进文档的错误结论：第一次探针测试显示「systemd 拒收 CRLF 单元文件」，据此要给 `.gitattributes` 加 `*.service text eol=lf`。复查发现是**探针自己漏了换行**（`[Unit]Description=...` 挤在同一行）；用仓库真实模板做结构完好的 CRLF 版本，systemd 照样 `LoadState=loaded`。所以那条 gitattributes 不加——理由是「不需要」，不是「忘了」。
+真正的装机日第一号坑是另一件事：**脚本的可执行位从未进过版本库**，登记为 **QR-P11**（Linux 克隆后 `./scripts/build.sh` 直接 Permission denied，而文档教的正是这个写法）。
 
 
 
