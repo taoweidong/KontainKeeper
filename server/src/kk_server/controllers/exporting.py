@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 
 from .deps import CurrentUser, HostFilters, current_user
+from ..models.store import DISK_ALERT_PCT
 
 # 会话鉴权在 router 级收口（QR-S2）；导出属批量数据外带，每个端点落一条审计（QR-S7）
 router = APIRouter(prefix="/api/export", dependencies=[Depends(current_user)])
@@ -164,7 +165,8 @@ async def export_hosts(request: Request, user: CurrentUser, filters: HostFilters
         disk = r.get("disk_pct") or 0.0
         out.append([r.get("pod"), r.get("image"), r.get("agent_ver"),
                     1 if r.get("pod") in online else 0, r.get("hb_interval"),
-                    r.get("cpu"), r.get("mem_mb"), disk, 1 if disk >= 85 else 0,
+                    r.get("cpu"), r.get("mem_mb"), disk,
+                    1 if disk >= DISK_ALERT_PCT else 0,
                     _ts(r.get("last_seen")), max(0, now - (r.get("last_seen") or now)),
                     # v4 元信息排在尾部：老报表的列序（含下标 8 的 disk_alert）不动
                     r.get("host_type") or "", r.get("os_name") or "",

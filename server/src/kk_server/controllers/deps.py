@@ -62,11 +62,12 @@ def _tri(raw):
 async def host_filter_params(group: str = "", host_type: str = "",
                              docker_unhealthy: str = "", online: str = "",
                              proto_ver: str = "", keyword: str = "",
-                             sort: str = "last_seen") -> dict:
+                             alert: str = "", sort: str = "last_seen",
+                             order: str = "") -> dict:
     """把主机列表的查询参数归一成 store 的筛选 kwargs。
 
-    枚举白名单（`host_type`、`sort`）由 store 侧统一兜，这里只做类型归一，避免
-    两个地方各写一份白名单再各自演化。
+    枚举白名单（`host_type`、`sort`、`order`）由 store 侧统一兜，这里只做类型归一，
+    避免两个地方各写一份白名单再各自演化。
     """
     return {
         "group": group,
@@ -74,9 +75,11 @@ async def host_filter_params(group: str = "", host_type: str = "",
         "keyword": keyword,
         # store 用真值判断决定是否加这条条件，所以只有明确的「真」才置位
         "docker_unhealthy": _tri(docker_unhealthy) is True,
+        "alert": _tri(alert) is True,
         "online": _tri(online),
         "proto_ver": proto_ver or None,
         "sort": sort,
+        "order": order,
     }
 
 

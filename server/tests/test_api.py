@@ -79,7 +79,8 @@ async def test_unknown_view_is_rejected(api):
 # ---- QR-S36：v4 筛选/排序的服务端入口 ----
 
 async def _seed_meta(store, pod, group="", host_type="metal", unhealthy=0,
-                     proto=4, online=True, cpu=1.0, os_name="Debian 12"):
+                     proto=4, online=True, cpu=1.0, os_name="Debian 12",
+                     disk_pct=10.0):
     """按 v4 的 status 路径造一台主机（元信息只在上线路径落库）。
 
     先 online 落元信息，需要离线形态时再补一帧 offline——顺带钉住「离线帧不覆盖
@@ -93,7 +94,7 @@ async def _seed_meta(store, pod, group="", host_type="metal", unhealthy=0,
                            docker={"total": 5, "running": 5 - unhealthy,
                                   "unhealthy": unhealthy})
     await store.record_hb(pod, {"interval": 60, "ip": "10.0.0.9", "metrics": {
-        "cpu": cpu, "mem_mb": 100.0, "disks": {"/": {"pct": 10.0}}}})
+        "cpu": cpu, "mem_mb": 100.0, "disks": {"/": {"pct": disk_pct}}}})
     if not online:
         await store.set_online(pod, False, agent_ver="0.4.0")
 
@@ -180,6 +181,32 @@ async def test_sort_is_pushed_down_and_whitelisted(api):
     assert pods == ["hi", "lo", "mid"], "pod 是唯一升序的列（按名字读表）"
     pods, _ = await _pods(api, {"sort": "cpu; DROP TABLE kk_containers"})
     assert len(pods) == 3, "白名单外的排序回落 last_seen，不能报 500"
+
+
+async def test_sort_direction_is_honoured(api):
+    """升序有真实用途：把「最久没报 / CPU 最低」顶到前面，降序只会看热闹。"""
+    await _seed_meta(api.store, "hi", cpu=90.0, host_type="vm")
+    await _seed_meta(api.store, "mid", cpu=50.0, host_type="vm")
+    await _seed_meta(api.store, "lo", cpu=10.0, host_type="vm")
+
+    pods, _ = await _pods(api, {"sort": "cpu", "order": "asc"})
+    assert pods == ["lo", "mid", "hi"]
+    pods, _ = await _pods(api, {"sort": "cpu", "order": "desc"})
+    assert pods == ["hi", "mid", "lo"]
+    # 认不出的方向回落到该列的默认方向（pod 升序、其余降序），而不是报错
+    pods, _ = await _pods(api, {"sort": "cpu", "order": "sideways"})
+    assert pods == ["hi", "mid", "lo"]
+
+
+async def test_alert_filter_pushed_down(api):
+    """「仅告警」也在服务端筛：列表与导出读的必须是同一份条件。"""
+    await _seed_meta(api.store, "hot-01", disk_pct=91.0)
+    await _seed_meta(api.store, "cool-01", disk_pct=20.0)
+
+    pods, body = await _pods(api, {"alert": "true"})
+    assert pods == ["hot-01"] and body["total"] == 1
+    pods, _ = await _pods(api, {"alert": ""})
+    assert sorted(pods) == ["cool-01", "hot-01"]
 
 
 async def test_summary_carries_v4_meta_columns(api):

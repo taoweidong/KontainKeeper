@@ -6,6 +6,7 @@ import time
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from .deps import HostFilters, current_user
+from ..models.store import DISK_ALERT_PCT
 from ..models.version import version_lt
 
 # 会话鉴权在 router 级收口（QR-S2）：新增端点默认受保护，不再依赖人工逐行调用
@@ -23,7 +24,7 @@ def _parse_metrics(raw):
 
 def _disk_alert(metrics):
     disks = (metrics or {}).get("disks") or {}
-    return max((d.get("pct", 0) for d in disks.values()), default=0) >= 85
+    return max((d.get("pct", 0) for d in disks.values()), default=0) >= DISK_ALERT_PCT
 
 
 def _host_meta(row):
@@ -93,7 +94,7 @@ def _container_summary(row, online_set, now, latest_ver=""):
         "cpu": row.get("cpu"),
         "mem_mb": row.get("mem_mb"),
         "disk_pct": disk_pct,
-        "disk_alert": disk_pct >= 85,
+        "disk_alert": disk_pct >= DISK_ALERT_PCT,
         **_host_meta(row),
     }
 
@@ -115,7 +116,8 @@ async def list_containers(request: Request, filters: HostFilters,
     # 一次查回在线集合与最新版本再逐行拼装：500 台只有几次往返，不在循环里打 500 次查询
     # （D1.3 明确要求 KV 只读一次——每行查一次就是与 P1-1 同型的 N+1）
     # total 与列表共用同一套筛选条件，分页控件才不会对着筛完的列表说谎（QR-S36）
-    count_filters = {k: v for k, v in filters.items() if k != "sort"}
+    # 排序键与方向不算筛选条件，count 时要摘掉
+    count_filters = {k: v for k, v in filters.items() if k not in ("sort", "order")}
     rows, online, total, latest = await asyncio.gather(
         store.list_containers(view, limit=cap, offset=off, **filters),
         store.online_set(ONLINE_GRACE),

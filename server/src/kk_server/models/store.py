@@ -74,10 +74,14 @@ def _jtext(obj):
 # 所以宁可在这里显式穷举，也不在控制器里做 if/else 拼条件。
 _HOST_TYPES = ("container", "vm", "metal")
 _SORTS = ("last_seen", "cpu", "mem_mb", "disk_pct", "pod")
+_ORDERS = ("asc", "desc")
+
+# 磁盘告警阈值：筛选、列表标记与导出三处共用同一个数，分家就是「筛出来的与标红的不一致」
+DISK_ALERT_PCT = 85
 
 
 def _host_filters(group=None, host_type=None, docker_unhealthy=None,
-                  proto_ver=None, online=None, keyword=None):
+                  proto_ver=None, online=None, keyword=None, alert=None):
     """主机筛选条件列表（list_containers 与 count_containers 共用，避免两处漂移）。"""
     conds = []
     if group is not None and str(group).strip():
@@ -90,6 +94,8 @@ def _host_filters(group=None, host_type=None, docker_unhealthy=None,
     if docker_unhealthy:
         # 只要「有异常容器」这一种语义：0 与未探测（同为 0）在此场景等价
         conds.append(containers.c.docker_unhealthy > 0)
+    if alert:
+        conds.append(containers.c.disk_pct >= DISK_ALERT_PCT)
     if online is not None:
         conds.append(containers.c.online == (1 if online else 0))
     if proto_ver is not None:
@@ -111,6 +117,18 @@ def _host_filters(group=None, host_type=None, docker_unhealthy=None,
 def _sort_col(sort):
     """排序字段归一：未知值回落 last_seen（列表的默认语义）。"""
     return sort if sort in _SORTS else "last_seen"
+
+
+def _sort_dir(sort, order):
+    """排序方向归一：认不出的 order 回落到该列的默认方向。
+
+    默认降序（最新 / 最高在前）是运维直觉，唯独 pod 是名单——字典升序才稳定。
+    显式方向换来的是「最久没报」「CPU 最低」也能顶到前面，降序只能看热闹。
+    """
+    o = str(order or "").strip().lower()
+    if o in _ORDERS:
+        return o
+    return "asc" if sort == "pod" else "desc"
 
 
 def _column_ddl(ddl, dialect):
@@ -387,8 +405,8 @@ class Store:
 
     async def list_containers(self, view="full", limit=None, offset=None,
                               group=None, host_type=None, docker_unhealthy=None,
-                              proto_ver=None, online=None, keyword=None,
-                              sort="last_seen"):
+                              proto_ver=None, online=None, keyword=None, alert=None,
+                              sort="last_seen", order=""):
         """full = 全列（含完整 last_metrics），summary = 只读摘要列。
 
         摘要视图存在的理由：500 台 × 每帧 2~4KB 的 last_metrics 全量解析是列表接口
@@ -404,12 +422,13 @@ class Store:
             raise ValueError("view 需为 full 或 summary，收到 %r" % view)
         q = (select(*(containers.c[c] for c in _SUMMARY_COLS))
              if view == "summary" else select(containers))
+        sort = _sort_col(sort)
         for cond in _host_filters(group=group, host_type=host_type,
-                                  docker_unhealthy=docker_unhealthy,
+                                  docker_unhealthy=docker_unhealthy, alert=alert,
                                   proto_ver=proto_ver, online=online, keyword=keyword):
             q = q.where(cond)
-        col = containers.c[_sort_col(sort)]
-        q = q.order_by(col.asc() if sort == "pod" else col.desc())
+        col = containers.c[sort]
+        q = q.order_by(col.asc() if _sort_dir(sort, order) == "asc" else col.desc())
         if limit is not None:
             q = q.limit(int(limit))
         if offset:
@@ -418,10 +437,10 @@ class Store:
 
     async def count_containers(self, group=None, host_type=None,
                                docker_unhealthy=None, proto_ver=None,
-                               online=None, keyword=None):
+                               online=None, keyword=None, alert=None):
         """筛选后的台数：与 list_containers 共用同一套条件，分页控件才不会说谎。"""
         conds = _host_filters(group=group, host_type=host_type,
-                              docker_unhealthy=docker_unhealthy,
+                              docker_unhealthy=docker_unhealthy, alert=alert,
                               proto_ver=proto_ver, online=online, keyword=keyword)
         q = select(func.count().label("n")).select_from(containers)
         for cond in conds:
