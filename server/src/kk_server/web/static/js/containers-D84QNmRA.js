@@ -1,0 +1,1 @@
+import{aC as e}from"./index-B2Xcc8C4.js";const n=(t="summary")=>e.request("get","/api/containers",{params:{view:t}}),o=t=>e.request("get",`/api/containers/${encodeURIComponent(t)}`),a=(t,s=24)=>e.request("get",`/api/containers/${encodeURIComponent(t)}/metrics`,{params:{hours:s}});export{a,o as g,n as l};
