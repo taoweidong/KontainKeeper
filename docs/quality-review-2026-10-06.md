@@ -132,6 +132,8 @@
 | QR-P7 | P2 | `Jenkinsfile:255-262` | ⑤ 直接改写受版本管理的 `server/src/kk_server/web`，失败构建留脏（假设：是否被下次 checkout 复位取决于 Jenkins Checkout Strategy；验证：连续两次构建故意让 ⑤ 失败，观察 ① 是否报 "would be overwritten"） |
 | QR-P8 | P2 | `Jenkinsfile:57,181` | `SKIP_TESTS=true` 直通部署且生产可 `AUTO_APPROVE`，应急后门无留痕 |
 | QR-P9 | P3 | `ci_smoke.sh:233,236` | 「生产自检通过」是硬编码 `PASS(1)` 无证据断言；登录口令进 curl argv（本机 `ps` 可见）。凭据总体处理合格（`--password-stdin`、stdin + `umask 077`、`--data @-`） |
+| **QR-P10**（2026-10-07 真库复现） | **P1** | `scripts/db_smoke.py:30-36`（修复前）、`Jenkinsfile:542-547` | **真库门禁从未成立**：脚本用「随机库名」隔离跨 run 污染，却没有任何地方 `CREATE DATABASE`，跑冒烟的账号也没有这个权限 → PG 报 `database "kk_smoke_…" does not exist`、MySQL 报 `Access denied for user 'kk'@'%' to database`，Jenkins ⑬ 的 dialects 循环两次都是必炸（历史里从未通过）。第二重假绿：所谓「大字段路径」只写 4KB base64，**连 MySQL TEXT 的 64KB 上限都没触到**，LONGTEXT 这条红线等于没验。已修（用 `KK_DB_URL` 原样 + uuid 主机 id 隔离并自清理；266,660 字符分两帧往返 + 同 seq 重投断言），并在 Mosquitto 2.1.2 / PG 16 / MySQL 8.4.11 / SQLite 上实跑绿、四条变异全红 |
+| **QR-S30**（2026-10-07 真库暴露，未提交代码） | **P1** | 工作区 `tables.py` 的 `labels` / `caps` 列 + `_ADD_COLUMNS` 的 `("labels", "TEXT DEFAULT ''")` | **MySQL 上建不出库**：`_long_text()` 列同时带 `server_default=""`，MySQL 直接拒绝 `1101 BLOB/TEXT column 'labels' can't have a default value`（PG / SQLite 完全无感）。两条路径都炸——`create_all` 建新库、`_ensure_schema` 给既有库 `ALTER ADD COLUMN ... TEXT DEFAULT ''`。HEAD 没有这个形态（历史 LONGTEXT 列一律不带默认值），属 v4 主机元信息引入；只有真连 MySQL 才暴露，正是 QR-P10 修好之后门禁的第一件战果。**修法**：去掉 `server_default`，写入侧给 `""` / `{}` 字面量（与 `out_b64`、`last_metrics` 同风格），`_ADD_COLUMNS` 同步只写类型不写默认值 |
 
 ---
 
@@ -176,9 +178,55 @@
 
 ## 7. 验证边界与假设（诚实清单）
 
-1. 本机无 Docker：**「Broker 可达时全 passed」与 `scripts/mqtt_e2e.py` 语义冒烟本轮未验证**；QR-S29 的复现、以及 4 条集成用例的绿灯都仍只有静态证据。
-2. **PG/MySQL 真实库路径未在本轮执行**（只有夜测 stage，且该 stage 的负载断言恒绿）。
+1. ~~本机无 Docker：「Broker 可达时全 passed」与 `scripts/mqtt_e2e.py` 语义冒烟本轮未验证~~ → **2026-10-07 已用 WSL Containers（`wslc`）补齐**：Mosquitto **2.1.2**（生产目标版本，此前只跑过 Ubuntu 自带的 1.6.9）真起 Broker，全量测试 + `mqtt_e2e.py` 均真跑，见 §8。
+2. ~~PG/MySQL 真实库路径未在本轮执行~~ → **2026-10-07 已在 PG 16 / MySQL 8.4.11 上首次真连执行**，并因此挖出 QR-P10（真库门禁从未成立）与 QR-S30（MySQL 建不出库）。
 3. QR-W3 的影响面取决于后端是否对用户 API 返回 403，需查 `deps.agent_ip_auth` 的返回码路径后定性。
 4. QR-P7 是否留下脏工作区取决于 Jenkins Checkout Strategy，属未验证假设。
 5. 前端总览页的视觉密度改动（`size="small"` + 新读数族）未做像素级判读；1366×768 下列宽为估算（固定列合计 1,114px），需一次真实宽度核对。
 6. 本报告的对账结论以 `HEAD=8d7f442` 为准；后续提交（尤其 `web/dist` → `server/src/kk_server/web` 的产物同步）会使 §2 的证据行号漂移。
+
+---
+
+## 8. 真环境全量验证（2026-10-07，WSL Containers）
+
+本轮把「只有静态证据」的东西全部换成真跑结果。环境不是 Docker Desktop，而是 Windows 10.0.26300
+自带的 **WSL Containers**（`wslc.exe`，需 WSL ≥ 2.9.3；本机 3.0.1.0 / kernel 6.18.40.1）：
+三个依赖容器与仓库同内核、同 `127.0.0.1` 端口面，`deploy/mosquitto/mosquitto.conf` 按容器日志确认已加载。
+
+| 依赖 | 版本 | 与既往基线的差别 |
+|---|---|---|
+| Mosquitto | **2.1.2**（`-p 127.0.0.1:18830:1883`） | 此前只跑过 Ubuntu apt 的 **1.6.9**，生产目标 2.x 的 LWT/离线队列/retain 语义从未被真验过 |
+| PostgreSQL | 16（15432） | 真库首次执行（过去只有 `CreateTable().compile()`） |
+| MySQL | 8.4.11（13306） | 同上；**并在此挖出 QR-S30** |
+
+拉取需走 `docker.m.daocloud.io/library/<image>`（本机到 registry-1.docker.io 的 IPv6 被污染，代理在 Git Bash 下不可用）。
+
+### 8.1 结果矩阵
+
+| 验证项 | 命令 | 结果 |
+|---|---|---|
+| 全量测试（真 Broker） | `KK_IT_MQTT_URL=… pytest agent/tests server/tests --junitxml` | `tests=371 failures=2 errors=0 skipped=0`（rc=1）；两条失败**都属并行进行中的 v4 工作流**，非本轮改动 |
+| Broker 语义冒烟 | `KK_MQTT_URL=… scripts/mqtt_e2e.py` | rc=0，**10/10**（LWT、QoS1 离线队列在 2.1.2 上语义成立） |
+| 真库冒烟（干净 HEAD） | `scripts/db_smoke.py` × MySQL / PG / SQLite | **三库全 rc=0**，MySQL 上 266,660 字符 LONGTEXT 往返一致 |
+| 真库冒烟（含 v4 工作区） | 同上 | MySQL **rc=1（1101）**、PG rc=0、SQLite rc=0 → QR-S30 |
+| Agent 资源夜测 | `scripts/bench_agent.py` | rc=0，常驻 RSS avg **27.2MB** / max **28.6MB**（< 40MB 目标） |
+
+### 8.2 门禁有牙齿（变异测试，全部在真 MySQL 8.4 上）
+
+每条都在临时 HEAD 副本上改代码、**每次先清空 scratch 库的 9 张 `kk_` 表**（否则上一轮变异留下的列型会污染下一轮判定 —— 顺带证明：`create_all` 不会修正已存在的错误列型，只有 `_ensure_schema` 的补列/补索引路径），跑完即复原。
+
+| 变异 | 期望 | 实测 |
+|---|---|---|
+| `_LONGTEXT` 退化回 `Text()` | RED | `1406 Data too long for column 'out_b64'`（rc=1）—— 证明「大字段必须 LONGTEXT」这条断言第一次真的在守 |
+| `append_result` 的 SQL 水位 `applied_cond` 恒真 | RED | `AssertionError: 同 seq 重投未被幂等去重：out_chunks=3` |
+| `set_online` 上线路径写 `online=0` | RED | `AssertionError: set_online 未生效` |
+| `metrics_series` 返回空点集 | RED | `AssertionError: 心跳指标未落库` |
+| 干净树复原 | GREEN | MySQL / PG 均 rc=0；跨 run 残留 `smoke-%` 行数 = **0**（自清理成立） |
+
+另附一条口径修正：Python 文件在 `.gitattributes` 里已强制 `eol=lf`，Windows 工作区的 CRLF 只是落盘表象，提交时归一 —— 之前担心的「脚本改写文件换行符」在这类文件上不构成风险。
+
+### 8.3 v4 工作流的两条红灯（交回，不在本轮修复范围）
+
+1. `test_full_chain`：`proto_ver` 落库为 4 而断言 3 —— 协议四件套（`PROTO_VER` ×2 + `proto/messages.md` + 用例）未同步。
+2. `test_summary_view_written_with_heartbeat`：`caps` / `os_name` / `docker*` 等元信息进了 `view="summary"`，摘要视图不再是「只读小列」（QR-S1 的口径）。
+3. 同批新增的 `labels` / `caps` 列形态触发 **QR-S30**：MySQL 上既建不出库也补不了列。

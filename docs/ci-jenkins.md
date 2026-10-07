@@ -184,6 +184,7 @@ git add server/src/kk_server/web && git commit -m "chore(web): 同步前端构�
 | loadtest / bench 只打印不判 | 脚本恒 `exit 0`，「超标」只写在日志里 | `scripts/loadtest.py`、`scripts/bench_agent.py` 指标不达标即 `sys.exit(1)`；⑬ `set -euo pipefail` 让非零退出穿透 `| tee` 变红 |
 | bench 连的是「默认端口」而不是 CI Broker | `bench_agent.py` 读 `KK_BENCH_MQTT`，默认 1883；⑬ 的 Broker 在 18830 → 每次都走「无 Broker，跳过」分支并返回 0 | ⑬ 显式注入 `KK_BENCH_MQTT="$CI_MQTT_URL"`，并在跑之前硬等 Broker 与 `/api/health` 就绪，不就绪直接 `exit 1` |
 | 「有 Broker 却读不到内存」也算过 | bench 采样为空时旧实现静默 `return`（0） | 采样为空现在返回 1；只有「Broker 确实不可达」才允许跳过 |
+| **⑬ 真库矩阵「配了却没跑成过」** | `db_smoke.py` 用随机库名隔离，却没有任何地方 `CREATE DATABASE`，账号也没这权限 → PG 报 `does not exist`、MySQL 报 `Access denied`，dialects 循环**从来没有通过**；而且「大字段路径」只写 4KB base64，连 TEXT 的 64KB 都没触到，即使跑通也没验到 LONGTEXT（QR-P10） | 直接用 `KK_DB_URL` 指向的库 + uuid 主机 id 隔离并自清理；输出改成 **266,660 字符分两帧往返**（MySQL 列型不是 LONGTEXT 就红）+ 同 seq 重投幂等断言。反向验证（真 MySQL 8.4，每轮先清 scratch 库）：`LONGTEXT→Text` / 幂等水位恒真 / `online=0` / 心跳不落库 —— **四条变异全红**，干净树三库全绿 |
 
 门禁本身也会说谎，所以两条反向验证都要做过（本轮实跑结论）：
 

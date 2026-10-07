@@ -542,7 +542,8 @@ uv sync --all-packages --extra postgres --extra mysql
 for url in \\
   "postgresql+asyncpg://kk:kk@127.0.0.1:15432/kk" \\
   "mysql+aiomysql://kk:kk@127.0.0.1:13306/kk" ; do
-  echo ">> dialects smoke: $url"
+  # 库口令不进构建日志（仓库红线：日志不得含凭据），这里只打印掩码后的 URL
+  echo ">> dialects smoke: $(printf '%s' "$url" | sed -E 's|//[^@]*@|//***@|')"
   KK_DB_URL="$url" .venv/bin/python scripts/db_smoke.py
 done
 '''
