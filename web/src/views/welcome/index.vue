@@ -44,6 +44,16 @@ const beginLoad = useSeq();
 
 const offline = computed(() => hosts.value.length - online.value);
 
+/**
+ * 「读到过」与「读到 0」必须是两件事（QR-W16，同 /system 那条红线）：
+ * 首页的 0 和「无告警主机」在请求失败时是**假的安全声明**，比不显示更危险。
+ * hosts/命令两个来源空数组是合法值，所以只能各记一笔；stats 用 null 自身判定。
+ */
+const hostsRead = ref(false);
+const cmdsRead = ref(false);
+const statsRead = computed(() => stats.value !== null);
+const nOr = (read: boolean, v: number) => (read ? v : "—");
+
 /** 命令状态分布里值得一眼关注的项（其余归入「其他」） */
 const cmdStats = computed(() => {
   const c = stats.value?.commands ?? {};
@@ -66,9 +76,15 @@ const cmdStats = computed(() => {
 
 const brokerOk = computed(() => stats.value?.broker?.connected ?? false);
 
+/** 三态分开：没问到 ≠ 断开 ≠ 正常。把 null 说成「断开」会把人支去查 Broker，而真停的是服务端 */
+const brokerLabel = computed(() =>
+  statsRead.value ? (brokerOk.value ? "正常" : "断开") : "未知（没读到）"
+);
+
 /** 落后台数 + 当前版本：欢迎页头部一句话「Agent 版本 vX.Y.Z · 落后 N 台」
  *  —— 没上传过版本时显示「尚无版本」（不是「落后 0 台」）。 */
 const agentVerText = computed(() => {
+  if (!statsRead.value) return "没读到（服务端不可达）";
   const v = stats.value?.agent_latest_ver ?? "";
   const n = stats.value?.agents_outdated ?? 0;
   if (!v) return "尚无版本（去「版本与更新」上传二进制）";
@@ -100,23 +116,41 @@ async function load(silent = false) {
   const isLatest = beginLoad();
   if (!silent) loading.value = true;
   try {
+    // 每一路单独记账：Promise.all 整体成功不等于每路都成功。原先三个 .catch 把
+    // 失败吞成 null/[]，页面照样把「没读到」渲染成 0（QR-W16）。
+    const miss = { stats: false, cmds: false, health: false };
     const [hostData, statsData, cmdData, healthData] = await Promise.all([
       listHosts("summary"),
-      getStats().catch(() => null),
-      listCommands({ limit: 12 }).catch(() => ({ items: [] as CommandRow[] })),
-      getHealth().catch(() => null)
+      getStats().catch(() => {
+        miss.stats = true;
+        return null;
+      }),
+      listCommands({ limit: 12 }).catch(() => {
+        miss.cmds = true;
+        return null;
+      }),
+      getHealth().catch(() => {
+        miss.health = true;
+        return null;
+      })
     ]);
     if (!isLatest()) return;
-    pollFailed.value = false;
     hosts.value = hostData.items;
     online.value = hostData.online;
     alerts.value = hostData.alerts;
-    stats.value = statsData;
-    recentCmds.value = cmdData.items;
-    health.value = healthData;
+    hostsRead.value = true;
+    // 某一路失败就保留上一轮的真值，只让页头读数变冷——用空值盖掉真读数是第二次的谎
+    if (!miss.stats) stats.value = statsData;
+    if (!miss.cmds && cmdData) {
+      recentCmds.value = cmdData.items;
+      cmdsRead.value = true;
+    }
+    if (!miss.health) health.value = healthData;
+    pollFailed.value = miss.stats || miss.cmds || miss.health;
   } catch (e: any) {
     if (!isLatest()) return;
-    pollFailed.value = silent;
+    // 手动失败同样要让读数变冷：数据确实可能已过期，区别只是多一条 toast
+    pollFailed.value = true;
     if (!silent) ElMessage.error("加载汇总数据失败：" + (e?.message ?? e));
   } finally {
     if (isLatest()) loading.value = false;
@@ -183,7 +217,7 @@ onMounted(() => {
   <div v-loading="loading" class="welcome">
     <!-- 轮询失败只在页头说一次：后端宕机时 10s 一次的 toast 会把真正的告警淹成噪音（W5） -->
     <div v-if="pollFailed" class="kk-sync kk-sync--stale kk-mb">
-      自动刷新失败，下方读数可能已过期
+      刷新失败，下方读数可能已过期
     </div>
     <!-- 统计卡片行：核心数字一眼可见，点击进入对应页面 -->
     <el-row :gutter="16" class="stat-row">
@@ -193,9 +227,12 @@ onMounted(() => {
           class="stat-card clickable"
           v-bind="press(() => go('/hosts/monitor'))"
         >
-          <div class="stat-value">{{ hosts.length }}</div>
+          <div class="stat-value">{{ nOr(hostsRead, hosts.length) }}</div>
           <div class="stat-label">主机总数</div>
-          <div class="stat-sub">在线 {{ online }} / 离线 {{ offline }}</div>
+          <div class="stat-sub">
+            在线 {{ nOr(hostsRead, online) }} / 离线
+            {{ nOr(hostsRead, offline) }}
+          </div>
         </el-card>
       </el-col>
       <el-col :xs="12" :sm="6">
@@ -206,11 +243,20 @@ onMounted(() => {
           v-bind="press(() => go('/hosts/monitor'))"
         >
           <div class="stat-value" :class="{ 'text-danger': alerts > 0 }">
-            {{ alerts }}
+            {{ nOr(hostsRead, alerts) }}
           </div>
           <div class="stat-label">磁盘告警</div>
-          <div class="stat-sub text-overflow" :title="alertHosts.join('、')">
-            {{ alertHosts.length ? alertHosts.join("、") : "无告警主机" }}
+          <div
+            class="stat-sub text-overflow"
+            :title="alertHosts.length ? alertHosts.join('、') : ''"
+          >
+            {{
+              hostsRead
+                ? alertHosts.length
+                  ? alertHosts.join("、")
+                  : "无告警主机"
+                : "没读到（主机接口不可达）"
+            }}
           </div>
         </el-card>
       </el-col>
@@ -221,11 +267,17 @@ onMounted(() => {
           v-bind="press(() => go('/command/shell'))"
         >
           <div class="stat-value">
-            {{ cmdStats.reduce((s, i) => s + i.value, 0) }}
+            {{
+              nOr(
+                statsRead,
+                cmdStats.reduce((s, i) => s + i.value, 0)
+              )
+            }}
           </div>
           <div class="stat-label">命令总数</div>
           <div class="stat-sub">
-            失败 {{ cmdStat("failed") }} / 执行中 {{ cmdStat("running") }}
+            失败 {{ nOr(statsRead, cmdStat("failed")) }} / 执行中
+            {{ nOr(statsRead, cmdStat("running")) }}
           </div>
         </el-card>
       </el-col>
@@ -297,7 +349,13 @@ onMounted(() => {
                 elapsedText(row.elapsed_ms)
               }}</template>
             </el-table-column>
-            <template #empty>暂无命令记录，去命令中心下发第一条</template>
+            <template #empty>
+              {{
+                cmdsRead
+                  ? "暂无命令记录，去命令中心下发第一条"
+                  : "没读到（命令接口不可达）"
+              }}
+            </template>
           </el-table>
         </el-card>
       </el-col>
@@ -351,15 +409,21 @@ onMounted(() => {
               </el-link>
             </div>
           </template>
-          <div v-else class="all-online">全部主机在线</div>
+          <div v-else :class="hostsRead ? 'all-online' : 'stat-sub'">
+            {{ hostsRead ? "全部主机在线" : "没读到（主机接口不可达）" }}
+          </div>
         </el-card>
 
         <el-card shadow="never" class="panel grow">
           <template #header><span>系统状态</span></template>
           <div class="sys-row">
             <span>Broker 链路</span>
-            <span :class="brokerOk ? 'text-success' : 'text-danger'">
-              {{ brokerOk ? "正常" : "断开" }}
+            <span
+              :class="
+                statsRead ? (brokerOk ? 'text-success' : 'text-danger') : ''
+              "
+            >
+              {{ brokerLabel }}
             </span>
           </div>
           <div class="sys-row">
@@ -417,14 +481,14 @@ onMounted(() => {
 
   .stat-label {
     margin-top: 4px;
-    color: var(--el-text-color-secondary);
     font-size: 14px;
+    color: var(--el-text-color-secondary);
   }
 
   .stat-sub {
     margin-top: 6px;
-    color: var(--el-text-color-placeholder);
     font-size: 12px;
+    color: var(--el-text-color-placeholder);
   }
 }
 
@@ -442,10 +506,10 @@ onMounted(() => {
   display: flex;
 
   .panel {
-    width: 100%;
-    margin-bottom: 0;
     display: flex;
     flex-direction: column;
+    width: 100%;
+    margin-bottom: 0;
 
     // 表格填满卡片剩余高度：行不足时空白收进表格区域，不出现卡片大片留白
     :deep(.el-card__body) {
@@ -479,8 +543,8 @@ onMounted(() => {
 
 .all-online {
   padding: 14px 0;
-  color: var(--el-text-color-placeholder);
   font-size: 13px;
+  color: var(--el-text-color-placeholder);
   text-align: center;
 }
 
@@ -500,19 +564,19 @@ onMounted(() => {
   display: flex;
   flex: 1;
   flex-direction: column;
-  align-items: center;
   gap: 6px;
-  padding: 16px 8px;
+  align-items: center;
   min-width: 80px;
+  padding: 16px 8px;
+  cursor: pointer;
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 6px;
-  cursor: pointer;
   transition: all 0.15s;
 
   &:hover {
-    border-color: var(--el-color-primary);
     color: var(--el-color-primary);
     background-color: var(--el-color-primary-light-9);
+    border-color: var(--el-color-primary);
   }
 
   span {
