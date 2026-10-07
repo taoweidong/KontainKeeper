@@ -8,5 +8,6 @@ PROTO_VER = 4
 # v4 的兼容窗口（P1）：协议里 v3 → v4 只做「新增可选字段」，服务端没有必要因为一次
 # 版本号上涨就把存量 Agent 全部判为不匹配（那等于一次升级全网闪断）。窗口期内 v3
 # 帧照常落库，总览页用 proto_ver 列把「待升级」标出来。
-# 关闭窗口：KK_DROP_PROTO_V3=1（`_accept_proto_vers()`），AGENTS.md 协议四件套同步。
+# 关闭窗口：设环境变量 KK_DROP_PROTO_V3=1（config.load_settings() 据此把窗口收缩为
+# (PROTO_VER,)），AGENTS.md 协议四件套同步。
 ACCEPT_PROTO_VERS = (3, 4)

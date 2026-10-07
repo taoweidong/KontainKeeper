@@ -1,10 +1,16 @@
-# KontainKeeper 通信协议 v3（MQTT）
+# KontainKeeper 通信协议 v4（MQTT）
 
-> `proto_ver = 3`。v1 是自研 WebSocket 帧协议（`ws://.../ws/agent`），已随 MQTT 迁移整体删除；
+> `proto_ver = 4`。v1 是自研 WebSocket 帧协议（`ws://.../ws/agent`），已随 MQTT 迁移整体删除；
 > v2 引入 MQTT 主题布局但保留 token 接入认证；**v3 去掉 token：Broker 匿名开放，
-> 接入管控改为服务端 `KK_AGENT_IPS` 白名单（上行帧统一携带自报 `ip` 字段）**。
+> 接入管控改为服务端 `KK_AGENT_IPS` 白名单（上行帧统一携带自报 `ip` 字段）**；
+> **v4 把管理对象从「K8S 容器 IDE」扩为任意 Linux 主机：`status` 帧新增
+> `env`/`group`/`labels`/`caps`（服务端另可接收 `docker` 摘要），全部是可选字段**，
+> 主题布局、QoS/retain 语义与其余帧结构一个字节都没动。
 > 历史内容见 git 记录。双端 `PROTO_VER` 必须一致：`agent/src/kk_agent/config.py` 与
 > `server/src/kk_server/__init__.py`。
+>
+> **v3 → v4 有兼容窗口**（见 §3.1.1）：窗口期内 v3 帧照常受理，抬版本号本身不会让存量
+> Agent 掉线。
 
 传输层是标准 **MQTT 3.1.1**（paho-mqtt 双端同库）。连接可靠性、重连退避、离线命令排队、
 在线判定（LWT）**全部由 Broker 负责**，不在本协议里重复实现。
@@ -60,7 +66,7 @@ v1 的 WebSocket close code（`4400/4401/4402/4403/4404`）**已随 WS 删除**�
 |---|---|
 | MQTT CONNACK `rc != 0` | 连接被拒（网络/ Broker 不可达，生产应告警） |
 | 上行帧自报 `ip` 不在 `KK_AGENT_IPS` 白名单 | 服务端拒绝该帧（主机不注册 / 指标不入库）并审计 `ip_rejected` |
-| `status` 帧 `proto_ver` 不匹配 | 服务端拒收该帧并审计，需升级 Agent |
+| `status` 帧 `proto_ver` 不在服务端兼容窗口内 | 服务端拒收该帧并审计 `proto_mismatch`，需升级 Agent（窗口语义见 §3.1.1） |
 
 白名单规则：
 
@@ -80,8 +86,13 @@ v1 的 WebSocket close code（`4400/4401/4402/4403/4404`）**已随 WS 删除**�
 ### 3.1 `kk/v1/{host}/status`（QoS1，retain，兼作 LWT）
 
 ```json
-{"online":true,"host":"web-01","ip":"10.0.0.5","agent_ver":"0.3.0","proto_ver":3,
- "image":"vscode-server:1.2","interval":60,"reason":"online","ts":1690000000}
+{"online":true,"host":"web-01","ip":"10.0.0.5","agent_ver":"0.4.0","proto_ver":4,
+ "image":"vscode-server:1.2","interval":60,"reason":"online","ts":1690000000,
+ "env":{"os":"Ubuntu 22.04.3 LTS","kernel":"5.15.0-118","arch":"x86_64",
+        "virt":"vm","in_container":false,"runtime":"","hostname":"web-01",
+        "ips":["10.0.0.5"]},
+ "group":"ops-web","labels":{"role":"web","idc":"sh-1"},
+ "caps":{"shell":true},"docker":{"total":12,"running":11,"unhealthy":1}}
 ```
 
 | 字段 | 说明 |
@@ -89,14 +100,46 @@ v1 的 WebSocket close code（`4400/4401/4402/4403/4404`）**已随 WS 删除**�
 | `online` | 上线 `true`；LWT 或主动下线为 `false` |
 | `host` | 主机标识 |
 | `ip` | 自报出口 IP（`KK_ADVERTISE_IP` 覆盖 > 自动探测），服务端按 `KK_AGENT_IPS` 白名单校验；探测失败为空串（将被拒） |
-| `proto_ver` | 必须为 `3` |
+| `proto_ver` | 必须落在服务端兼容窗口内：当前接受 `3` 或 `4`，配 `KK_DROP_PROTO_V3=1` 后只接受 `4`（§3.1.1） |
 | `reason` | 可读原因：`online` / `offline` / `updating`（自更新前自报）/ LWT 触发时为空 |
 | `ts` | Unix 秒 |
+| `env` / `group` / `labels` / `caps` / `docker` | **v4 新增，全部可选**，见 §3.1.1 |
 
 > **`reason=updating`（B6.1）**：`os.execv` 自更新会直接替换进程、断开 MQTT，Broker 随即
 > 补发 LWT（`reason` 为空）。Agent 在 execv 前先发一帧 `online=false, reason=updating`
 > 并**等 PUBACK**再替换进程，服务端据此把「正在升级」与「容器停了」区分开。
 > 服务端对「空 reason 覆盖刚写入的 `updating`」有 120s 宽限保留，避免紧跟着的 LWT 把它抹白。
+> 这里的「等 PUBACK」是**真等**：paho 的 `wait_for_publish()` 超时是静默返回，Agent 侧还要
+> 再问一次 `is_published()`，否则「已入队」会被当成「已送达」，execv 一来帧就随进程一起没了。
+
+### 3.1.1 v4 元信息字段与兼容窗口
+
+v4 只往 `status` 帧里**加可选字段**，不删不改语义——这是兼容窗口成立的前提：帧结构
+没变，服务端只是少读几个键而已。
+
+| 字段 | 类型 | 内容 | 缺省与容错 |
+|---|---|---|---|
+| `env` | object | 主机指纹：`os`（pretty name）、`kernel`、`arch`、`virt`（`metal`/`vm`/`container`，容器优先级最高）、`in_container`、`runtime`（容器内粗判：`docker`/`kubernetes`/`container`，非容器为空串）、`hostname`、`ips[]` | 任一项缺失即缺省；服务端只取 `virt/os/kernel/arch` 落标量列，坏值回落空串，`virt` 空则记 `container` |
+| `group` | string | 单值分组（`KK_GROUP`，截 64 字符）——一个主机只属于一个组 | 空串 = 未分组 |
+| `labels` | object | 多值维度 `k=v`，供总览多维筛选。Agent 侧由 `KK_LABELS` 逗号分隔解析：无 `=` 的片段收成 `k: ""`，重复 key 后者覆盖，key 截 64、value 截 128 字符 | 非 dict 当 `{}`；服务端入库前整列按 4096 字符封顶，超限截断并写 `_truncated` 标记（摘要视图不带它，详情侧才解析） |
+| `caps` | object | 能力位声明，内置 Agent 目前只报 `{"shell": <KK_ALLOW_SHELL>}` | 同上封顶；**当前只上报、服务端未拿它做门禁**（QR-S35） |
+| `docker` | object | 容器编排摘要 `{"total","running","unhealthy"}`，供总览一列 | 非 dict 当 `{}`；内置 Agent **暂不发送**，为编排侧预留 |
+
+**QoS / retain / 主题布局与 v3 完全一致**（§1.1 那张表是硬约束，抬版本不动它）。
+`hb`、`result`、`cmd` 三帧在 v4 里没有任何字段变化。
+
+兼容窗口（`server/src/kk_server/__init__.py` 的 `ACCEPT_PROTO_VERS = (3, 4)`）：
+
+- 窗口内：v3 帧照常解析落库，`proto_ver` 落 3，总览页据此标「待升级」。
+- 关窗口：设 `KK_DROP_PROTO_V3=1`，窗口收缩成 `(4,)`，v3 帧走拒收 + 审计。
+- **窗口是精确集合，不是「不低于某个版本都兼容」**：窗口外的帧——更老的 v1/v2，或还没
+  开放的更新版本——按新语义解析会得到**错的 `online` 值**，比丢帧更危险，所以拒收而不是
+  尽力解析（畸形值如 `"proto_ver":"v3"` 同样按窗口外处理）。
+- 关窗口前必须看服务端统计里的 **`proto_v3_received`**（/system 页的「旧协议帧」）：
+  它只在受理窗口内旧协议帧时累加，是「存量 Agent 是否全部升完」的唯一依据。它是
+  **进程内累计值**，升级本身不会让它下降——正确读法是「存量 Agent 全部升级完 →
+  重启服务端 → 它仍为 0」。**没看到 0 就关窗口等于一次全网闪断。**
+
 
 ### 3.2 `kk/v1/{host}/hb`（QoS0，**不 retain**）
 
