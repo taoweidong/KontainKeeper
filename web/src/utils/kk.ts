@@ -22,7 +22,8 @@ export const durText = (sec?: number | null): string => {
   const s = Math.max(0, Math.round(sec));
   if (s < 60) return `${s} 秒`;
   if (s < 3600) return `${Math.floor(s / 60)} 分 ${s % 60} 秒`;
-  if (s < 86400) return `${Math.floor(s / 3600)} 小时 ${Math.floor((s % 3600) / 60)} 分`;
+  if (s < 86400)
+    return `${Math.floor(s / 3600)} 小时 ${Math.floor((s % 3600) / 60)} 分`;
   return `${Math.floor(s / 86400)} 天 ${Math.floor((s % 86400) / 3600)} 小时`;
 };
 
@@ -44,7 +45,9 @@ export const errText = (e: any): string =>
   e?.response?.data?.detail ?? e?.message ?? String(e);
 
 /** 命令状态 → Element Plus 标签类型 */
-export const statusType = (s: string): "success" | "danger" | "info" | "warning" | "primary" => {
+export const statusType = (
+  s: string
+): "success" | "danger" | "info" | "warning" | "primary" => {
   switch (s) {
     case "done":
       return "success";
@@ -87,16 +90,18 @@ export const fileStamp = (d = new Date()): string => {
 };
 
 export const statusLabel = (s: string): string => {
-  return {
-    pending: "待下发",
-    sent: "已下发",
-    running: "执行中",
-    done: "已完成",
-    failed: "失败",
-    timeout: "超时",
-    lost: "结果丢失",
-    queued: "已排队"
-  }[s] || s;
+  return (
+    {
+      pending: "待下发",
+      sent: "已下发",
+      running: "执行中",
+      done: "已完成",
+      failed: "失败",
+      timeout: "超时",
+      lost: "结果丢失",
+      queued: "已排队"
+    }[s] || s
+  );
 };
 
 /** 选机升级被跳过的原因 → 中文。键集与后端 `controllers/agent_update.py` 穷举的
@@ -113,6 +118,8 @@ export const upgradeSkipText = (reason?: string): string => {
       no_binary: "未上传任何版本",
       bad_version: "版本号无效",
       no_broker: "服务端未连 Broker"
-    }[reason || ""] || reason || "未知原因"
+    }[reason || ""] ||
+    reason ||
+    "未知原因"
   );
 };

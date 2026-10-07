@@ -70,7 +70,11 @@ async function load(silent = false) {
     const [cur, hosts, upds] = await Promise.all([
       getAgentCurrent(),
       listHosts("summary"),
-      listUpdates(50).catch(() => ({ items: [] as UpdateRow[], summary: {}, limit: 50 }))
+      listUpdates(50).catch(() => ({
+        items: [] as UpdateRow[],
+        summary: {},
+        limit: 50
+      }))
     ]);
     if (!isLatest()) return;
     pollFailed.value = false;
@@ -119,14 +123,20 @@ function applySelection() {
 
 /** 跨页带来的 ?pods= 预填（从主机总览「批量升级」跳转），只认当前落后清单里的主机 */
 function prefillFromQuery() {
-  const qpods = String(route.query.pods || "").split(",").map(s => s.trim()).filter(Boolean);
+  const qpods = String(route.query.pods || "")
+    .split(",")
+    .map(s => s.trim())
+    .filter(Boolean);
   if (!qpods.length) return;
   selection.value = outdated.value.filter(h => qpods.includes(h.pod));
   applySelection();
 }
 
 /** 仅当 ?pods= 本身变化时才重设勾选；轮询 load() 不触发这里，用户手改的勾选不被冲掉 */
-watch(() => route.query.pods, () => prefillFromQuery());
+watch(
+  () => route.query.pods,
+  () => prefillFromQuery()
+);
 
 /** 被跳过的台数超过这个值就只列前若干条，其余按原因聚合报数。
  *  500 台批量升级若被跳过几十台，只给一个数字运维无法判断该不该重试
@@ -189,7 +199,10 @@ async function onUpgrade() {
   }
   warn += "。确认执行？";
   try {
-    await ElMessageBox.confirm(warn, "批量升级", { type: "warning", confirmButtonText: "确认升级" });
+    await ElMessageBox.confirm(warn, "批量升级", {
+      type: "warning",
+      confirmButtonText: "确认升级"
+    });
   } catch {
     return;
   }
@@ -219,7 +232,9 @@ async function onUpgrade() {
 function selectAllOutdated() {
   selection.value = [...outdated.value];
   applySelection(); // 模型与表格勾选态同步
-  ElMessage.info(`已选 ${selection.value.length} 台落后主机；右下角「批量升级」确认后再下发`);
+  ElMessage.info(
+    `已选 ${selection.value.length} 台落后主机；右下角「批量升级」确认后再下发`
+  );
 }
 
 function clearSelection() {
@@ -239,19 +254,43 @@ onMounted(async () => {
       <template #header>
         <div class="kk-toolbar">
           <div class="kk-stat">
-            <span>当前版本 <b>{{ current?.version || "（未上传）" }}</b></span>
-            <span>落后主机 <b :class="current?.hosts_outdated ? 'kk-bad' : 'kk-ok'">
-              {{ current?.hosts_outdated ?? 0 }}
-            </b> / {{ current?.hosts_total ?? 0 }}</span>
+            <span
+              >当前版本 <b>{{ current?.version || "（未上传）" }}</b></span
+            >
+            <span
+              >落后主机
+              <b :class="current?.hosts_outdated ? 'kk-bad' : 'kk-ok'">
+                {{ current?.hosts_outdated ?? 0 }}
+              </b>
+              / {{ current?.hosts_total ?? 0 }}</span
+            >
             <span v-if="current?.uploaded_at" class="kk-sub">
-              {{ ageText(Math.max(0, Math.floor(Date.now() / 1000) - current.uploaded_at)) }}上传
+              {{
+                ageText(
+                  Math.max(
+                    0,
+                    Math.floor(Date.now() / 1000) - current.uploaded_at
+                  )
+                )
+              }}上传
             </span>
             <span class="kk-sync" :class="{ 'kk-sync--stale': pollFailed }">
-              {{ pollFailed ? "自动刷新失败，读数可能已过期" : `每 ${interval} 秒自动刷新` }}
+              {{
+                pollFailed
+                  ? "自动刷新失败，读数可能已过期"
+                  : `每 ${interval} 秒自动刷新`
+              }}
             </span>
           </div>
           <div class="kk-actions">
-            <el-select v-model="interval" style="width: 120px" @change="(v: any) => setPoll('host-update', () => load(true), (v as number) * 1000)">
+            <el-select
+              v-model="interval"
+              style="width: 120px"
+              @change="
+                (v: any) =>
+                  setPoll('host-update', () => load(true), (v as number) * 1000)
+              "
+            >
               <el-option label="5 秒" :value="5" />
               <el-option label="10 秒" :value="10" />
               <el-option label="30 秒" :value="30" />
@@ -275,7 +314,9 @@ onMounted(async () => {
         </el-table-column>
         <el-table-column label="当前版本" width="120">
           <template #default="{ row }">
-            <el-tag size="small" type="warning">{{ row.agent_ver || "-" }}</el-tag>
+            <el-tag size="small" type="warning">{{
+              row.agent_ver || "-"
+            }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="目标版本" width="120">
@@ -292,7 +333,13 @@ onMounted(async () => {
           <template #default="{ row }">{{ ageText(row.age_sec) }}</template>
         </el-table-column>
         <template #empty>
-          <el-empty :description="hasLatest ? '所有主机都是最新版本' : '还没有待分发版本，先去上传 Agent 二进制'" />
+          <el-empty
+            :description="
+              hasLatest
+                ? '所有主机都是最新版本'
+                : '还没有待分发版本，先去上传 Agent 二进制'
+            "
+          />
         </template>
       </el-table>
 
@@ -327,7 +374,12 @@ onMounted(async () => {
         <span>升级台账（最近 50 条）</span>
       </template>
       <el-table :data="updates" size="small" class="kk-fill-table">
-        <el-table-column prop="id" label="台账 ID" width="170" show-overflow-tooltip />
+        <el-table-column
+          prop="id"
+          label="台账 ID"
+          width="170"
+          show-overflow-tooltip
+        />
         <el-table-column prop="pod" label="主机" min-width="120" />
         <el-table-column label="从 → 到" min-width="200">
           <template #default="{ row }">

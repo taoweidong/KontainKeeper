@@ -1,5 +1,12 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
+import {
+  computed,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  shallowRef,
+  watch
+} from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useWindowSize } from "@vueuse/core";
 import { ElMessage } from "element-plus";
@@ -31,7 +38,13 @@ import { usePolls, useSeq } from "@/utils/kkPoll";
 
 defineOptions({ name: "HostDetail" });
 
-echarts.use([LineChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer]);
+echarts.use([
+  LineChart,
+  GridComponent,
+  TooltipComponent,
+  LegendComponent,
+  CanvasRenderer
+]);
 
 const route = useRoute();
 const router = useRouter();
@@ -64,14 +77,27 @@ const net = computed(() => {
 const { width: winWidth } = useWindowSize();
 const descCols = computed(() => (winWidth.value >= 1200 ? 4 : 2));
 
-function renderChart(series: Array<{ ts: number; cpu: number | null; mem_mb: number | null }>) {
+function renderChart(
+  series: Array<{ ts: number; cpu: number | null; mem_mb: number | null }>
+) {
   if (!chartEl.value) return;
   if (!chart.value) chart.value = echarts.init(chartEl.value);
   // x 轴刻度随窗口变化：跨天窗口（近 7 天）必须带「月-日」，否则一屏全是重复的钟点
   const fmt: Intl.DateTimeFormatOptions =
     hours.value > 24
-      ? { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }
-      : { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false };
+      ? {
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false
+        }
+      : {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+          hour12: false
+        };
   const times = series.map(p =>
     new Date(p.ts * 1000).toLocaleString("zh-CN", fmt)
   );
@@ -220,15 +246,26 @@ onBeforeUnmount(() => {
             >
               {{ detail.online ? "在线" : "离线" }}
             </el-tag>
-            <el-tag v-if="detail.disk_alert" class="kk-ml" size="small" type="danger">
+            <el-tag
+              v-if="detail.disk_alert"
+              class="kk-ml"
+              size="small"
+              type="danger"
+            >
               磁盘告警
             </el-tag>
-            <span class="kk-sub kk-ml">最近心跳 {{ ageText(detail.age_sec) }}</span>
+            <span class="kk-sub kk-ml"
+              >最近心跳 {{ ageText(detail.age_sec) }}</span
+            >
             <span
               class="kk-sync kk-ml"
               :class="{ 'kk-sync--stale': pollFailed }"
             >
-              {{ pollFailed ? "自动刷新失败，曲线可能已过期" : "曲线每 30 秒自动刷新" }}
+              {{
+                pollFailed
+                  ? "自动刷新失败，曲线可能已过期"
+                  : "曲线每 30 秒自动刷新"
+              }}
             </span>
           </div>
           <div class="kk-actions">
@@ -248,7 +285,11 @@ onBeforeUnmount(() => {
             >
               升级到 {{ detail.latest_agent_ver }}
             </el-button>
-            <el-button type="primary" :loading="exporting" @click="onExportMetrics">
+            <el-button
+              type="primary"
+              :loading="exporting"
+              @click="onExportMetrics"
+            >
               导出指标
             </el-button>
           </div>
@@ -256,26 +297,39 @@ onBeforeUnmount(() => {
       </template>
 
       <el-descriptions :column="descCols" border class="kk-desc">
-        <el-descriptions-item label="镜像">{{ detail.image || "-" }}</el-descriptions-item>
-        <el-descriptions-item label="Agent 版本">{{ detail.agent_ver || "-" }}</el-descriptions-item>
-        <el-descriptions-item label="上报间隔">{{ detail.hb_interval }} 秒</el-descriptions-item>
+        <el-descriptions-item label="镜像">{{
+          detail.image || "-"
+        }}</el-descriptions-item>
+        <el-descriptions-item label="Agent 版本">{{
+          detail.agent_ver || "-"
+        }}</el-descriptions-item>
+        <el-descriptions-item label="上报间隔"
+          >{{ detail.hb_interval }} 秒</el-descriptions-item
+        >
         <el-descriptions-item label="系统">
           {{ detail.metrics?.sys?.os || detail.metrics?.kernel || "-" }}
         </el-descriptions-item>
         <el-descriptions-item label="CPU">
-          {{ numText(detail.metrics?.cpu) }}% · {{ detail.metrics?.cpu_cores ?? "-" }} 核 ·
-          load {{ detail.metrics?.load || "-" }}
+          {{ numText(detail.metrics?.cpu) }}% ·
+          {{ detail.metrics?.cpu_cores ?? "-" }} 核 · load
+          {{ detail.metrics?.load || "-" }}
         </el-descriptions-item>
         <el-descriptions-item label="内存">
-          {{ mbText(detail.metrics?.mem_mb) }} / {{ mbText(detail.metrics?.mem_total_mb) }}
-          （{{ numText(detail.metrics?.mem_pct, 0) }}%）
+          {{ mbText(detail.metrics?.mem_mb) }} /
+          {{ mbText(detail.metrics?.mem_total_mb) }} （{{
+            numText(detail.metrics?.mem_pct, 0)
+          }}%）
         </el-descriptions-item>
         <el-descriptions-item label="磁盘 IO">
-          读 {{ numText(detail.metrics?.disk_read_mb, 2) }} MB/s ·
-          写 {{ numText(detail.metrics?.disk_write_mb, 2) }} MB/s
+          读 {{ numText(detail.metrics?.disk_read_mb, 2) }} MB/s · 写
+          {{ numText(detail.metrics?.disk_write_mb, 2) }} MB/s
         </el-descriptions-item>
         <el-descriptions-item label="运行时长">
-          {{ detail.metrics?.sys?.uptime_sec ? ageText(detail.metrics.sys.uptime_sec) : "-" }}
+          {{
+            detail.metrics?.sys?.uptime_sec
+              ? ageText(detail.metrics.sys.uptime_sec)
+              : "-"
+          }}
         </el-descriptions-item>
       </el-descriptions>
 
@@ -307,10 +361,14 @@ onBeforeUnmount(() => {
           <el-table :data="net" size="small" max-height="220">
             <el-table-column prop="nic" label="网卡" min-width="120" />
             <el-table-column label="发送" min-width="90">
-              <template #default="{ row }">{{ numText(row.sent_mb, 3) }}</template>
+              <template #default="{ row }">{{
+                numText(row.sent_mb, 3)
+              }}</template>
             </el-table-column>
             <el-table-column label="接收" min-width="90">
-              <template #default="{ row }">{{ numText(row.recv_mb, 3) }}</template>
+              <template #default="{ row }">{{
+                numText(row.recv_mb, 3)
+              }}</template>
             </el-table-column>
             <el-table-column label="pps（发/收）" min-width="120">
               <template #default="{ row }">
@@ -360,9 +418,15 @@ onBeforeUnmount(() => {
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="输出（末 2KB）" min-width="240" show-overflow-tooltip>
+        <el-table-column
+          label="输出（末 2KB）"
+          min-width="240"
+          show-overflow-tooltip
+        >
           <template #default="{ row }">
-            {{ row.out_purged ? "（输出已按保留策略清理）" : row.out_tail || "-" }}
+            {{
+              row.out_purged ? "（输出已按保留策略清理）" : row.out_tail || "-"
+            }}
           </template>
         </el-table-column>
         <el-table-column label="创建" width="160">
