@@ -23,7 +23,9 @@ const emit = defineEmits<{ "update:pods": [string[]] }>();
 const fetched = ref<HostSummary[]>([]);
 /** 可选项来源：父页传了就用父页的——shell / collect 在挂载时已经拉过一次全量清单，
  *  这里再打一遍就是 500 台 × 两份 JSON（QR-W7）；父页没传（详情类页面）才懒加载。 */
-const options = computed(() => (props.hosts?.length ? props.hosts : fetched.value));
+const options = computed(() =>
+  props.hosts?.length ? props.hosts : fetched.value
+);
 const loading = ref(false);
 const drawer = ref(false);
 const keyword = ref("");
@@ -40,18 +42,24 @@ const candidates = computed(() => {
       if (onlyOnline.value && !h.online) return false;
       if (!kw) return true;
       return (
-        h.pod.toLowerCase().includes(kw) || (h.image || "").toLowerCase().includes(kw)
+        h.pod.toLowerCase().includes(kw) ||
+        (h.image || "").toLowerCase().includes(kw)
       );
     })
     .slice()
-    .sort((a, b) => Number(b.online) - Number(a.online) || a.pod.localeCompare(b.pod));
+    .sort(
+      (a, b) =>
+        Number(b.online) - Number(a.online) || a.pod.localeCompare(b.pod)
+    );
 });
 
 const selected = computed(() =>
   options.value.filter(h => props.pods.includes(h.pod))
 );
 const shown = computed(() => selected.value.slice(0, 5));
-const restCount = computed(() => Math.max(0, selected.value.length - shown.value.length));
+const restCount = computed(() =>
+  Math.max(0, selected.value.length - shown.value.length)
+);
 
 /** 主机清单懒拉取（只在首次打开时打一次）。
  *  `useSeq` 守卫的是连点/开了又关再开的并发两路请求：迟到那路必须整条丢弃，
@@ -138,11 +146,18 @@ watch(
         size="small"
         closable
         :type="h.online ? 'success' : 'info'"
-        @close="emit('update:pods', props.pods.filter(p => p !== h.pod))"
+        @close="
+          emit(
+            'update:pods',
+            props.pods.filter(p => p !== h.pod)
+          )
+        "
       >
         {{ h.pod }}
       </el-tag>
-      <el-tag v-if="restCount" size="small" type="info">+{{ restCount }}</el-tag>
+      <el-tag v-if="restCount" size="small" type="info"
+        >+{{ restCount }}</el-tag
+      >
       <span v-if="!selected.length" class="kk-sub">未选择主机</span>
     </div>
 
@@ -155,7 +170,9 @@ watch(
           style="width: 240px"
         />
         <div class="kk-actions">
-          <el-checkbox v-model="onlyOnline" @change="syncTableSelection">仅在线</el-checkbox>
+          <el-checkbox v-model="onlyOnline" @change="syncTableSelection"
+            >仅在线</el-checkbox
+          >
           <el-button size="small" @click="selectAll">全选</el-button>
           <el-button size="small" @click="invert">反选</el-button>
           <el-button size="small" @click="clearAll">清空</el-button>
@@ -192,14 +209,17 @@ watch(
           <template #default="{ row }">{{ row.cpu ?? "-" }}%</template>
         </el-table-column>
         <template #empty>
-          <el-empty description="没有匹配的主机，试试清除搜索或关闭「仅在线」" />
+          <el-empty
+            description="没有匹配的主机，试试清除搜索或关闭「仅在线」"
+          />
         </template>
       </el-table>
 
       <template #footer>
         <div class="kk-toolbar">
           <span class="kk-sub">
-            已选 {{ draft.length }} 台（离线主机命令会由 Broker 排队，重连后自动补投）
+            已选 {{ draft.length }} 台（离线主机命令会由 Broker
+            排队，重连后自动补投）
           </span>
           <div class="kk-actions">
             <el-button @click="drawer = false">取消</el-button>

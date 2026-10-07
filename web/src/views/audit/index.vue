@@ -97,9 +97,11 @@ async function onExport() {
 }
 
 const actionType = (a: string): "success" | "danger" | "warning" | "info" => {
-  if (a.includes("fail") || a.includes("blocked") || a.includes("rejected")) return "danger";
+  if (a.includes("fail") || a.includes("blocked") || a.includes("rejected"))
+    return "danger";
   if (a.includes("mismatch") || a.includes("timeout")) return "warning";
-  if (a.includes("ok") || a.includes("create") || a.includes("restore")) return "success";
+  if (a.includes("ok") || a.includes("create") || a.includes("restore"))
+    return "success";
   return "info";
 };
 
@@ -118,7 +120,9 @@ onMounted(load);
             clearable
             style="width: 240px"
           />
-          <el-select v-model="limit" style="width: 130px" @change="load">
+          <!-- 不挂@change：watch(limit) 已经统一处理「条数变了要重载」，
+               两处都触发会让一次操作打两遍后端（FE-8）。 -->
+          <el-select v-model="limit" style="width: 130px">
             <el-option label="最近 100 条" :value="100" />
             <el-option label="最近 200 条" :value="200" />
             <el-option label="最近 500 条" :value="500" />
@@ -132,29 +136,37 @@ onMounted(load);
     </template>
 
     <div class="kk-page__body">
-      <el-table v-loading="loading" :data="rows" size="small" class="kk-fill-table">
-      <el-table-column prop="id" label="#" width="80" />
-      <el-table-column label="时间" width="170">
-        <template #default="{ row }">{{ tsText(row.ts) }}</template>
-      </el-table-column>
-      <el-table-column prop="actor" label="操作者" width="140" />
-      <el-table-column label="动作" width="180">
-        <template #default="{ row }">
-          <el-tag :type="actionType(row.action)" size="small">{{ row.action }}</el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="明细" min-width="320">
-        <template #default="{ row }">
-          <span
-            v-for="(v, k) in parseDetail(row.detail)"
-            :key="String(k)"
-            class="kk-kv"
-          >
-            <b>{{ k }}</b>: {{ typeof v === "object" ? JSON.stringify(v) : v }}
-          </span>
-          <span v-if="!row.detail" class="kk-sub">-</span>
-        </template>
-      </el-table-column>
+      <el-table
+        v-loading="loading"
+        :data="rows"
+        size="small"
+        class="kk-fill-table"
+      >
+        <el-table-column prop="id" label="#" width="80" />
+        <el-table-column label="时间" width="170">
+          <template #default="{ row }">{{ tsText(row.ts) }}</template>
+        </el-table-column>
+        <el-table-column prop="actor" label="操作者" width="140" />
+        <el-table-column label="动作" width="180">
+          <template #default="{ row }">
+            <el-tag :type="actionType(row.action)" size="small">{{
+              row.action
+            }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="明细" min-width="320">
+          <template #default="{ row }">
+            <span
+              v-for="(v, k) in parseDetail(row.detail)"
+              :key="String(k)"
+              class="kk-kv"
+            >
+              <b>{{ k }}</b
+              >: {{ typeof v === "object" ? JSON.stringify(v) : v }}
+            </span>
+            <span v-if="!row.detail" class="kk-sub">-</span>
+          </template>
+        </el-table-column>
         <template #empty>
           <el-empty description="暂无审计记录" />
         </template>

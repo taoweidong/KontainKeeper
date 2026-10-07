@@ -4,9 +4,20 @@ import { useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 
 import { listHosts, type HostSummary } from "@/api/containers";
-import { getHealth, getStats, type HealthResult, type StatsResult } from "@/api/system";
+import {
+  getHealth,
+  getStats,
+  type HealthResult,
+  type StatsResult
+} from "@/api/system";
 import { listCommands, type CommandRow } from "@/api/commands";
-import { durText, elapsedText, statusLabel, statusType, tsText } from "@/utils/kk";
+import {
+  durText,
+  elapsedText,
+  statusLabel,
+  statusType,
+  tsText
+} from "@/utils/kk";
 import { usePolls, useSeq } from "@/utils/kkPoll";
 import { useRenderIcon } from "@/components/ReIcon/src/hooks";
 import MonitorIcon from "~icons/ri/dashboard-2-line";
@@ -38,8 +49,16 @@ const cmdStats = computed(() => {
   const c = stats.value?.commands ?? {};
   const entries: Array<{ label: string; key: string; value: number }> = [
     { label: "已完成", key: "done", value: c.done ?? 0 },
-    { label: "失败", key: "failed", value: (c.failed ?? 0) + (c.timeout ?? 0) + (c.lost ?? 0) },
-    { label: "执行中", key: "running", value: (c.running ?? 0) + (c.sent ?? 0) },
+    {
+      label: "失败",
+      key: "failed",
+      value: (c.failed ?? 0) + (c.timeout ?? 0) + (c.lost ?? 0)
+    },
+    {
+      label: "执行中",
+      key: "running",
+      value: (c.running ?? 0) + (c.sent ?? 0)
+    },
     { label: "待下发", key: "pending", value: c.pending ?? 0 }
   ];
   return entries;
@@ -63,11 +82,17 @@ function gotoUpdate() {
 
 /** 离线主机名单（最多 5 个）：告警卡片下钻用 */
 const offlineHosts = computed(() =>
-  hosts.value.filter(h => !h.online).slice(0, 5).map(h => h.pod)
+  hosts.value
+    .filter(h => !h.online)
+    .slice(0, 5)
+    .map(h => h.pod)
 );
 
 const alertHosts = computed(() =>
-  hosts.value.filter(h => h.disk_alert).slice(0, 5).map(h => h.pod)
+  hosts.value
+    .filter(h => h.disk_alert)
+    .slice(0, 5)
+    .map(h => h.pod)
 );
 
 /** silent=true 供轮询复用：数据原位更新，不闪整页 loading（交互流畅度，评审 P3） */
@@ -145,12 +170,14 @@ onMounted(() => {
     <!-- 统计卡片行：核心数字一眼可见，点击进入对应页面 -->
     <el-row :gutter="16" class="stat-row">
       <el-col :xs="12" :sm="6">
-        <el-card shadow="hover" class="stat-card clickable" @click="go('/hosts/monitor')">
+        <el-card
+          shadow="hover"
+          class="stat-card clickable"
+          @click="go('/hosts/monitor')"
+        >
           <div class="stat-value">{{ hosts.length }}</div>
           <div class="stat-label">主机总数</div>
-          <div class="stat-sub">
-            在线 {{ online }} / 离线 {{ offline }}
-          </div>
+          <div class="stat-sub">在线 {{ online }} / 离线 {{ offline }}</div>
         </el-card>
       </el-col>
       <el-col :xs="12" :sm="6">
@@ -160,7 +187,9 @@ onMounted(() => {
           :class="{ 'stat-warn': alerts > 0 }"
           @click="go('/hosts/monitor')"
         >
-          <div class="stat-value" :class="{ 'text-danger': alerts > 0 }">{{ alerts }}</div>
+          <div class="stat-value" :class="{ 'text-danger': alerts > 0 }">
+            {{ alerts }}
+          </div>
           <div class="stat-label">磁盘告警</div>
           <div class="stat-sub text-overflow" :title="alertHosts.join('、')">
             {{ alertHosts.length ? alertHosts.join("、") : "无告警主机" }}
@@ -168,8 +197,14 @@ onMounted(() => {
         </el-card>
       </el-col>
       <el-col :xs="12" :sm="6">
-        <el-card shadow="hover" class="stat-card clickable" @click="go('/command/shell')">
-          <div class="stat-value">{{ cmdStats.reduce((s, i) => s + i.value, 0) }}</div>
+        <el-card
+          shadow="hover"
+          class="stat-card clickable"
+          @click="go('/command/shell')"
+        >
+          <div class="stat-value">
+            {{ cmdStats.reduce((s, i) => s + i.value, 0) }}
+          </div>
           <div class="stat-label">命令总数</div>
           <div class="stat-sub">
             失败 {{ cmdStats[1].value }} / 执行中 {{ cmdStats[2].value }}
@@ -178,7 +213,10 @@ onMounted(() => {
       </el-col>
       <el-col :xs="12" :sm="6">
         <el-card shadow="hover" class="stat-card clickable" @click="gotoUpdate">
-          <div class="stat-value" :class="{ 'text-warning': (stats?.agents_outdated ?? 0) > 0 }">
+          <div
+            class="stat-value"
+            :class="{ 'text-warning': (stats?.agents_outdated ?? 0) > 0 }"
+          >
             {{ stats?.agent_latest_ver ? `v${stats.agent_latest_ver}` : "—" }}
           </div>
           <div class="stat-label">Agent 当前版本</div>
@@ -209,9 +247,16 @@ onMounted(() => {
             @row-click="(r: any) => go('/command/shell')"
           >
             <el-table-column prop="created_at" label="时间" width="170">
-              <template #default="{ row }">{{ tsText(row.created_at) }}</template>
+              <template #default="{ row }">{{
+                tsText(row.created_at)
+              }}</template>
             </el-table-column>
-            <el-table-column prop="pod" label="主机" min-width="120" show-overflow-tooltip />
+            <el-table-column
+              prop="pod"
+              label="主机"
+              min-width="120"
+              show-overflow-tooltip
+            />
             <el-table-column prop="kind" label="类型" width="90">
               <template #default="{ row }">{{ kindLabel(row.kind) }}</template>
             </el-table-column>
@@ -226,7 +271,9 @@ onMounted(() => {
               </template>
             </el-table-column>
             <el-table-column label="耗时" width="90">
-              <template #default="{ row }">{{ elapsedText(row.elapsed_ms) }}</template>
+              <template #default="{ row }">{{
+                elapsedText(row.elapsed_ms)
+              }}</template>
             </el-table-column>
             <template #empty>暂无命令记录，去命令中心下发第一条</template>
           </el-table>
@@ -239,15 +286,21 @@ onMounted(() => {
           <template #header><span>快速入口</span></template>
           <div class="quick-links">
             <div class="quick-link" @click="go('/hosts/monitor')">
-              <el-icon size="22"><component :is="useRenderIcon(MonitorIcon)" /></el-icon>
+              <el-icon size="22"
+                ><component :is="useRenderIcon(MonitorIcon)"
+              /></el-icon>
               <span>主机总览</span>
             </div>
             <div class="quick-link" @click="go('/command/shell')">
-              <el-icon size="22"><component :is="useRenderIcon(CommandIcon)" /></el-icon>
+              <el-icon size="22"
+                ><component :is="useRenderIcon(CommandIcon)"
+              /></el-icon>
               <span>命令中心</span>
             </div>
             <div class="quick-link" @click="go('/audit/index')">
-              <el-icon size="22"><component :is="useRenderIcon(AuditIcon)" /></el-icon>
+              <el-icon size="22"
+                ><component :is="useRenderIcon(AuditIcon)"
+              /></el-icon>
               <span>审计日志</span>
             </div>
           </div>
@@ -267,7 +320,11 @@ onMounted(() => {
             </div>
             <div class="stat-sub" style="margin-top: 8px">
               共 {{ offline }} 台离线，
-              <el-link type="primary" :underline="false" @click="go('/hosts/monitor')">
+              <el-link
+                type="primary"
+                :underline="false"
+                @click="go('/hosts/monitor')"
+              >
                 查看全部
               </el-link>
             </div>
@@ -287,13 +344,16 @@ onMounted(() => {
             <span>服务版本</span><span>{{ health?.version ?? "-" }}</span>
           </div>
           <div class="sys-row">
-            <span>协议版本</span><span>{{ health ? `v${health.proto_ver}` : "-" }}</span>
+            <span>协议版本</span
+            ><span>{{ health ? `v${health.proto_ver}` : "-" }}</span>
           </div>
           <div class="sys-row">
-            <span>心跳样本</span><span>{{ stats?.storage?.heartbeats ?? "-" }}</span>
+            <span>心跳样本</span
+            ><span>{{ stats?.storage?.heartbeats ?? "-" }}</span>
           </div>
           <div class="sys-row">
-            <span>运行时长</span><span>{{ stats ? durText(stats.uptime_sec) : "-" }}</span>
+            <span>运行时长</span
+            ><span>{{ stats ? durText(stats.uptime_sec) : "-" }}</span>
           </div>
         </el-card>
       </el-col>

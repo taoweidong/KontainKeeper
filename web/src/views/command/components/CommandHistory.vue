@@ -7,7 +7,14 @@
 - 输出改右侧抽屉：原 el-dialog 居中弹窗会完全遮挡列表，无法连续对比多条
 - 本次下发的行加左侧色条：500 台里一眼找到刚才发的那批
 */
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import {
+  computed,
+  onBeforeUnmount,
+  onMounted,
+  reactive,
+  ref,
+  watch
+} from "vue";
 import { ElMessage } from "element-plus";
 
 import {
@@ -18,7 +25,15 @@ import {
   type CommandRow
 } from "@/api/commands";
 import { exportCommands } from "@/api/exporting";
-import { downloadBlob, elapsedText, errText, fileStamp, statusLabel, statusType, tsText } from "@/utils/kk";
+import {
+  downloadBlob,
+  elapsedText,
+  errText,
+  fileStamp,
+  statusLabel,
+  statusType,
+  tsText
+} from "@/utils/kk";
 import { usePolls, useSeq } from "@/utils/kkPoll";
 
 defineOptions({ name: "CommandHistory" });
@@ -41,7 +56,13 @@ const exporting = ref(false);
 /** 静默轮询失败：状态进表头读数，不再每 3~10s 弹一次 toast（W5） */
 const pollFailed = ref(false);
 
-const out = reactive({ visible: false, title: "", text: "", loading: false, id: "" });
+const out = reactive({
+  visible: false,
+  title: "",
+  text: "",
+  loading: false,
+  id: ""
+});
 
 // 作用域版 setPoll/clearPoll：卸载只清本组件注册的 key，不再误清其他页面的轮询
 const { setPoll, clearPoll } = usePolls();
@@ -190,7 +211,10 @@ async function showOut(row: CommandRow) {
 async function downloadOut() {
   try {
     const text = await getCommandOut(out.id);
-    downloadBlob(new Blob([text], { type: "text/plain;charset=utf-8" }), `${out.id}.txt`);
+    downloadBlob(
+      new Blob([text], { type: "text/plain;charset=utf-8" }),
+      `${out.id}.txt`
+    );
   } catch (e: any) {
     ElMessage.error("下载输出失败：" + errText(e));
   }
@@ -246,9 +270,9 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
         <span>
           <b>执行历史</b>
           <span v-if="batchStat" class="kk-sub kk-ml">
-            该批次 {{ batchStat.total }} 台：
-            完成 {{ batchStat.done || 0 }} · 失败 {{ batchStat.failed || 0 }} ·
-            超时 {{ batchStat.timeout || 0 }} · 未终态
+            该批次 {{ batchStat.total }} 台： 完成 {{ batchStat.done || 0 }} ·
+            失败 {{ batchStat.failed || 0 }} · 超时
+            {{ batchStat.timeout || 0 }} · 未终态
             {{
               statNum(batchStat.pending) +
               statNum(batchStat.sent) +
@@ -260,7 +284,11 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
             class="kk-sync kk-ml"
             :class="{ 'kk-sync--stale': pollFailed }"
           >
-            {{ pollFailed ? "自动刷新失败，列表可能已过期" : "有未终态命令时 3 秒一轮" }}
+            {{
+              pollFailed
+                ? "自动刷新失败，列表可能已过期"
+                : "有未终态命令时 3 秒一轮"
+            }}
           </span>
         </span>
         <div class="kk-actions">
@@ -270,7 +298,12 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
             clearable
             style="width: 200px"
           />
-          <el-select v-model="statusFilter" clearable placeholder="状态" style="width: 130px">
+          <el-select
+            v-model="statusFilter"
+            clearable
+            placeholder="状态"
+            style="width: 130px"
+          >
             <el-option label="待下发" value="pending" />
             <el-option label="已下发" value="sent" />
             <el-option label="执行中" value="running" />
@@ -279,7 +312,12 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
             <el-option label="超时" value="timeout" />
             <el-option label="结果丢失" value="lost" />
           </el-select>
-          <el-select v-model="batchFilter" clearable placeholder="批次" style="width: 150px">
+          <el-select
+            v-model="batchFilter"
+            clearable
+            placeholder="批次"
+            style="width: 150px"
+          >
             <el-option
               v-for="b in batches"
               :key="b.batch_id"
@@ -294,7 +332,9 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
             自动刷新
           </el-checkbox>
           <el-button :loading="loading" @click="loadCommands()">刷新</el-button>
-          <el-button type="primary" :loading="exporting" @click="onExport">导出 CSV</el-button>
+          <el-button type="primary" :loading="exporting" @click="onExport"
+            >导出 CSV</el-button
+          >
         </div>
       </div>
     </template>
@@ -311,7 +351,11 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
       <el-table-column prop="pod" label="主机" min-width="150" />
       <el-table-column label="批次" width="100">
         <template #default="{ row }">
-          <el-tooltip v-if="row.batch_id" :content="row.batch_id" placement="top">
+          <el-tooltip
+            v-if="row.batch_id"
+            :content="row.batch_id"
+            placement="top"
+          >
             <el-link type="primary" @click.stop="batchFilter = row.batch_id">
               {{ shortBatch(row.batch_id) }}
             </el-link>
@@ -320,7 +364,11 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
         </template>
       </el-table-column>
       <el-table-column prop="kind" label="类型" width="90" />
-      <el-table-column label="命令 / 采集项" min-width="200" show-overflow-tooltip>
+      <el-table-column
+        label="命令 / 采集项"
+        min-width="200"
+        show-overflow-tooltip
+      >
         <template #default="{ row }">{{ argvPreview(row.argv) }}</template>
       </el-table-column>
       <el-table-column label="状态" width="100">
@@ -331,10 +379,14 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
         </template>
       </el-table-column>
       <el-table-column label="rc" width="70">
-        <template #default="{ row }">{{ row.rc === null ? "-" : row.rc }}</template>
+        <template #default="{ row }">{{
+          row.rc === null ? "-" : row.rc
+        }}</template>
       </el-table-column>
       <el-table-column label="耗时" width="90">
-        <template #default="{ row }">{{ elapsedText(row.elapsed_ms) }}</template>
+        <template #default="{ row }">{{
+          elapsedText(row.elapsed_ms)
+        }}</template>
       </el-table-column>
       <el-table-column label="输出" min-width="180" show-overflow-tooltip>
         <template #default="{ row }">
@@ -346,7 +398,9 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
       </el-table-column>
       <el-table-column label="操作" width="90" fixed="right">
         <template #default="{ row }">
-          <el-button link type="primary" @click.stop="showOut(row)">查看</el-button>
+          <el-button link type="primary" @click.stop="showOut(row)"
+            >查看</el-button
+          >
         </template>
       </el-table-column>
       <template #empty>
@@ -375,7 +429,9 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
       <template #footer>
         <div class="kk-toolbar">
           <span class="kk-sub">点击列表其他行可连续查看，列表不会被遮挡</span>
-          <el-button type="primary" @click="downloadOut">下载此条输出</el-button>
+          <el-button type="primary" @click="downloadOut"
+            >下载此条输出</el-button
+          >
         </div>
       </template>
     </el-drawer>

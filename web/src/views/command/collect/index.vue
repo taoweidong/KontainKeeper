@@ -30,7 +30,9 @@ const collectForm = reactive({
   items: ["cpu", "mem", "disk"] as string[]
 });
 
-const picked = computed(() => hosts.value.filter(h => collectForm.pods.includes(h.pod)));
+const picked = computed(() =>
+  hosts.value.filter(h => collectForm.pods.includes(h.pod))
+);
 
 async function loadHosts() {
   try {
@@ -44,7 +46,16 @@ async function loadItems() {
   try {
     items.value = (await listCollectItems()).items;
   } catch {
-    items.value = ["cpu", "mem", "disk", "disk_io", "net", "proc", "user", "sys"];
+    items.value = [
+      "cpu",
+      "mem",
+      "disk",
+      "disk_io",
+      "net",
+      "proc",
+      "user",
+      "sys"
+    ];
   }
 }
 
@@ -60,7 +71,10 @@ async function submitCollect() {
       items: collectForm.items
     });
     ElMessage.success(`已下发 ${res.items.length} 条采集命令`);
-    history.value?.focusBatch(res.batch_id, res.items.map(i => i.id));
+    history.value?.focusBatch(
+      res.batch_id,
+      res.items.map(i => i.id)
+    );
   } catch (e: any) {
     ElMessage.error("下发失败：" + errText(e));
   } finally {
@@ -91,7 +105,11 @@ onMounted(async () => {
           </el-checkbox-group>
         </el-form-item>
         <el-form-item>
-          <el-button type="primary" :loading="submitting" @click="submitCollect">
+          <el-button
+            type="primary"
+            :loading="submitting"
+            @click="submitCollect"
+          >
             下发采集（{{ collectForm.pods.length }} 台）
           </el-button>
         </el-form-item>
