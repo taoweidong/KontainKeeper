@@ -24,7 +24,8 @@ import {
   numText,
   statusLabel,
   statusType,
-  tsText
+  tsText,
+  upgradeSkipText
 } from "@/utils/kk";
 import { usePolls, useSeq } from "@/utils/kkPoll";
 
@@ -173,7 +174,8 @@ async function onUpgradeOne() {
       const a = r.accepted[0];
       ElMessage.success(a.queued ? `已排队，主机上线后自动补投` : `已下发`);
     } else if (r.skipped.length) {
-      ElMessage.warning(SKIP_REASON_LABEL[r.skipped[0].reason] || r.skipped[0].reason);
+      // 跳过原因要说人话：只报「已跳过」运维会以为是失败并反复重试
+      ElMessage.warning(upgradeSkipText(r.skipped[0].reason));
     }
     await load();
   } catch (e: any) {
@@ -182,16 +184,6 @@ async function onUpgradeOne() {
     upgrading.value = false;
   }
 }
-
-/** 与「版本与更新」页对齐的 skipped 原因文案 */
-const SKIP_REASON_LABEL: Record<string, string> = {
-  not_found: "主机不存在",
-  already_latest: "已是最新",
-  in_flight: "已有升级在途",
-  no_binary: "未上传任何版本",
-  bad_version: "版本号无效",
-  no_broker: "服务端未连 Broker"
-};
 
 watch(hours, () => loadMetrics());
 

@@ -10,7 +10,7 @@
 为什么不在这里做上传：上传是写二进制，单独走 `/agent` 上传面；本页只读「待分发」是哪一个版本，
 避免把上传失败/校验失败/上传一半混进运维主流程。
 */
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, h, onMounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 
@@ -22,7 +22,14 @@ import {
   type AgentCurrent,
   type UpdateRow
 } from "@/api/agent";
-import { ageText, errText, statusLabel, statusType, tsText } from "@/utils/kk";
+import {
+  ageText,
+  errText,
+  statusLabel,
+  statusType,
+  tsText,
+  upgradeSkipText
+} from "@/utils/kk";
 import { usePolls, useSeq } from "@/utils/kkPoll";
 
 defineOptions({ name: "HostUpdate" });
@@ -52,16 +59,6 @@ const tableRef = ref<{
 
 /** ?pods= 预填只应用一次；之后仅当 query 本身变化（watch）才重设，轮询刷新保留用户勾选 */
 let podsPrefilled = false;
-
-/** 把所有 skipped 原因映射成中文标签；后端 controller 里的 reason 集合 */
-const SKIP_REASON_LABEL: Record<string, string> = {
-  not_found: "主机不存在",
-  already_latest: "已是最新",
-  in_flight: "已有升级在途",
-  no_binary: "未上传任何版本",
-  bad_version: "版本号无效",
-  no_broker: "服务端未连 Broker"
-};
 
 const hasLatest = computed(() => !!current.value?.version);
 
@@ -131,6 +128,49 @@ function prefillFromQuery() {
 /** 仅当 ?pods= 本身变化时才重设勾选；轮询 load() 不触发这里，用户手改的勾选不被冲掉 */
 watch(() => route.query.pods, () => prefillFromQuery());
 
+/** 被跳过的台数超过这个值就只列前若干条，其余按原因聚合报数。
+ *  500 台批量升级若被跳过几十台，只给一个数字运维无法判断该不该重试
+ *  （`no_binary` 该去上传、`already_latest` 重试也没用）。 */
+const SKIP_DETAIL_MAX = 10;
+
+/** 升级后逐条列出跳过的主机与原因（QR-W9 重做）。
+ *  只用 VNode 文本节点走 Vue 转义：主机名由 Agent 自报，不可信。 */
+async function showSkipped(
+  skipped: Array<{ host: string; reason: string }>
+): Promise<void> {
+  if (!skipped.length) return;
+  const shown = skipped.slice(0, SKIP_DETAIL_MAX);
+  const rest = skipped.slice(SKIP_DETAIL_MAX);
+  const lines = shown.map(s =>
+    h("p", `${s.host} —— ${upgradeSkipText(s.reason)}`)
+  );
+  if (rest.length) {
+    // 被跳过的主机不会进「升级台账」（后端只为 accepted 建账），
+    // 所以这里只能自己把剩余台数按原因归并，不能把人指去查不到的地方。
+    const byReason = new Map<string, number>();
+    for (const s of rest) {
+      byReason.set(s.reason, (byReason.get(s.reason) ?? 0) + 1);
+    }
+    const agg = [...byReason.entries()]
+      .map(([r, n]) => `${upgradeSkipText(r)} ${n} 台`)
+      .join("、");
+    lines.push(h("p", `另有 ${rest.length} 台：${agg}`));
+  }
+  try {
+    await ElMessageBox.alert(
+      h("div", { class: "kk-confirm" }, lines),
+      `跳过 ${skipped.length} 台`,
+      {
+        type: "warning",
+        confirmButtonText: "知道了",
+        customClass: "kk-skip-box"
+      }
+    );
+  } catch {
+    /* 用户点掉弹窗即可，不影响主流程 */
+  }
+}
+
 async function onUpgrade() {
   if (!selection.value.length) {
     ElMessage.warning("请先勾选要升级的主机");
@@ -161,10 +201,12 @@ async function onUpgrade() {
     const q = r.accepted.filter(a => a.queued).length;
     const lines = [`已受理 ${ok} 台`];
     if (q) lines.push(`其中 ${q} 台离线，会在重连时自动补投`);
-    if (skip) lines.push(`跳过 ${skip} 台`);
+    if (skip) lines.push(`跳过 ${skip} 台（见下方明细）`);
     ElMessage.success(lines.join("，"));
     selection.value = [];
+    // 先刷数据再弹明细：让台账与弹窗内容对得上，而不是反过来
     await load();
+    await showSkipped(r.skipped);
   } catch (e: any) {
     ElMessage.error("升级失败：" + errText(e));
   } finally {
@@ -312,5 +354,3 @@ onMounted(async () => {
     </el-card>
   </div>
 </template>
-
-<!-- skipped reason 中文表 SKIP_REASON_LABEL 写在 script 里 -->

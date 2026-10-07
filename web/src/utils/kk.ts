@@ -98,3 +98,21 @@ export const statusLabel = (s: string): string => {
     queued: "已排队"
   }[s] || s;
 };
+
+/** 选机升级被跳过的原因 → 中文。键集与后端 `controllers/agent_update.py` 穷举的
+ *  reason 一一对应（not_found / already_latest / in_flight / no_binary /
+ *  bad_version / no_broker），未知原因原样回显以便排障。
+ *  收口到这里的理由：原先「版本与更新」页与「主机详情」页各写一份，
+ *  而 update 那份定义后从未被引用（QR-W9 的 eslint 红灯）。 */
+export const upgradeSkipText = (reason?: string): string => {
+  return (
+    {
+      not_found: "主机不存在",
+      already_latest: "已是最新",
+      in_flight: "已有升级在途",
+      no_binary: "未上传任何版本",
+      bad_version: "版本号无效",
+      no_broker: "服务端未连 Broker"
+    }[reason || ""] || reason || "未知原因"
+  );
+};
