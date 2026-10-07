@@ -200,3 +200,32 @@ async def test_export_writes_audit(api):
     assert len(exports) >= 2, "hosts 与 commands 导出都必须留痕"
     kinds = {x["detail"] for x in exports}
     assert any('"hosts"' in d for d in kinds) and any('"commands"' in d for d in kinds)
+
+
+async def test_export_hosts_follows_page_filters(api):
+    """QR-S36：导出必须跟着页面筛选走——筛完 2 台却导出 50 台，报表与所见就分家了。
+
+    `list_containers` 的摘要视图注释里写着「前端再本地过一遍会让导出与所见不一致」，
+    这条就是那句承诺的落点：筛选参数与排序在 /export/hosts 上同样生效。
+    """
+    for pod, group, unhealthy in (("web-01", "ops-web", 0), ("web-02", "ops-web", 3),
+                                  ("db-01", "ops-db", 0)):
+        await api.store.set_online(pod, True, image="img:1", agent_ver="0.4.0",
+                                   env={"virt": "vm", "os": "Debian 12"},
+                                   group=group, proto_ver=4,
+                                   docker={"total": 5, "running": 5 - unhealthy,
+                                           "unhealthy": unhealthy})
+        await api.store.record_hb(pod, {"interval": 60, "metrics": {
+            "cpu": 1.0, "mem_mb": 100.0, "disks": {"/": {"pct": 10.0}}}})
+
+    r = await api.client.get("/api/export/hosts", params={"group": "ops-web"})
+    header, rows = parse(r.text)
+    assert sorted(x[0] for x in rows) == ["web-01", "web-02"]
+    # v4 元信息进导出：资产盘点要的正是类型/分组/Docker 摘要
+    for col in ("host_type", "group_name", "os_name", "proto_ver", "docker_unhealthy"):
+        assert col in header, col
+
+    r = await api.client.get("/api/export/hosts",
+                             params={"group": "ops-web", "docker_unhealthy": "1"})
+    _, rows = parse(r.text)
+    assert [x[0] for x in rows] == ["web-02"]

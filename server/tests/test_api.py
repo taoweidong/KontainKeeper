@@ -76,6 +76,128 @@ async def test_unknown_view_is_rejected(api):
     assert r.status_code == 400 and "view" in r.json()["detail"]
 
 
+# ---- QR-S36：v4 筛选/排序的服务端入口 ----
+
+async def _seed_meta(store, pod, group="", host_type="metal", unhealthy=0,
+                     proto=4, online=True, cpu=1.0, os_name="Debian 12"):
+    """按 v4 的 status 路径造一台主机（元信息只在上线路径落库）。
+
+    先 online 落元信息，需要离线形态时再补一帧 offline——顺带钉住「离线帧不覆盖
+    元信息」这条：`set_online(False)` 只动 online/status_*。
+    """
+    await store.set_online(pod, True, image="img:1", agent_ver="0.4.0", ip="10.0.0.9",
+                           env={"virt": host_type, "os": os_name, "kernel": "6.1",
+                                "arch": "x86_64"},
+                           group=group, caps={"shell": True},
+                           labels={"role": "web"}, proto_ver=proto,
+                           docker={"total": 5, "running": 5 - unhealthy,
+                                  "unhealthy": unhealthy})
+    await store.record_hb(pod, {"interval": 60, "ip": "10.0.0.9", "metrics": {
+        "cpu": cpu, "mem_mb": 100.0, "disks": {"/": {"pct": 10.0}}}})
+    if not online:
+        await store.set_online(pod, False, agent_ver="0.4.0")
+
+
+async def _pods(api, params):
+    r = await api.client.get("/api/containers", params=dict(params, view="summary"))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    return [i["pod"] for i in body["items"]], body
+
+
+async def test_filter_by_group_and_host_type(api):
+    """筛选必须下推到 SQL：`total` 也要跟着变，否则分页控件对着筛完的列表说谎。"""
+    await _seed_meta(api.store, "web-01", group="ops-web", host_type="vm")
+    await _seed_meta(api.store, "web-02", group="ops-web", host_type="metal")
+    await _seed_meta(api.store, "db-01", group="ops-db", host_type="container")
+
+    pods, body = await _pods(api, {"group": "ops-web"})
+    assert sorted(pods) == ["web-01", "web-02"] and body["total"] == 2
+    pods, body = await _pods(api, {"host_type": "container"})
+    assert pods == ["db-01"] and body["total"] == 1
+    pods, _ = await _pods(api, {"group": "ops-web", "host_type": "vm"})
+    assert pods == ["web-01"]
+
+
+async def test_host_type_filter_ignores_unknown_value(api):
+    """白名单外的类型是「条件不成立」而不是「查不到」：静默忽略比空列表好排查。"""
+    await _seed_meta(api.store, "web-01", host_type="vm")
+    pods, _ = await _pods(api, {"host_type": "windows"})
+    assert pods == ["web-01"]
+
+
+async def test_online_filter_is_tristate(api):
+    """QR-S36 的那颗雷：查询串 `"false"`/`"0"` 是真值，直接传给 store 会筛成在线。"""
+    await _seed_meta(api.store, "up-01", online=True)
+    await _seed_meta(api.store, "down-01", online=False)
+
+    pods, _ = await _pods(api, {"online": "true"})
+    assert pods == ["up-01"]
+    for raw in ("false", "0", "no", "off"):
+        pods, _ = await _pods(api, {"online": raw})
+        assert pods == ["down-01"], raw
+    pods, _ = await _pods(api, {"online": ""})
+    assert sorted(pods) == ["down-01", "up-01"]
+    # 认不出的值按「不筛」处理，而不是悄悄当成真或假
+    pods, _ = await _pods(api, {"online": "maybe"})
+    assert sorted(pods) == ["down-01", "up-01"]
+
+
+async def test_docker_unhealthy_filter_normalizes_boolean(api):
+    await _seed_meta(api.store, "ok-01", unhealthy=0)
+    await _seed_meta(api.store, "bad-01", unhealthy=2)
+
+    pods, _ = await _pods(api, {"docker_unhealthy": "1"})
+    assert pods == ["bad-01"]
+    # "0" / "false" 必须是「不筛」，不能被 Python 的真值判断当成「筛」
+    for raw in ("0", "false", ""):
+        pods, _ = await _pods(api, {"docker_unhealthy": raw})
+        assert sorted(pods) == ["bad-01", "ok-01"], raw
+
+
+async def test_filter_by_proto_ver_and_keyword(api):
+    await _seed_meta(api.store, "old-01", proto=3, group="legacy")
+    await _seed_meta(api.store, "new-01", proto=4, group="modern")
+
+    pods, _ = await _pods(api, {"proto_ver": "3"})
+    assert pods == ["old-01"]
+    pods, _ = await _pods(api, {"keyword": "modern"})
+    assert pods == ["new-01"]
+    # 畸形版本号不炸也不乱筛：按「不过滤」处理
+    pods, _ = await _pods(api, {"proto_ver": "v3"})
+    assert sorted(pods) == ["new-01", "old-01"]
+
+
+async def test_sort_is_pushed_down_and_whitelisted(api):
+    """排序列名无法参数化，只能走白名单；未知值回落 last_seen 而不是 500。"""
+    await _seed_meta(api.store, "hi", cpu=90.0, host_type="vm")
+    await _seed_meta(api.store, "mid", cpu=50.0, host_type="vm")
+    await _seed_meta(api.store, "lo", cpu=10.0, host_type="vm")
+
+    pods, _ = await _pods(api, {"sort": "cpu"})
+    assert pods == ["hi", "mid", "lo"]
+    pods, _ = await _pods(api, {"sort": "pod"})
+    assert pods == ["hi", "lo", "mid"], "pod 是唯一升序的列（按名字读表）"
+    pods, _ = await _pods(api, {"sort": "cpu; DROP TABLE kk_containers"})
+    assert len(pods) == 3, "白名单外的排序回落 last_seen，不能报 500"
+
+
+async def test_summary_carries_v4_meta_columns(api):
+    """总览页一行读完：类型/分组/能力/Docker 摘要随摘要视图一起下发。"""
+    await _seed_meta(api.store, "web-01", group="ops-web", host_type="vm",
+                     unhealthy=1, proto=4)
+    r = await api.client.get("/api/containers", params={"view": "summary"})
+    row = r.json()["items"][0]
+    assert row["host_type"] == "vm" and row["os_name"] == "Debian 12"
+    assert row["group_name"] == "ops-web" and row["ip"] == "10.0.0.9"
+    assert row["proto_ver"] == 4
+    # caps 库里是 JSON 文本，接口给结构（前端不该再 parse 字符串）
+    assert row["caps"] == {"shell": True}
+    assert (row["docker_total"], row["docker_running"], row["docker_unhealthy"]) == (5, 4, 1)
+    # labels 是大字段，摘要视图不带（详情侧才解析）
+    assert "labels" not in row and "last_metrics" not in row
+
+
 async def test_stats_endpoint_shape(api):
     await _seed(api.store, "host-a", 3.0, 100.0, 10.0)
     cid = await api.store.create_command("host-a", "shell", ["echo"], 30, ADMIN)

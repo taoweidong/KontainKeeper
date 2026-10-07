@@ -5,7 +5,7 @@ import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from .deps import current_user
+from .deps import HostFilters, current_user
 from ..models.version import version_lt
 
 # 会话鉴权在 router 级收口（QR-S2）：新增端点默认受保护，不再依赖人工逐行调用
@@ -24,6 +24,26 @@ def _parse_metrics(raw):
 def _disk_alert(metrics):
     disks = (metrics or {}).get("disks") or {}
     return max((d.get("pct", 0) for d in disks.values()), default=0) >= 85
+
+
+def _host_meta(row):
+    """v4 机队视图的公共字段：列表与详情同形，前端一套类型两用。
+
+    `caps` 在库里是 JSON 文本（`_jtext` 只写对象），接口给结构而不是字符串——
+    让前端去 parse 等于把「解析失败怎么办」分发到每个页面各写一遍。
+    `labels` 是大字段，摘要视图不带，所以在这里也不出现（详情侧单独补）。
+    """
+    return {
+        "host_type": row.get("host_type") or "",
+        "os_name": row.get("os_name") or "",
+        "ip": row.get("ip") or "",
+        "group_name": row.get("group_name") or "",
+        "proto_ver": row.get("proto_ver"),
+        "docker_total": row.get("docker_total") or 0,
+        "docker_running": row.get("docker_running") or 0,
+        "docker_unhealthy": row.get("docker_unhealthy") or 0,
+        "caps": _parse_metrics(row.get("caps")),
+    }
 
 
 def _container_view(row, online_set, latest_ver=""):
@@ -49,6 +69,8 @@ def _container_view(row, online_set, latest_ver=""):
         "metrics": metrics,
         "custom": hb.get("custom") or {},
         "disk_alert": _disk_alert(metrics),
+        "labels": _parse_metrics(row.get("labels")),
+        **_host_meta(row),
     }
 
 
@@ -72,6 +94,7 @@ def _container_summary(row, online_set, now, latest_ver=""):
         "mem_mb": row.get("mem_mb"),
         "disk_pct": disk_pct,
         "disk_alert": disk_pct >= 85,
+        **_host_meta(row),
     }
 
 
@@ -81,8 +104,8 @@ def _outdated(agent_ver, latest_ver):
 
 
 @router.get("/containers")
-async def list_containers(request: Request, view: str = "full",
-                          limit: int = 0, offset: int = 0):
+async def list_containers(request: Request, filters: HostFilters,
+                          view: str = "full", limit: int = 0, offset: int = 0):
     if view not in ("full", "summary"):
         raise HTTPException(status_code=400, detail="view 需为 full 或 summary")
     store = request.app.state.store
@@ -91,10 +114,12 @@ async def list_containers(request: Request, view: str = "full",
     off = offset if offset and offset > 0 else None
     # 一次查回在线集合与最新版本再逐行拼装：500 台只有几次往返，不在循环里打 500 次查询
     # （D1.3 明确要求 KV 只读一次——每行查一次就是与 P1-1 同型的 N+1）
+    # total 与列表共用同一套筛选条件，分页控件才不会对着筛完的列表说谎（QR-S36）
+    count_filters = {k: v for k, v in filters.items() if k != "sort"}
     rows, online, total, latest = await asyncio.gather(
-        store.list_containers(view, limit=cap, offset=off),
+        store.list_containers(view, limit=cap, offset=off, **filters),
         store.online_set(ONLINE_GRACE),
-        store.count_containers(),
+        store.count_containers(**count_filters),
         store.get_agent_latest())
     latest_ver = (latest or {}).get("version", "")
     if view == "summary":

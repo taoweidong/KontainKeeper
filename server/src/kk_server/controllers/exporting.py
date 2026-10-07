@@ -18,7 +18,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 
-from .deps import CurrentUser, current_user
+from .deps import CurrentUser, HostFilters, current_user
 
 # 会话鉴权在 router 级收口（QR-S2）；导出属批量数据外带，每个端点落一条审计（QR-S7）
 router = APIRouter(prefix="/api/export", dependencies=[Depends(current_user)])
@@ -147,12 +147,15 @@ async def export_audit(request: Request, user: CurrentUser, actor: str = "",
 
 
 @router.get("/hosts")
-async def export_hosts(request: Request, user: CurrentUser, view: str = "summary"):
+async def export_hosts(request: Request, user: CurrentUser, filters: HostFilters,
+                       view: str = "summary"):
     store = request.app.state.store
     if view not in ("full", "summary"):
         raise HTTPException(status_code=400, detail="view 需为 full 或 summary")
     # 资产盘点场景：不分页，一次性导出全量摘要列
-    rows = await store.list_containers("summary", limit=MAX_ROWS)
+    # 筛选与排序跟 /api/containers 同一套参数（QR-S36）：页面上筛完 2 台、导出 50 台
+    # 的报表没有意义，而且会让人以为筛选只影响显示
+    rows = await store.list_containers("summary", limit=MAX_ROWS, **filters)
     online = await store.online_set()
     await store.add_audit(user, "export", {"kind": "hosts", "rows": len(rows)})
     now = int(time.time())
@@ -162,10 +165,18 @@ async def export_hosts(request: Request, user: CurrentUser, view: str = "summary
         out.append([r.get("pod"), r.get("image"), r.get("agent_ver"),
                     1 if r.get("pod") in online else 0, r.get("hb_interval"),
                     r.get("cpu"), r.get("mem_mb"), disk, 1 if disk >= 85 else 0,
-                    _ts(r.get("last_seen")), max(0, now - (r.get("last_seen") or now))])
+                    _ts(r.get("last_seen")), max(0, now - (r.get("last_seen") or now)),
+                    # v4 元信息排在尾部：老报表的列序（含下标 8 的 disk_alert）不动
+                    r.get("host_type") or "", r.get("os_name") or "",
+                    r.get("group_name") or "", r.get("ip") or "",
+                    r.get("proto_ver"), r.get("docker_total") or 0,
+                    r.get("docker_running") or 0, r.get("docker_unhealthy") or 0,
+                    r.get("caps") or ""])
     return _csv_response(
         ["pod", "image", "agent_ver", "online", "hb_interval", "cpu", "mem_mb",
-         "disk_pct", "disk_alert", "last_seen", "age_sec"],
+         "disk_pct", "disk_alert", "last_seen", "age_sec",
+         "host_type", "os_name", "group_name", "ip", "proto_ver",
+         "docker_total", "docker_running", "docker_unhealthy", "caps"],
         out, "主机清单_%s.csv" % time.strftime("%Y%m%d-%H%M%S"))
 
 
