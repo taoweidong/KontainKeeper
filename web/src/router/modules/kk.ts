@@ -1,4 +1,4 @@
-/** KontainKeeper 业务路由：5 个页面全部静态声明。
+/** KontainKeeper 业务路由：全部页面静态声明（6 个业务页 + 系统统计）。
 
 为什么把 `getAsyncRoutes` 改成返回空数组：服务端没有下发菜单的接口，
 dev 阶段靠 vite-plugin-fake-server + mock/asyncRoutes.ts 兜底，prod 打包后
@@ -85,6 +85,27 @@ export default [
         name: "AuditIndex",
         component: () => import("@/views/audit/index.vue"),
         meta: { title: "审计日志" }
+      }
+    ]
+  },
+  {
+    // 系统统计（v4 方案 §7.3.7，rank 4）：把服务端与桥接的进程内计数器摊成读数页。
+    // 排在最后——它是排障时才进的页面，不是日常操作入口。
+    path: "/system",
+    name: "System",
+    component: Layout,
+    redirect: "/system/index",
+    meta: {
+      icon: "ep/odometer",
+      title: "系统统计",
+      rank: 4
+    },
+    children: [
+      {
+        path: "/system/index",
+        name: "SystemStats",
+        component: () => import("@/views/system/index.vue"),
+        meta: { title: "系统统计" }
       }
     ]
   }
