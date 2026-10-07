@@ -301,7 +301,7 @@ v3 起接入**零凭据**：Agent 不携带任何 token / 账号密码，唯一�
 ```bash
 BASE_IMAGE=myregistry/vscode-server:1.2 \
 KK_SERVER=mqtt://broker.ops.example.com:1883 \
-  ./scripts/build.sh myregistry/vscode-server-managed:1.2
+  bash scripts/build.sh myregistry/vscode-server-managed:1.2
 ```
 
 脚本做了什么：
@@ -336,7 +336,7 @@ v3 的核心简化：Agent 是**零依赖单文件二进制**，目标主机**�
 **第一步：在构建机编译并分发**（目标主机不需要出网）：
 
 ```bash
-cd agent && ./build/build_binary.sh          # 产出 dist/kk-agent（Linux 单文件，约 8–12MB）
+cd agent && bash build/build_binary.sh          # 产出 dist/kk-agent（Linux 单文件，约 8–12MB）
 scp dist/kk-agent user@target-host:/opt/kk-agent
 ssh user@target-host chmod +x /opt/kk-agent
 ```
@@ -477,7 +477,7 @@ Agent 内置版本监控：发现新版本后凭源 IP 白名单从服务端下�
 发布新版本（管理员）：
 
 ```bash
-cd agent && ./build/build_binary.sh
+cd agent && bash build/build_binary.sh
 TOKEN=$(curl -s -X POST https://kk-server.ops.example.com/api/login \
   -H 'Content-Type: application/json' \
   -d '{"username":"admin","password":"<口令>"}' | jq -r .token)
