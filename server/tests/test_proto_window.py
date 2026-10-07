@@ -112,6 +112,20 @@ async def test_drop_v3_window_closes_the_gate(mk):
     assert (await bridge.store.get_container("new-02"))["proto_ver"] == 4
 
 
+async def test_malformed_proto_ver_rejects_instead_of_crashing(mk):
+    """QR-S29：`"proto_ver": "v3"` 这类畸形帧过去会炸掉整个派发 task，
+    而 QoS1 已被 paho 线程 ACK —— 帧从此永久丢失，retained 状态也不落库。
+    闸门必须按「窗口外」处理：拒收 + 审计，不抛。"""
+    bridge = await mk()
+    await bridge._on_status("bad-01", frame("bad-01", "v3"))
+    await bridge._on_status("bad-02", frame("bad-02", None))
+    await bridge._on_status("bad-03", frame("bad-03", "4"))   # 数字字符串仍应受理
+    assert bridge.stats["rejected"] == 2
+    assert (await bridge.store.get_container("bad-03"))["proto_ver"] == 4
+    actions = [a["action"] for a in await bridge.store.list_audit()]
+    assert actions.count("proto_mismatch") == 2
+
+
 async def test_offline_frame_does_not_clobber_v4_meta(mk):
     """离线帧可能是 Broker 补发的 LWT（字段缺失或来自旧 Agent）：只改在线态。"""
     bridge = await mk()
