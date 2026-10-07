@@ -251,6 +251,10 @@ class MqttBridge:
                 "协议版本不匹配 got=%s want=%s，忽略该帧",
                 body.get("proto_ver"), self.proto_ver)
             return
+        # QR-S31：受理下来的旧协议帧必须计数，这是「能否关闭兼容窗口」的唯一依据。
+        # 恒 0 会让运维在存量 Agent 还没升完时关窗口 —— 那是一次全网闪断。
+        if proto < PROTO_VER:
+            self.stats["proto_v3_received"] += 1
         online = bool(body.get("online"))
         agent_ver = str(body.get("agent_ver") or "")
         # v4 主机元信息：env/group/labels/caps/proto_ver/docker 摘要。

@@ -90,6 +90,24 @@ async def test_v4_meta_lands_in_summary_view(mk):
     assert "labels" not in row and "last_metrics" not in row
 
 
+async def test_v3_frame_counted_for_window_close(mk):
+    """QR-S31：`proto_v3_received` 是「能否关闭兼容窗口」的唯一依据。
+
+    恒 0 比没有这个计数器更危险 —— 运维看到 0 就关窗口，等于把存量 v3 Agent
+    全网判为不匹配，而健康页一片绿。所以受理 v3 帧必须计数，且 v4 帧不计入。
+    """
+    bridge = await mk()
+    await bridge._on_status("old-03", frame("old-03", 3))
+    await bridge._on_status("old-04", frame("old-04", 3))
+    assert bridge.stats["proto_v3_received"] == 2
+    # v4 不计数：窗口该不该关只看「还有没有旧版本在上报」
+    await bridge._on_status("new-03", frame("new-03", 4))
+    assert bridge.stats["proto_v3_received"] == 2
+    # 窗口外的帧走的是拒收分支，不计入存量 v3（否则关窗后又永远不为 0）
+    await bridge._on_status("ancient-03", frame("ancient-03", 2))
+    assert bridge.stats["proto_v3_received"] == 2
+
+
 async def test_out_of_window_proto_rejected_and_audited(mk):
     """按新语义解析旧协议帧会得到错的在线状态，比丢帧更危险 → 拒收 + 审计。"""
     bridge = await mk()
