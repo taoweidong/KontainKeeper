@@ -38,6 +38,8 @@ const autoRefresh = ref(true);
 const fresh = ref<Set<string>>(new Set());
 const batches = ref<BatchSummary[]>([]);
 const exporting = ref(false);
+/** 静默轮询失败：状态进表头读数，不再每 3~10s 弹一次 toast（W5） */
+const pollFailed = ref(false);
 
 const out = reactive({ visible: false, title: "", text: "", loading: false, id: "" });
 
@@ -63,9 +65,12 @@ async function loadCommands(silent = false) {
     if (!isLatest()) return;
     rows.value = data.items;
     total.value = data.total;
+    pollFailed.value = false;
   } catch (e: any) {
     if (!isLatest()) return;
-    ElMessage.error("加载命令历史失败：" + (e?.message ?? e));
+    // 自适应轮询最密到 3s 一轮：失败刷 toast 会把噪音做成刷屏，状态改由表头读数承担（W5）
+    pollFailed.value = silent;
+    if (!silent) ElMessage.error("加载命令历史失败：" + (e?.message ?? e));
   } finally {
     // 只有最新一路负责收 spinner：迟到包不该把仍在途的请求的加载态关掉
     if (isLatest()) loading.value = false;
@@ -249,6 +254,13 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
               statNum(batchStat.sent) +
               statNum(batchStat.running)
             }}
+          </span>
+          <span
+            v-if="autoRefresh"
+            class="kk-sync kk-ml"
+            :class="{ 'kk-sync--stale': pollFailed }"
+          >
+            {{ pollFailed ? "自动刷新失败，列表可能已过期" : "有未终态命令时 3 秒一轮" }}
           </span>
         </span>
         <div class="kk-actions">

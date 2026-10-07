@@ -24,6 +24,8 @@ const alerts = ref(0);
 const stats = ref<StatsResult | null>(null);
 const health = ref<HealthResult | null>(null);
 const recentCmds = ref<CommandRow[]>([]);
+/** 静默轮询失败：状态进页头一条读数，不再每 10s 弹 toast（W5） */
+const pollFailed = ref(false);
 // 卸载时统一清轮询（漏一处就是「切页后仍在刷接口」）；作用域版只清本页注册的 key
 const { setPoll } = usePolls();
 /** 轮询与手动刷新两个入口，迟到的回包不能盖掉更新的一轮数据（QR-W4）。 */
@@ -80,6 +82,7 @@ async function load(silent = false) {
       getHealth().catch(() => null)
     ]);
     if (!isLatest()) return;
+    pollFailed.value = false;
     hosts.value = hostData.items;
     online.value = hostData.online;
     alerts.value = hostData.alerts;
@@ -88,7 +91,8 @@ async function load(silent = false) {
     health.value = healthData;
   } catch (e: any) {
     if (!isLatest()) return;
-    ElMessage.error("加载汇总数据失败：" + (e?.message ?? e));
+    pollFailed.value = silent;
+    if (!silent) ElMessage.error("加载汇总数据失败：" + (e?.message ?? e));
   } finally {
     if (isLatest()) loading.value = false;
   }
@@ -134,6 +138,10 @@ onMounted(() => {
 
 <template>
   <div class="welcome" v-loading="loading">
+    <!-- 轮询失败只在页头说一次：后端宕机时 10s 一次的 toast 会把真正的告警淹成噪音（W5） -->
+    <div v-if="pollFailed" class="kk-sync kk-sync--stale kk-mb">
+      自动刷新失败，下方读数可能已过期
+    </div>
     <!-- 统计卡片行：核心数字一眼可见，点击进入对应页面 -->
     <el-row :gutter="16" class="stat-row">
       <el-col :xs="12" :sm="6">

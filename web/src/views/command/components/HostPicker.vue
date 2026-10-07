@@ -5,7 +5,8 @@
 一个几百项的列表逐条找。抽屉里给搜索 + 仅在线开关 + 表格多选 + 全选/反选/清空。
 
 对外契约仍是 `v-model:pods`（字符串数组），与总览页 `?pods=a,b,c` 跳转完全兼容，
-页面改造不破坏既有链路。
+页面改造不破坏既有链路。可选的 `:hosts` 让父页把已经拉到的清单传进来，
+抽屉不再打第二遍全量接口（QR-W7）。
 */
 import { computed, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
@@ -15,10 +16,14 @@ import { useSeq } from "@/utils/kkPoll";
 
 defineOptions({ name: "HostPicker" });
 
-const props = defineProps<{ pods: string[] }>();
+const props = defineProps<{ pods: string[]; hosts?: HostSummary[] }>();
 const emit = defineEmits<{ "update:pods": [string[]] }>();
 
-const hosts = ref<HostSummary[]>([]);
+/** 父页没给清单时自己懒加载一份 */
+const fetched = ref<HostSummary[]>([]);
+/** 可选项来源：父页传了就用父页的——shell / collect 在挂载时已经拉过一次全量清单，
+ *  这里再打一遍就是 500 台 × 两份 JSON（QR-W7）；父页没传（详情类页面）才懒加载。 */
+const options = computed(() => (props.hosts?.length ? props.hosts : fetched.value));
 const loading = ref(false);
 const drawer = ref(false);
 const keyword = ref("");
@@ -30,7 +35,7 @@ const draft = ref<string[]>([]);
 /** 抽屉内可选项：在线优先排序，避免误选离线机后困惑「为什么没结果」 */
 const candidates = computed(() => {
   const kw = keyword.value.trim().toLowerCase();
-  return hosts.value
+  return options.value
     .filter(h => {
       if (onlyOnline.value && !h.online) return false;
       if (!kw) return true;
@@ -43,7 +48,7 @@ const candidates = computed(() => {
 });
 
 const selected = computed(() =>
-  hosts.value.filter(h => props.pods.includes(h.pod))
+  options.value.filter(h => props.pods.includes(h.pod))
 );
 const shown = computed(() => selected.value.slice(0, 5));
 const restCount = computed(() => Math.max(0, selected.value.length - shown.value.length));
@@ -59,7 +64,7 @@ async function loadHosts() {
   try {
     const items = (await listHosts("summary")).items;
     if (!isLatest()) return;
-    hosts.value = items;
+    fetched.value = items;
   } catch (e: any) {
     if (!isLatest()) return;
     ElMessage.error("加载主机列表失败：" + (e?.message ?? e));
@@ -71,7 +76,7 @@ async function loadHosts() {
 async function open() {
   drawer.value = true;
   draft.value = [...props.pods];
-  if (!hosts.value.length) await loadHosts();
+  if (!options.value.length) await loadHosts();
   syncTableSelection();
 }
 
@@ -81,7 +86,7 @@ function syncTableSelection() {
     const t = table.value;
     if (!t) return;
     t.clearSelection();
-    for (const h of hosts.value) {
+    for (const h of options.value) {
       if (draft.value.includes(h.pod)) t.toggleRowSelection(h, true);
     }
   });

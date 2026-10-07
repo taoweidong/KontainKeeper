@@ -65,6 +65,44 @@ const filtered = computed(() => {
   });
 });
 
+/** 500 台规模（QR-W7）：一次全量渲染会把 500 行 × 富单元格（仪表条 / 心跳刻度 / 链接）
+ *  铺进 DOM，还要每 10s 随轮询整体重渲染——分页把渲染规模压到一页。
+ *  这里刻意做**前端**分页而不是后端分页：summary 视图是标量行，500 台的 JSON 不是瓶颈，
+ *  瓶颈在节点数；后端分页要改 store 的查询（与其他在途改动同区），代价换不到额外收益。
+ *  跨页勾选由 row-key + reserve-selection 保住，「分几页勾完再批量下发」的老路径不断。 */
+const pageSize = ref(100);
+const offset = ref(0);
+
+const paged = computed(() =>
+  filtered.value.slice(offset.value, offset.value + pageSize.value)
+);
+
+/** el-pagination 用 1 起始页码，切片要的是 offset —— 换算只在这里做一次 */
+const pageNo = computed({
+  get: () => Math.floor(offset.value / pageSize.value) + 1,
+  set: (v: number) => {
+    offset.value = (v - 1) * pageSize.value;
+  }
+});
+
+/** 换筛选条件回到第一页，否则会停在筛选后不存在的页上显示空表 */
+watch([keyword, onlyOnline, onlyAlert], () => {
+  offset.value = 0;
+});
+
+watch(pageSize, () => {
+  offset.value = 0;
+});
+
+/** 轮询让行数变少时夹住 offset，避免出现一张空的尾页 */
+watch(
+  () => filtered.value.length,
+  n => {
+    const max = Math.max(0, Math.ceil(n / pageSize.value - 1) * pageSize.value);
+    if (offset.value > max) offset.value = max;
+  }
+);
+
 /** silent=true 供轮询复用：表格数据原位更新，不闪整页 loading，失败也不刷 toast */
 async function load(silent = false) {
   const isLatest = beginLoad();
@@ -278,10 +316,7 @@ onMounted(async () => {
               content="自动刷新最近一次成功的时间；失败时表格保持上一批数据"
               placement="bottom"
             >
-              <span
-                class="kk-band__sync"
-                :class="{ 'kk-band__sync--stale': pollFailed }"
-              >
+              <span class="kk-sync" :class="{ 'kk-sync--stale': pollFailed }">
                 {{
                   pollFailed
                     ? "自动刷新失败，读数可能已过期"
@@ -321,14 +356,15 @@ onMounted(async () => {
 
       <el-table
         v-loading="loading"
-        :data="filtered"
+        :data="paged"
         :row-class-name="rowClass"
+        row-key="pod"
         size="small"
         class="kk-fill-table"
         @selection-change="onSelectionChange"
         @row-click="onRowClick"
       >
-        <el-table-column type="selection" width="46" />
+        <el-table-column type="selection" width="46" reserve-selection />
         <el-table-column label="主机" min-width="200">
           <template #default="{ row }">
             <el-link type="primary" class="kk-num" @click="gotoDetail(row.pod)">
@@ -416,9 +452,27 @@ onMounted(async () => {
           </template>
         </el-table-column>
         <template #empty>
-          <el-empty description="还没有主机上报，确认 Agent 与 Broker 已连通" />
+          <el-empty
+            :description="
+              filtered.length
+                ? '本页没有行，换一页看看'
+                : '还没有主机上报，确认 Agent 与 Broker 已连通'
+            "
+          />
         </template>
       </el-table>
+
+      <div v-if="filtered.length > pageSize" class="kk-pager">
+        <el-pagination
+          v-model:current-page="pageNo"
+          v-model:page-size="pageSize"
+          :total="filtered.length"
+          :page-sizes="[100, 200, 500]"
+          layout="total, sizes, prev, pager, next, jumper"
+          background
+          small
+        />
+      </div>
 
       <div class="kk-batch kk-sticky-bar">
         <span class="kk-sub">已选 {{ selection.length }} 台</span>

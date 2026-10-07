@@ -388,8 +388,10 @@
   color: var(--kk-stale);
 }
 
-/* 轮询心跳读数：自动刷新失败时不再刷 toast，而是让这条读数变冷并写明原因 */
-.kk-band__sync {
+/* 轮询心跳读数：自动刷新失败时不再刷 toast，而是让这条读数变冷并写明原因。
+ * 五个轮询页共用（W5 补完）：常驻轮询的页面每 3~30s 弹一次 ElMessage，
+ * 后端真的宕了时噪音会把有意义的错误淹掉，所以状态进页头、toast 只留给手动刷新。 */
+.kk-sync {
   display: inline-flex;
   gap: 5px;
   align-items: center;
@@ -397,7 +399,7 @@
   color: var(--el-text-color-secondary);
 }
 
-.kk-band__sync--stale {
+.kk-sync--stale {
   color: var(--kk-stale);
 }
 

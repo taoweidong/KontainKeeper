@@ -81,7 +81,7 @@ onMounted(async () => {
     <template #form>
       <el-form label-width="90px">
         <el-form-item label="目标主机">
-          <HostPicker v-model:pods="collectForm.pods" />
+          <HostPicker v-model:pods="collectForm.pods" :hosts="hosts" />
         </el-form-item>
         <el-form-item label="采集项">
           <el-checkbox-group v-model="collectForm.items">

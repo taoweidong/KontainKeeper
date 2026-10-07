@@ -35,6 +35,8 @@ const updates = ref<UpdateRow[]>([]);
 const interval = ref(10);
 const selection = ref<HostSummary[]>([]);
 const upgrading = ref(false);
+/** 静默轮询失败：状态进页头读数，不再刷 toast（W5） */
+const pollFailed = ref(false);
 
 // 作用域版 setPoll：卸载时只清本页注册的 key
 const { setPoll } = usePolls();
@@ -74,6 +76,7 @@ async function load(silent = false) {
       listUpdates(50).catch(() => ({ items: [] as UpdateRow[], summary: {}, limit: 50 }))
     ]);
     if (!isLatest()) return;
+    pollFailed.value = false;
     current.value = cur;
     outdated.value = hosts.items.filter(h => h.agent_outdated);
     updates.value = upds.items;
@@ -88,7 +91,8 @@ async function load(silent = false) {
     }
   } catch (e: any) {
     if (!isLatest()) return;
-    ElMessage.error("加载升级信息失败：" + errText(e));
+    pollFailed.value = silent;
+    if (!silent) ElMessage.error("加载升级信息失败：" + errText(e));
   } finally {
     if (isLatest()) loading.value = false;
   }
@@ -199,6 +203,9 @@ onMounted(async () => {
             </b> / {{ current?.hosts_total ?? 0 }}</span>
             <span v-if="current?.uploaded_at" class="kk-sub">
               {{ ageText(Math.max(0, Math.floor(Date.now() / 1000) - current.uploaded_at)) }}上传
+            </span>
+            <span class="kk-sync" :class="{ 'kk-sync--stale': pollFailed }">
+              {{ pollFailed ? "自动刷新失败，读数可能已过期" : `每 ${interval} 秒自动刷新` }}
             </span>
           </div>
           <div class="kk-actions">

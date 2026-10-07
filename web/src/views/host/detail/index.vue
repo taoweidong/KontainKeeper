@@ -104,15 +104,22 @@ function renderChart(series: Array<{ ts: number; cpu: number | null; mem_mb: num
   });
 }
 
-async function loadMetrics() {
+/** 静默轮询失败：状态进页头读数，不再每 30s 刷一次 toast（W5）。
+ *  详情页即使离线主机也常开（挂着看曲线），所以这条读数必须说清「图上是旧数据」。 */
+const pollFailed = ref(false);
+
+/** silent=true 供轮询复用：曲线失败不刷 toast，交页头读数 */
+async function loadMetrics(silent = false) {
   const isLatest = beginMetrics();
   try {
     const data = await getHostMetrics(pod.value, hours.value);
     if (!isLatest()) return;
     renderChart(data.series);
+    pollFailed.value = false;
   } catch (e: any) {
     if (!isLatest()) return;
-    ElMessage.error("加载指标序列失败：" + errText(e));
+    pollFailed.value = silent;
+    if (!silent) ElMessage.error("加载指标序列失败：" + errText(e));
   }
 }
 
@@ -127,11 +134,11 @@ async function load(silent = false) {
     detail.value = data;
   } catch (e: any) {
     if (!isLatest()) return;
-    ElMessage.error("加载主机详情失败：" + errText(e));
+    if (!silent) ElMessage.error("加载主机详情失败：" + errText(e));
   } finally {
     if (isLatest()) loading.value = false;
   }
-  await loadMetrics();
+  await loadMetrics(silent);
 }
 
 function onResize() {
@@ -225,6 +232,12 @@ onBeforeUnmount(() => {
               磁盘告警
             </el-tag>
             <span class="kk-sub kk-ml">最近心跳 {{ ageText(detail.age_sec) }}</span>
+            <span
+              class="kk-sync kk-ml"
+              :class="{ 'kk-sync--stale': pollFailed }"
+            >
+              {{ pollFailed ? "自动刷新失败，曲线可能已过期" : "曲线每 30 秒自动刷新" }}
+            </span>
           </div>
           <div class="kk-actions">
             <el-select v-model="hours" style="width: 120px">

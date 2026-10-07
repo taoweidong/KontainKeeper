@@ -122,7 +122,7 @@ onMounted(async () => {
     <template #form>
       <el-form label-width="90px">
         <el-form-item label="目标主机">
-          <HostPicker v-model:pods="shellForm.pods" />
+          <HostPicker v-model:pods="shellForm.pods" :hosts="hosts" />
         </el-form-item>
         <el-form-item label="输入方式">
           <el-radio-group v-model="shellForm.mode">
