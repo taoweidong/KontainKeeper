@@ -242,9 +242,17 @@ function clearSelection() {
   tableRef.value?.clearSelection(); // 模型与表格勾选态同步
 }
 
+/** 换间隔只改一处真相：与总览页同构（watch(interval) 重建定时器），
+ *  不再把 setPoll 写在模板的 @change 里做类型强转（FE-27）。 */
+function restartTimer() {
+  setPoll("host-update", () => load(true), interval.value * 1000);
+}
+
+watch(interval, restartTimer);
+
 onMounted(async () => {
   await load();
-  setPoll("host-update", () => load(true), interval.value * 1000);
+  restartTimer();
 });
 </script>
 
@@ -283,14 +291,7 @@ onMounted(async () => {
             </span>
           </div>
           <div class="kk-actions">
-            <el-select
-              v-model="interval"
-              style="width: 120px"
-              @change="
-                (v: any) =>
-                  setPoll('host-update', () => load(true), (v as number) * 1000)
-              "
-            >
+            <el-select v-model="interval" style="width: 120px">
               <el-option label="5 秒" :value="5" />
               <el-option label="10 秒" :value="10" />
               <el-option label="30 秒" :value="30" />
@@ -369,7 +370,7 @@ onMounted(async () => {
       </div>
     </el-card>
 
-    <el-card shadow="never" class="kk-card kk-mt">
+    <el-card shadow="never" class="kk-card">
       <template #header>
         <span>升级台账（最近 50 条）</span>
       </template>
