@@ -51,11 +51,15 @@ containers = Table(
     Column("ip", String(64), nullable=False, server_default=""),
     # group_name / labels：机队筛选的两个维度（来自 Agent KK_GROUP / KK_LABELS）
     Column("group_name", String(64), nullable=False, server_default=""),
-    Column("labels", _long_text(), nullable=False, server_default=""),
+    # labels / caps 不带 server_default：MySQL 拒绝「BLOB/TEXT 带字面量 DEFAULT」
+    # （1101），建表和 ALTER 两条路都炸（QR-S30）。空值由写入侧给 ""（见
+    # Store.upsert_container / _jtext），升级库里补列前的旧行是 NULL，两者同义为
+    # 「未上报」
+    Column("labels", _long_text(), nullable=False),
     # caps：能力声明 JSON（{"shell":true,"docker":true,...}）。此阶段**只落库供展示与
     #       排障**，服务端按 caps 拦命令的门禁还没写（现在拦 shell 的是 Agent 侧
     #       allow_shell），别把它当成已经在守的防线
-    Column("caps", _long_text(), nullable=False, server_default=""),
+    Column("caps", _long_text(), nullable=False),
     # docker_*：Docker 摘要冗余列（v4 后的容器阶段写入，此阶段恒 0）
     Column("docker_total", Integer, nullable=False, server_default="0"),
     Column("docker_running", Integer, nullable=False, server_default="0"),
@@ -201,11 +205,11 @@ _ADD_COLUMNS = {
                       ("arch", "VARCHAR(20) DEFAULT ''"),
                       ("ip", "VARCHAR(64) DEFAULT ''"),
                       ("group_name", "VARCHAR(64) DEFAULT ''"),
-                      # labels/caps 落库前由 store._jtext 封顶到 4096 字符，所以补列
-                      # 用 TEXT（64KB）足够；新库走 _long_text() 的 LONGTEXT 也不冲突。
-                      # 去掉封顶前别把这两行当成「随手能改的小列」
-                      ("labels", "TEXT DEFAULT ''"),
-                      ("caps", "TEXT DEFAULT ''"),
+                      # labels/caps：类型必须与建表模型同型，否则升级库和新库同一列
+                      # 两型（QR-S33）；且三家都不带 DEFAULT —— MySQL 拒绝 TEXT 类
+                      # 字面量默认值（QR-S30），而写入侧本来就给 ""
+                      ("labels", {"mysql": "LONGTEXT", "*": "TEXT"}),
+                      ("caps", {"mysql": "LONGTEXT", "*": "TEXT"}),
                       ("docker_total", "INTEGER DEFAULT 0"),
                       ("docker_running", "INTEGER DEFAULT 0"),
                       ("docker_unhealthy", "INTEGER DEFAULT 0"),

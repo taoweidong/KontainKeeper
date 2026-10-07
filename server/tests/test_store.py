@@ -255,6 +255,17 @@ async def test_labels_and_caps_are_bounded(store):
     assert json.loads(row["caps"]) == {"shell": True}, "正常小字段不受封顶影响"
 
 
+async def test_upsert_container_leaves_no_null_meta(store):
+    """labels/caps 不再有 server_default（MySQL 不接受 TEXT 带默认值，QR-S30），
+    写入侧必须自己给空串：否则 MySQL 严格模式 1364，库里还会混出 NULL 与 '' 两种
+    「没上报」。
+    """
+    await store.upsert_container("pod-nm", "img", "0.1.0", 60)
+    row = await store.get_container("pod-nm")
+    assert row["labels"] == "" and row["caps"] == "", \
+        "未上报的元信息统一落空串，不留 NULL 形态"
+
+
 async def test_list_containers_view_param_guarded(store):
     await store.upsert_container("pod-v", "img", "0.1.0", 60)
     assert len(await store.list_containers()) == 1

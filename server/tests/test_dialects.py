@@ -15,6 +15,8 @@ from sqlalchemy import func, select, update
 from kk_server.models.store import (MD, Store, admins, audit, commands, containers,  # noqa: F401
                                     heartbeats, hourly, kv, normalize_url,
                                     sessions, mask_url)
+from kk_server.models.tables import _ADD_COLUMNS
+from kk_server.models.tables import _ADD_COLUMNS
 from sqlalchemy.schema import CreateTable
 
 DIALECTS = {"mysql": mysql.dialect(), "postgresql": postgresql.dialect(),
@@ -37,6 +39,36 @@ def test_mysql_uses_longtext_for_big_columns():
     for tname, col in BIG_TEXTS.items():
         ddl = str(CreateTable(MD.tables[tname]).compile(dialect=d))
         assert "LONGTEXT" in ddl.upper(), (tname, col)
+
+
+def test_mysql_no_literal_default_on_text_columns():
+    """MySQL 明确拒绝 BLOB/TEXT 带字面量 DEFAULT（错误 1101），建表阶段就炸。
+
+    PG / SQLite 都接受 `TEXT DEFAULT ''`，所以这条只有 MySQL 会炸——而本地与 CI 默认
+    跑 SQLite，只有真连 MySQL 才暴露（QR-S30：v4 的 labels/caps 就是这么带进来的）。
+    """
+    for table in MD.tables.values():
+        ddl = str(CreateTable(table).compile(dialect=DIALECTS["mysql"]))
+        for line in ddl.splitlines():
+            up = line.upper()
+            assert not ("TEXT" in up and "DEFAULT" in up), \
+                "%s.%s 给了 MySQL 不接受的字面量 DEFAULT: %s" % (table.name, up.split()[0], line.strip())
+
+
+def test_add_columns_types_match_the_model():
+    """补列路径写死一家的类型，会让升级库与新库同一列两型（QR-S33）。
+
+    labels/caps 的模型侧是 LONGTEXT 变体：MySQL 补列必须解析出 LONGTEXT，PG/SQLite
+    解析出 TEXT，并且任何一家都不许带 DEFAULT（MySQL 的 1101 同样适用于 ALTER）。
+    """
+    entries = dict(_ADD_COLUMNS["kk_containers"])
+    from kk_server.models.store import _column_ddl
+    for name in ("labels", "caps"):
+        ddl = entries[name]
+        assert "LONGTEXT" in _column_ddl(ddl, "mysql").upper(), name
+        assert "DEFAULT" not in _column_ddl(ddl, "mysql").upper(), name
+        for other in ("postgresql", "sqlite"):
+            assert _column_ddl(ddl, other).upper().startswith("TEXT"), (name, other)
 
 
 def test_mysql_primary_keys_are_bounded_varchar():

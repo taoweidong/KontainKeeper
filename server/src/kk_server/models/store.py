@@ -113,6 +113,17 @@ def _sort_col(sort):
     return sort if sort in _SORTS else "last_seen"
 
 
+def _column_ddl(ddl, dialect):
+    """补列 DDL 的方言解析：清单允许 `{"mysql": "LONGTEXT", "*": "TEXT"}`。
+
+    方言差异仍然只出现在补列这一条路径上——清单里写的是数据，展开成 ALTER 的唯一
+    出口仍是 `Store._ensure_schema`（AGENTS.md 的方言收敛口径）。写死一家的类型会让
+    升级库与新建库同一列两型（QR-S33），而 TEXT 类上的字面量 DEFAULT 更是 MySQL
+    直接拒绝的 1101（QR-S30）。
+    """
+    return ddl.get(dialect, ddl["*"]) if isinstance(ddl, dict) else ddl
+
+
 class Store:
     """异步存储。全部方法是协程——调用方 await，事件循环不再被数据库拖住。"""
 
@@ -158,7 +169,8 @@ class Store:
                 if name in existing:
                     continue
                 await conn.exec_driver_sql(
-                    "ALTER TABLE %s ADD COLUMN %s %s" % (table, name, ddl))
+                    "ALTER TABLE %s ADD COLUMN %s %s"
+                    % (table, name, _column_ddl(ddl, self.dialect)))
                 log.info("schema migrated: %s.%s added", table, name)
         for table, indexes in _ADD_INDEXES.items():
             existing_idx = await self._table_indexes(conn, table)
@@ -264,7 +276,10 @@ class Store:
             containers,
             {"pod": pod, "image": image or "", "agent_ver": agent_ver or "",
              "hb_interval": int(interval or 60), "first_seen": now, "last_seen": now,
-             "last_metrics": "", "online": 0, "status_ts": 0},
+             "last_metrics": "", "online": 0, "status_ts": 0,
+             # labels/caps 没有 server_default（MySQL 不接受 TEXT 的默认值），
+             # 未上报统一由写入侧给空串；不放进 update_cols，避免补建时抹掉已有元信息
+             "labels": "", "caps": ""},
             ["pod"], ["image", "agent_ver", "hb_interval", "last_seen"])
 
     async def set_online(self, pod, online, ts=None, image="", agent_ver="",
