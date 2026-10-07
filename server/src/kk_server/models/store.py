@@ -41,9 +41,32 @@ def _clip(value, n):
     return s[:n]
 
 
+# labels/caps 的入库长度封顶（字符）。值来自 Agent 自报的 status 帧，匿名 Broker
+# 模型下等同外部输入；4096 远小于 MySQL 补列用的 TEXT(64KB)，两条建表路径的列宽
+# 差异（新库 LONGTEXT / 老库 TEXT）因此不再要紧。
+_JTEXT_MAX = 4096
+_TRUNCATED_KEY = "_truncated"
+
+
 def _jtext(obj):
-    """结构化字段（labels / caps）入库：空对象落空串，前端按「空 = 未上报」处理。"""
-    return json.dumps(obj, ensure_ascii=False) if obj else ""
+    """结构化字段（labels / caps）入库：空对象落空串，前端按「空 = 未上报」处理。
+
+    超限时整对丢弃而不是切字符——被截断的 JSON 前端 parse 不出来，比少几个键更糟；
+    丢弃后留 `_truncated` 标记，让「被截断」与「没上报」在库里可辨。
+    """
+    if not isinstance(obj, dict) or not obj:
+        return ""
+    budget = _JTEXT_MAX - 20          # 给标记键留位，保证落库长度不超 _JTEXT_MAX
+    kept = {}
+    used = 2                          # "{}"
+    for key, value in obj.items():
+        add = len(json.dumps({key: value}, ensure_ascii=False)) + (1 if kept else 0)
+        if used + add > budget:
+            kept[_TRUNCATED_KEY] = "1"
+            break
+        kept[key] = value
+        used += add
+    return json.dumps(kept, ensure_ascii=False)
 
 
 # v4 机队筛选：主机类型白名单与排序白名单。

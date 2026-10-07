@@ -52,8 +52,9 @@ containers = Table(
     # group_name / labels：机队筛选的两个维度（来自 Agent KK_GROUP / KK_LABELS）
     Column("group_name", String(64), nullable=False, server_default=""),
     Column("labels", _long_text(), nullable=False, server_default=""),
-    # caps：能力声明 JSON（{"shell":true,"docker":true,...}）。服务端据此在源头
-    #       拦住「这台机器干不了」的命令，而不是让它降级执行
+    # caps：能力声明 JSON（{"shell":true,"docker":true,...}）。此阶段**只落库供展示与
+    #       排障**，服务端按 caps 拦命令的门禁还没写（现在拦 shell 的是 Agent 侧
+    #       allow_shell），别把它当成已经在守的防线
     Column("caps", _long_text(), nullable=False, server_default=""),
     # docker_*：Docker 摘要冗余列（v4 后的容器阶段写入，此阶段恒 0）
     Column("docker_total", Integer, nullable=False, server_default="0"),
@@ -200,6 +201,9 @@ _ADD_COLUMNS = {
                       ("arch", "VARCHAR(20) DEFAULT ''"),
                       ("ip", "VARCHAR(64) DEFAULT ''"),
                       ("group_name", "VARCHAR(64) DEFAULT ''"),
+                      # labels/caps 落库前由 store._jtext 封顶到 4096 字符，所以补列
+                      # 用 TEXT（64KB）足够；新库走 _long_text() 的 LONGTEXT 也不冲突。
+                      # 去掉封顶前别把这两行当成「随手能改的小列」
                       ("labels", "TEXT DEFAULT ''"),
                       ("caps", "TEXT DEFAULT ''"),
                       ("docker_total", "INTEGER DEFAULT 0"),

@@ -238,6 +238,23 @@ async def test_summary_tolerates_broken_metrics(store):
     assert "oops" in (await store.get_container("pod-bad"))["last_metrics"]
 
 
+async def test_labels_and_caps_are_bounded(store):
+    """labels/caps 来自 Agent 自报的 status 帧，等同外部输入，入库前必须有界。
+
+    os/kernel/arch/ip/group 都过了 `_clip`，这两个 JSON 字段漏了封顶：MySQL 的补列
+    是 TEXT（64KB），非严格模式静默截断、严格模式直接报错，而截断后的 JSON 前端
+    parse 不出来。超限的键值对**整对丢弃**（不切断 JSON），并留 `_truncated` 标记，
+    让「被截断」与「没上报」在库里可辨。
+    """
+    huge = {"k%02d" % i: "v" * 300 for i in range(60)}      # 序列化后 ≈18KB
+    await store.set_online("pod-big", True, labels=huge, caps={"shell": True})
+    row = (await store.list_containers("full"))[0]
+    assert len(row["labels"]) <= 4096, "落库长度必须封顶，实得 %d" % len(row["labels"])
+    parsed = json.loads(row["labels"])                      # 必须仍是合法 JSON
+    assert parsed.get("_truncated") == "1" and len(parsed) < len(huge)
+    assert json.loads(row["caps"]) == {"shell": True}, "正常小字段不受封顶影响"
+
+
 async def test_list_containers_view_param_guarded(store):
     await store.upsert_container("pod-v", "img", "0.1.0", 60)
     assert len(await store.list_containers()) == 1
