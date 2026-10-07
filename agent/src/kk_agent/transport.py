@@ -134,8 +134,9 @@ class Transport:
         self.env = hostinfo.host_env()
         self.group = str(cfg.get("group") or "")
         self.labels = dict(cfg.get("labels") or {})
-        # 能力声明：服务端据此在源头拦住「这台机器干不了」的命令（v4 关键防线）。
-        # 目前只声明 shell；docker 能力随 v4 之后的容器阶段接入。
+        # 能力声明：v4 先只**上报**，服务端那侧的「这台机器干不了就别发」门禁尚未接入
+        # （眼下 shell 由 Agent 侧 allow_shell 自己拦）。目前只声明 shell；docker
+        # 能力随 v4 之后的容器阶段接入。
         self.caps = {"shell": bool(cfg.get("allow_shell", True))}
 
         # client_id 必须稳定：Broker 靠它识别「同一个 Agent」并保留离线命令队列
@@ -270,17 +271,27 @@ class Transport:
         `wait=True` 用于**进程即将消失**的路径（优雅停止、execv 自更新）：不等
         PUBACK 的话，紧随其后的断开会把还在队列里的这一帧一起带走，服务端就只剩
         一条空 reason 的记录可看。常规上线不需要等，别默认打开。
+        此时返回值口径是「Broker 已 ack」，不是「已入队」。
         """
         payload = self._status_payload(online, reason)
         if not wait:
             return self._pub("status", payload, QOS_CMD, True)
         info = self.cli.publish(self.topic("status"), payload, qos=QOS_CMD, retain=True)
-        if info.rc == mqtt.MQTT_ERR_SUCCESS:
-            try:
-                info.wait_for_publish(1.0)
-            except Exception as e:
-                self.log.warning("status frame PUBACK wait failed: %s", e)
-        return info.rc == mqtt.MQTT_ERR_SUCCESS
+        if info.rc != mqtt.MQTT_ERR_SUCCESS:
+            return False
+        try:
+            info.wait_for_publish(1.0)
+        except Exception as e:
+            self.log.warning("status frame PUBACK wait failed: %s", e)
+            return False
+        # rc==SUCCESS 只证明帧进了发送队列；wait_for_publish 超时是**静默返回**
+        # （paho 只在 rc>0 才 raise），所以送达与否只能问 is_published。
+        # 不等这个确认就报成功，紧随其后的 disconnect/execv 会把队列里的帧一起掐掉。
+        if not info.is_published():
+            self.log.warning("status frame not acknowledged before timeout: %s",
+                             reason or "online")
+            return False
+        return True
 
     def announce_update(self):
         """自更新前的优雅离线宣告（B6.1）：发 reason=updating 并**等它真正送达**。

@@ -48,7 +48,11 @@ class _RecLog:
 
 
 class _Info:
-    """paho publish() 返回的 MQTTMessageInfo 的替身：记录 wait_for_publish 的调用。"""
+    """paho publish() 返回的 MQTTMessageInfo 的替身：记录 wait_for_publish 的调用。
+
+    `is_published` 复刻真 paho 的语义 —— `wait_for_publish(timeout)` 超时是**静默
+    返回**（只有 rc>0 才 raise），想知道帧有没有被 ack 只能问这个。
+    """
 
     def __init__(self, rc, owner):
         self.rc = rc
@@ -58,17 +62,21 @@ class _Info:
         self._owner.waited = timeout
         return None
 
+    def is_published(self):
+        return self._owner.publish_acked
+
 
 class FakeClient:
     """记录所有对外调用；publish 的返回码由测试指定。"""
 
     def __init__(self, publish_rc=mqtt.MQTT_ERR_SUCCESS, connected=False,
-                 publish_exc=None):
+                 publish_exc=None, publish_acked=True):
         self.published = []
         self.subscribed = []
         self.will = None
         self.publish_rc = publish_rc
         self.publish_exc = publish_exc
+        self.publish_acked = publish_acked   # Broker 是否在超时前回了 PUBACK
         self._connected = connected
         self.tls_calls = []
         self.max_queued = None
@@ -354,6 +362,30 @@ def test_stop_waits_for_puback_before_disconnecting(monkeypatch):
     assert fake.events == ["publish", "disconnect", "loop_stop"], \
         "收尾顺序不能颠倒：publish → disconnect → loop_stop"
     assert fake.disconnected and fake.stopped
+
+
+def test_publish_status_wait_reports_unacked_frame(monkeypatch):
+    """rc==SUCCESS 只证明「帧进了发送队列」，不证明「Broker ack 了」。
+
+    paho 的 `wait_for_publish(1.0)` 超时是静默返回（只有 rc>0 才 raise），所以
+    等不到 PUBACK 时旧实现照样返回 True 且一行日志都不留 —— 紧接着的
+    disconnect/execv 会把还在队列里的帧一起掐掉，服务端只剩空 reason 的 LWT。
+    退出路径必须能区分「已送达」与「已入队」。
+    """
+    rec = _RecLog()
+    tr, fake = make_transport(monkeypatch, connected=True, log=rec, publish_acked=False)
+    assert tr.publish_status(False, "stopping", wait=True) is False, \
+        "没等到 PUBACK 不许报成功"
+    assert fake.waited == 1.0, "仍然要等，不能退化成不等"
+    assert any("stopping" in w or "PUBACK" in w for w in rec.warnings), rec.warnings
+
+
+def test_publish_status_wait_true_when_acked(monkeypatch):
+    """正向锁：Broker 正常 ack 时不得虚报失败，也不得多打 warning。"""
+    rec = _RecLog()
+    tr, _fake = make_transport(monkeypatch, connected=True, log=rec)
+    assert tr.publish_status(False, "stopping", wait=True) is True
+    assert rec.warnings == [], rec.warnings
 
 
 def test_stop_is_idempotent_when_disconnected(monkeypatch):
