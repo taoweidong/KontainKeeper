@@ -14,6 +14,9 @@
  * - 作用域化清理：usePolls() 只清本组件注册过的 key，不再误清其他页面在跑的轮询。
  *
  * 全局 setPoll/clearPoll/clearPolls 仍导出以兼容既有 import；业务代码不要直接用全局版。
+ *
+ * 同文件另导出 `useSeq()`：那是**手动请求**的竞态守卫（QR-W4），与这里的定时器
+ * 在途防重入是互补的两件事——一个管「别叠请求」，一个管「迟到的包别写回界面」。
  */
 import { onScopeDispose } from "vue";
 
@@ -108,4 +111,31 @@ export function usePolls() {
   });
 
   return { setPoll: scopedSetPoll, clearPoll: scopedClearPoll };
+}
+
+/** 一次性请求的竞态守卫（QR-W4）：只有「最新一次」发起的响应才允许写回状态。
+ *
+ * `usePolls` 的在途标记只管**定时器**那一路；手动触发的请求（点行看输出、
+ * 切筛选翻页、下拉懒加载）没有守卫——慢响应会后到，把界面换成**另一个对象**的数据。
+ * 命令历史页的实际形态：连点两行，第一行的输出比第二行晚到，抽屉标题是 B、
+ * 正文是 A，运维按这个内容判断线上状态就是事故。
+ *
+ * 用法（在 setup 里取 `begin`，每次发请求前 `begin()` 拿票据）：
+ *   const begin = useSeq();
+ *   async function showOut(row: CommandRow) {
+ *     const isLatest = begin();
+ *     const text = await getCommandOut(row.id);
+ *     if (!isLatest()) return;   // 期间又点了一次，本次结果作废
+ *     out.text = text;
+ *   }
+ *
+ * 只做「丢弃迟到包」，不取消在途请求：取消要把 AbortSignal 一路穿透到
+ * @pureadmin/http 的封装，收益不比它带来的改动面更值。
+ */
+export function useSeq(): () => () => boolean {
+  let seq = 0;
+  return () => {
+    const mine = ++seq;
+    return () => mine === seq;
+  };
 }

@@ -7,7 +7,7 @@
 - 输出改右侧抽屉：原 el-dialog 居中弹窗会完全遮挡列表，无法连续对比多条
 - 本次下发的行加左侧色条：500 台里一眼找到刚才发的那批
 */
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 
 import {
@@ -19,7 +19,7 @@ import {
 } from "@/api/commands";
 import { exportCommands } from "@/api/exporting";
 import { downloadBlob, elapsedText, errText, fileStamp, statusLabel, statusType, tsText } from "@/utils/kk";
-import { usePolls } from "@/utils/kkPoll";
+import { usePolls, useSeq } from "@/utils/kkPoll";
 
 defineOptions({ name: "CommandHistory" });
 
@@ -44,7 +44,13 @@ const out = reactive({ visible: false, title: "", text: "", loading: false, id: 
 // 作用域版 setPoll/clearPoll：卸载只清本组件注册的 key，不再误清其他页面的轮询
 const { setPoll, clearPoll } = usePolls();
 
+// 手动触发的请求不走轮询那条在途防抖：列表与抽屉输出各一路「最新一次」票据（QR-W4）。
+// 没有它，连点两行时先点的慢响应会后到，把标题为 B 的抽屉填上 A 的输出。
+const beginLoad = useSeq();
+const beginOut = useSeq();
+
 async function loadCommands(silent = false) {
+  const isLatest = beginLoad();
   if (!silent) loading.value = true;
   try {
     const data = await listCommands({
@@ -54,12 +60,15 @@ async function loadCommands(silent = false) {
       limit: pageSize.value,
       offset: offset.value
     });
+    if (!isLatest()) return;
     rows.value = data.items;
     total.value = data.total;
   } catch (e: any) {
+    if (!isLatest()) return;
     ElMessage.error("加载命令历史失败：" + (e?.message ?? e));
   } finally {
-    loading.value = false;
+    // 只有最新一路负责收 spinner：迟到包不该把仍在途的请求的加载态关掉
+    if (isLatest()) loading.value = false;
   }
 }
 
@@ -92,9 +101,16 @@ let kwTimer: ReturnType<typeof setTimeout> | null = null;
 watch(keyword, () => {
   if (kwTimer) clearTimeout(kwTimer);
   kwTimer = setTimeout(() => {
+    kwTimer = null;
     offset.value = 0;
     loadCommands();
   }, 300);
+});
+// 卸载时清掉待触发的防抖：否则切页后 300ms 内这一个 timer 仍会打一次后端
+// （usePolls 只登记 setInterval，setTimeout 不在它的管辖里）
+onBeforeUnmount(() => {
+  if (kwTimer !== null) clearTimeout(kwTimer);
+  kwTimer = null;
 });
 
 /** 当前批次的状态分布：选中批次时工具栏直接给出「N 台：done X / failed Y」 */
@@ -143,6 +159,7 @@ function focusBatch(batchId: string, ids: string[] = []) {
 }
 
 async function showOut(row: CommandRow) {
+  const isLatest = beginOut();
   out.title = `${row.id} · ${row.pod}`;
   out.id = row.id;
   out.text = "";
@@ -153,11 +170,14 @@ async function showOut(row: CommandRow) {
   }
   out.loading = true;
   try {
-    out.text = (await getCommandOut(row.id)) || "（无输出）";
+    const text = await getCommandOut(row.id);
+    if (!isLatest()) return;
+    out.text = text || "（无输出）";
   } catch (e: any) {
+    if (!isLatest()) return;
     out.text = "读取输出失败：" + errText(e);
   } finally {
-    out.loading = false;
+    if (isLatest()) out.loading = false;
   }
 }
 

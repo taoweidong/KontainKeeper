@@ -15,7 +15,7 @@ import {
   numText,
   tsText
 } from "@/utils/kk";
-import { usePolls } from "@/utils/kkPoll";
+import { usePolls, useSeq } from "@/utils/kkPoll";
 
 defineOptions({ name: "HostMonitor" });
 
@@ -46,6 +46,9 @@ const selection = ref<HostSummary[]>([]);
 
 // 作用域版 setPoll：卸载时只清本页注册的 key（此前漏调 usePolls，切页后 host-monitor 轮询不会停）
 const { setPoll } = usePolls();
+/** 10s 轮询与「刷新」按钮是两个入口，在途防重入只护定时器那路：
+ *  手动刷新撞上轮询时迟到的回包会把刚才的数据盖回去，还会提前熄灭 loading（QR-W4）。 */
+const beginLoad = useSeq();
 
 const filtered = computed(() => {
   const kw = keyword.value.trim().toLowerCase();
@@ -64,9 +67,11 @@ const filtered = computed(() => {
 
 /** silent=true 供轮询复用：表格数据原位更新，不闪整页 loading，失败也不刷 toast */
 async function load(silent = false) {
+  const isLatest = beginLoad();
   if (!silent) loading.value = true;
   try {
     const data = await listHosts("summary");
+    if (!isLatest()) return;
     rows.value = data.items;
     online.value = data.online;
     alerts.value = data.alerts;
@@ -74,12 +79,13 @@ async function load(silent = false) {
     lastLoadedAt.value = Math.floor(Date.now() / 1000);
     pollFailed.value = false;
   } catch (e: any) {
+    if (!isLatest()) return;
     // 自动轮询失败只在表头的同步读数上如实说明：后端宕机时每 10s 弹一次
     // ElMessage 会把真正的错误淹成噪音（W5）。
     pollFailed.value = silent;
     if (!silent) ElMessage.error("加载主机列表失败：" + errText(e));
   } finally {
-    loading.value = false;
+    if (isLatest()) loading.value = false;
   }
 }
 
@@ -108,15 +114,22 @@ async function onExport() {
   }
 }
 
+/** 采集项懒加载：连点两次「批量采集」会并发两路，迟到那路的结果与错误都不该再动界面（QR-W4）。 */
+const beginCollectItems = useSeq();
+
 async function openCollect() {
   if (!selection.value.length) {
     ElMessage.warning("请先在表格里勾选主机");
     return;
   }
   if (!collectItems.value.length) {
+    const isLatest = beginCollectItems();
     try {
-      collectItems.value = (await listCollectItems()).items;
+      const items = (await listCollectItems()).items;
+      if (!isLatest()) return;
+      collectItems.value = items;
     } catch (e: any) {
+      if (!isLatest()) return;
       ElMessage.error("加载采集项失败：" + errText(e));
       return; // 采集项拿不到就不开弹窗，避免勾选区空白
     }

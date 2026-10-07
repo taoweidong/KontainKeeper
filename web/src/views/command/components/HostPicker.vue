@@ -11,6 +11,7 @@ import { computed, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 
 import { listHosts, type HostSummary } from "@/api/containers";
+import { useSeq } from "@/utils/kkPoll";
 
 defineOptions({ name: "HostPicker" });
 
@@ -47,19 +48,30 @@ const selected = computed(() =>
 const shown = computed(() => selected.value.slice(0, 5));
 const restCount = computed(() => Math.max(0, selected.value.length - shown.value.length));
 
+/** 主机清单懒拉取（只在首次打开时打一次）。
+ *  `useSeq` 守卫的是连点/开了又关再开的并发两路请求：迟到那路必须整条丢弃，
+ *  否则它会把 loading 提前熄灭，还弹出一条指向早已关掉的抽屉的失败 toast（QR-W4）。 */
+const beginLoad = useSeq();
+
+async function loadHosts() {
+  const isLatest = beginLoad();
+  loading.value = true;
+  try {
+    const items = (await listHosts("summary")).items;
+    if (!isLatest()) return;
+    hosts.value = items;
+  } catch (e: any) {
+    if (!isLatest()) return;
+    ElMessage.error("加载主机列表失败：" + (e?.message ?? e));
+  } finally {
+    if (isLatest()) loading.value = false;
+  }
+}
+
 async function open() {
   drawer.value = true;
   draft.value = [...props.pods];
-  if (!hosts.value.length) {
-    loading.value = true;
-    try {
-      hosts.value = (await listHosts("summary")).items;
-    } catch (e: any) {
-      ElMessage.error("加载主机列表失败：" + (e?.message ?? e));
-    } finally {
-      loading.value = false;
-    }
-  }
+  if (!hosts.value.length) await loadHosts();
   syncTableSelection();
 }
 

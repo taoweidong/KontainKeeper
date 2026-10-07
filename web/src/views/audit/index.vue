@@ -5,6 +5,7 @@ import { ElMessage } from "element-plus";
 import { listAudit, parseDetail, type AuditRow } from "@/api/audit";
 import { exportAudit } from "@/api/exporting";
 import { downloadBlob, errText, fileStamp, tsText } from "@/utils/kk";
+import { useSeq } from "@/utils/kkPoll";
 
 defineOptions({ name: "AuditLog" });
 
@@ -22,7 +23,12 @@ const pageNo = computed({
   }
 });
 
+/** 分页 / 每页条数 / 关键字防抖 / 刷新按钮都是手动入口：连点两页时迟到的回包会把
+ *  后点的那一页盖掉（页码停在 B、列表却是 A），所以赋值前校验这一轮还是不是最新一轮（QR-W4）。 */
+const beginLoad = useSeq();
+
 async function load() {
+  const isLatest = beginLoad();
   loading.value = true;
   try {
     // 关键字下推到后端（store._audit_filters）：与导出共用同一套语义，所见即所得；
@@ -32,12 +38,14 @@ async function load() {
       offset: offset.value,
       keyword: keyword.value.trim() || undefined
     });
+    if (!isLatest()) return;
     rows.value = data.items;
     total.value = data.total;
   } catch (e: any) {
+    if (!isLatest()) return;
     ElMessage.error("加载审计日志失败：" + errText(e));
   } finally {
-    loading.value = false;
+    if (isLatest()) loading.value = false;
   }
 }
 
@@ -59,10 +67,10 @@ function onPageChange(p: number) {
   load();
 }
 
+/** 每页条数变化由下面的 watch 统一重置 offset 并重载，这里只赋值——
+ *  两处都调 load() 会在一次操作里打两遍后端。 */
 function onSizeChange(s: number) {
   limit.value = s;
-  offset.value = 0;
-  load();
 }
 
 watch(limit, () => {

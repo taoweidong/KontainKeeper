@@ -26,7 +26,7 @@ import {
   statusType,
   tsText
 } from "@/utils/kk";
-import { usePolls } from "@/utils/kkPoll";
+import { usePolls, useSeq } from "@/utils/kkPoll";
 
 defineOptions({ name: "HostDetail" });
 
@@ -35,8 +35,12 @@ echarts.use([LineChart, GridComponent, TooltipComponent, LegendComponent, Canvas
 const route = useRoute();
 const router = useRouter();
 const pod = computed(() => String(route.params.pod || ""));
-// 作用域版 setPoll：卸载时只清本页注册的 key
+// 作用域版 setPoll：卸载时只清本组件注册的 key
 const { setPoll } = usePolls();
+/** 本页的 load 有两个入口（30s 轮询 + 升级/手动刷新），kkPoll 的在途防重入只护定时器那路：
+ *  手动请求撞上在途轮询时，谁后回包谁就写界面 —— useSeq 让迟到的那一路整条丢弃（QR-W4）。 */
+const beginLoad = useSeq();
+const beginMetrics = useSeq();
 
 const loading = ref(false);
 const detail = ref<HostDetail | null>(null);
@@ -101,10 +105,13 @@ function renderChart(series: Array<{ ts: number; cpu: number | null; mem_mb: num
 }
 
 async function loadMetrics() {
+  const isLatest = beginMetrics();
   try {
     const data = await getHostMetrics(pod.value, hours.value);
+    if (!isLatest()) return;
     renderChart(data.series);
   } catch (e: any) {
+    if (!isLatest()) return;
     ElMessage.error("加载指标序列失败：" + errText(e));
   }
 }
@@ -112,13 +119,17 @@ async function loadMetrics() {
 /** silent=true 供轮询复用：详情与曲线原位更新，不闪整页 loading */
 async function load(silent = false) {
   if (!pod.value) return;
+  const isLatest = beginLoad();
   if (!silent) loading.value = true;
   try {
-    detail.value = await getHost(pod.value);
+    const data = await getHost(pod.value);
+    if (!isLatest()) return;
+    detail.value = data;
   } catch (e: any) {
+    if (!isLatest()) return;
     ElMessage.error("加载主机详情失败：" + errText(e));
   } finally {
-    loading.value = false;
+    if (isLatest()) loading.value = false;
   }
   await loadMetrics();
 }

@@ -23,7 +23,7 @@ import {
   type UpdateRow
 } from "@/api/agent";
 import { ageText, errText, statusLabel, statusType, tsText } from "@/utils/kk";
-import { usePolls } from "@/utils/kkPoll";
+import { usePolls, useSeq } from "@/utils/kkPoll";
 
 defineOptions({ name: "HostUpdate" });
 
@@ -38,6 +38,9 @@ const upgrading = ref(false);
 
 // 作用域版 setPoll：卸载时只清本页注册的 key
 const { setPoll } = usePolls();
+/** 轮询与「升级后 reload」是两个入口，在途防重入只护定时器那路：
+ *  迟到的回包既会把旧勾选模型盖回来，也会提前熄灭 loading（QR-W4）。 */
+const beginLoad = useSeq();
 
 /** 表格实例：勾选模型反向同步用（只依赖这两个方法，按结构收窄） */
 const tableRef = ref<{
@@ -62,6 +65,7 @@ const hasLatest = computed(() => !!current.value?.version);
 
 /** silent=true 供轮询复用：勾选态与数据原位更新，不闪整页 loading */
 async function load(silent = false) {
+  const isLatest = beginLoad();
   if (!silent) loading.value = true;
   try {
     const [cur, hosts, upds] = await Promise.all([
@@ -69,6 +73,7 @@ async function load(silent = false) {
       listHosts("summary"),
       listUpdates(50).catch(() => ({ items: [] as UpdateRow[], summary: {}, limit: 50 }))
     ]);
+    if (!isLatest()) return;
     current.value = cur;
     outdated.value = hosts.items.filter(h => h.agent_outdated);
     updates.value = upds.items;
@@ -82,9 +87,10 @@ async function load(silent = false) {
       applySelection();
     }
   } catch (e: any) {
+    if (!isLatest()) return;
     ElMessage.error("加载升级信息失败：" + errText(e));
   } finally {
-    loading.value = false;
+    if (isLatest()) loading.value = false;
   }
 }
 

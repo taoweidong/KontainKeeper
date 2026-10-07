@@ -7,7 +7,7 @@ import { listHosts, type HostSummary } from "@/api/containers";
 import { getHealth, getStats, type HealthResult, type StatsResult } from "@/api/system";
 import { listCommands, type CommandRow } from "@/api/commands";
 import { ageText, durText, elapsedText, statusLabel, statusType, tsText } from "@/utils/kk";
-import { usePolls } from "@/utils/kkPoll";
+import { usePolls, useSeq } from "@/utils/kkPoll";
 import { useRenderIcon } from "@/components/ReIcon/src/hooks";
 import MonitorIcon from "~icons/ri/dashboard-2-line";
 import CommandIcon from "~icons/ri/terminal-box-line";
@@ -26,6 +26,8 @@ const health = ref<HealthResult | null>(null);
 const recentCmds = ref<CommandRow[]>([]);
 // 卸载时统一清轮询（漏一处就是「切页后仍在刷接口」）；作用域版只清本页注册的 key
 const { setPoll } = usePolls();
+/** 轮询与手动刷新两个入口，迟到的回包不能盖掉更新的一轮数据（QR-W4）。 */
+const beginLoad = useSeq();
 
 const offline = computed(() => hosts.value.length - online.value);
 
@@ -68,6 +70,7 @@ const alertHosts = computed(() =>
 
 /** silent=true 供轮询复用：数据原位更新，不闪整页 loading（交互流畅度，评审 P3） */
 async function load(silent = false) {
+  const isLatest = beginLoad();
   if (!silent) loading.value = true;
   try {
     const [hostData, statsData, cmdData, healthData] = await Promise.all([
@@ -76,6 +79,7 @@ async function load(silent = false) {
       listCommands({ limit: 12 }).catch(() => ({ items: [] as CommandRow[] })),
       getHealth().catch(() => null)
     ]);
+    if (!isLatest()) return;
     hosts.value = hostData.items;
     online.value = hostData.online;
     alerts.value = hostData.alerts;
@@ -83,9 +87,10 @@ async function load(silent = false) {
     recentCmds.value = cmdData.items;
     health.value = healthData;
   } catch (e: any) {
+    if (!isLatest()) return;
     ElMessage.error("加载汇总数据失败：" + (e?.message ?? e));
   } finally {
-    loading.value = false;
+    if (isLatest()) loading.value = false;
   }
 }
 
