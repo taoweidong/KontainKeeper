@@ -24,6 +24,11 @@ web/ Vue3 前端（REST 轮询 + ECharts，构建产物由 kk-server 托管）
 - `web/` — **独立 pnpm 工程**（Vue3 + TS + Element Plus + Vite + Pinia + ECharts，底座 pure-admin-thin v6.2.0）。`src/api/` 业务 API 层、`src/views/` 六个业务页（host/monitor 总览、host/detail 详情、host/update 版本与更新、command/shell 命令面板、command/collect 采集面板、audit 审计）、`src/router/modules/kk.ts` 静态路由。`web/dist/` 被 .gitignore 忽略，产物需人工同步到 `server/src/kk_server/web/`。
 - `proto/messages.md` — 双端通信协议契约（**v3 = 去 token：匿名 Broker + 服务端 `KK_AGENT_IPS` 白名单，上行帧携带自报 `ip`**；可选 Broker 鉴权加固走双端 `KK_MQTT_USERNAME/PASSWORD`，见 deployment.md）。改协议必须同步：`agent/src/kk_agent/config.py` 的 `PROTO_VER`、`server/src/kk_server/__init__.py` 的 `PROTO_VER`、协议文档、双端测试。
 - `agent/tests/`、`server/tests/`、`scripts/build.sh`（把 agent 叠加进 vscode-server 镜像）。
+- `scripts/install.sh` + `deploy/systemd/kk-agent.service` — **非容器 Linux 主机**（物理机/VM）的 Agent
+  安装路径：同一个 `agent/dist/kk-agent` 二进制、同一套 `KK_*`，只把容器里的 supervisor 换成
+  systemd `Restart=always`。env 文件只创建不覆盖、二进制内容未变不 restart、单元里刻意不做沙箱
+  （收口文件系统会让 root 命令通道**静默失效**）。测试钩子 `KK_INSTALL_UNIT_DIR` / `KK_INSTALL_BIN` /
+  `KK_INSTALL_DRY_RUN`——不带钩子会往 `/etc/systemd/system` 真装一个单元，别在开发机的 WSL 里裸跑。
 - `Jenkinsfile` — **CI/CD 流水线**（测试 → Agent 二进制 → 服务端镜像 → 镜像冒烟 → 推送 → 部署 → 部署验证），
   走 Jenkins 而非 GitHub Actions（仓库无 `.github/workflows/`）。配套 `scripts/ci_smoke.sh`（镜像级部署冒烟，
   真起容器 + 真跑 Agent 二进制）与 `docs/ci-jenkins.md`（节点要求 / 凭据 ID / 参数 / 排障 / 回滚）。

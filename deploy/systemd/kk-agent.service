@@ -1,0 +1,34 @@
+[Unit]
+Description=KontainKeeper Agent（主机直连管理与指标上报）
+Documentation=https://github.com/taowd/KontainKeeper
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=@TARGET_DIR@/kk-agent
+EnvironmentFile=-@TARGET_DIR@/kk-agent.env
+WorkingDirectory=@TARGET_DIR@
+Restart=always
+RestartSec=5
+
+# 这里刻意**不写**任何 systemd 沙箱指令（ProtectSystem / PrivateDevices /
+# ReadWritePaths / CapabilityBoundingSet ...）。原因不是偷懒：这个进程的职责就是
+# 「以 root 在这台主机上执行运维下发的命令 + 读全量 /proc + 可能挂 docker.sock」，
+# 文件系统与设备一旦收口，命令通道与采集会静默失效——采集项少一项、命令报权限错，
+# 而服务状态仍是 active(running)，比崩溃更难发现。
+# 该 Agent 的安全边界不在 systemd 层，而是：出站单向连 Broker（不开任何入站端口）、
+# 服务端按上行帧自报 ip 走 KK_AGENT_IPS 白名单、双端命令黑名单 + 审计。
+#
+# 反过来，这两条是必须守的，install.sh 会保证：
+#   - 二进制与 env 文件属主 root、目录与文件不可被非 root 写（env 里可能有
+#     KK_MQTT_PASSWORD，0600）；否则能写二进制的人就在下次 Restart 时拿到 root。
+#   - 不自定义 User=：Agent 自更新走 execv 原地替换进程，换用户会让新进程权限
+#     与台账记录的版本判定错位（B6 的离线语义依赖它）。
+#
+# 崩溃循环：systemd 默认「10s 内 5 次启动失败即放弃」，这里不放宽——放宽成
+# StartLimitIntervalSec=0 会让配置错误的机器无限重连打爆 Broker。真被判 failed 时
+# 用 `journalctl -u kk-agent -n 50` 看原因，修完 `systemctl reset-failed kk-agent`。
+
+[Install]
+WantedBy=multi-user.target
