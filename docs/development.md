@@ -200,7 +200,7 @@ python scripts/mqtt_e2e.py                     # 默认连 127.0.0.1:1883，退�
 制作管理镜像或验证自更新时才需要；日常源码开发不用：
 
 ```bash
-cd agent && ./build/build_binary.sh     # 产出 agent/dist/kk-agent（Windows 为 .exe）
+cd agent && bash build/build_binary.sh   # 产出 agent/dist/kk-agent（Windows 为 .exe）
 ```
 
 脚本自动安装 PyInstaller 并带上 paho/psutil 的 hidden-import。
