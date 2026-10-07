@@ -118,6 +118,22 @@ async def test_online_column_and_grace(store):
     assert await store.mark_stale_offline() >= 0
 
 
+async def test_hb_without_ip_keeps_the_status_ip(store):
+    """心跳没报 ip 时，不能把 status 帧建立的地址抹成空串。
+
+    协议里 hb 确实自报 ip（§3.2），但「探测失败即空串」是允许的形态：拿它覆盖 status
+    侧刚写好的地址，详情页的连接信息会在一次心跳后变空白——和「离线帧不覆盖元信息」
+    是同一条不变量，只是走的是心跳路径。
+    """
+    await store.set_online("pod-ip", True, agent_ver="0.4.0", ip="10.0.0.9")
+    await store.record_hb("pod-ip", {"interval": 60, "metrics": {"cpu": 1.0}})
+    assert (await store.get_container("pod-ip"))["ip"] == "10.0.0.9"
+    # 帧里真报了另一个地址才覆盖：换网卡 / 换出口是真实场景
+    await store.record_hb("pod-ip", {"interval": 60, "ip": "10.0.0.10",
+                                     "metrics": {"cpu": 1.0}})
+    assert (await store.get_container("pod-ip"))["ip"] == "10.0.0.10"
+
+
 async def test_status_reason_persisted_and_lwt_does_not_clobber_updating(store):
     """B6.1：status 的 reason 要落库；Broker 补发的空 reason(LWT) 不得抹掉刚写的 updating。
 

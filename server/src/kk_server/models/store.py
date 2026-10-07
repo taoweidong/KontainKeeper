@@ -359,15 +359,19 @@ class Store:
         summary = self._summary_of(m)
         # cpu/mem_mb 落 Float 列前先规整：Agent 插件写坏了指标也不能让整帧心跳
         # 因为类型错误丢掉——曲线少一个点可以忍，整帧没了就是数据空洞。
+        # ip 只在帧里真报了才覆盖：探测失败是「空串」这一正常形态，拿它写回会把
+        # status 帧建立的地址抹成空白，详情页的连接信息在一次心跳后就没内容了。
+        vals = {"last_seen": now, "status_ts": now, "last_metrics": raw,
+                "hb_interval": int(msg.get("interval") or 60)}
+        reported_ip = _clip(msg.get("ip"), 64)
+        if reported_ip:
+            vals["ip"] = reported_ip
         async with self.engine.begin() as conn:
             await conn.execute(insert(heartbeats).values(
                 pod=pod, ts=ts, cpu=_num(m.get("cpu")), mem_mb=_num(m.get("mem_mb")),
                 metrics=raw))
-            await conn.execute(update(containers).where(containers.c.pod == pod).values(
-                last_seen=now, status_ts=now,
-                hb_interval=int(msg.get("interval") or 60), last_metrics=raw,
-                ip=_clip(msg.get("ip"), 64),
-                **summary))
+            await conn.execute(update(containers).where(containers.c.pod == pod)
+                               .values(**vals, **summary))
         return ts
 
     @staticmethod
