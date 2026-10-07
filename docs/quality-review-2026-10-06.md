@@ -31,8 +31,8 @@
 | 本机执行（无 Broker） | **336 passed / 4 skipped / 0 failed**，61.1s | 上轮 306/4/0，141s → QR-T3 夹具探测缓存生效，**耗时降到 43%** |
 | 源码 : 测试 | 5,527 : 5,498 行（Python） | 「≈1:1」成立，但**全仓无 pytest-cov、无覆盖率门槛**→ 行码叙事 ≠ 覆盖证据 |
 | 前端类型检查 | `tsc --noEmit` + `vue-tsc --noEmit` **通过** | 但 `strict:false`（`tsconfig.json:6-7`）+ `no-explicit-any:"off"`（`eslint.config.js:81`）使绿灯含金量有限 |
-| 前端 lint | **失败**：`web/build/cdn.ts:1` `'Plugin' is defined but never used`；prettier 重排 16 文件 | 说明 `pnpm lint` 不在任何门禁（Jenkinsfile 无前端 lint 阶段） |
-| 前端构建 | `vite build` 成功 42s / 2.78MB | ⚠ `pnpm build` 脚本在 Windows cmd 下失败（`NODE_OPTIONS=... vite build` 是 POSIX 语法），需 Git Bash |
+| 前端 lint | **失败**：`web/build/cdn.ts:1` `'Plugin' is defined but never used`；prettier 重排 16 文件 | 说明 `pnpm lint` 不在任何门禁（Jenkinsfile 无前端 lint 阶段）。**已修**：cdn.ts 死导入清零、ts 侧归零（aa4945c），⑤ 段新增棘轮门禁（见 QR-W10 / §8.5） |
+| 前端构建 | `vite build` 成功 42s / 2.78MB | ⚠ `pnpm build` 脚本在 Windows cmd 下失败（`NODE_OPTIONS=... vite build` 是 POSIX 语法），需 Git Bash。**已修**（3e2b2eb 改直调 vite 入口，cmd 下 `pnpm build` 退出码 0，见 §8.5） |
 | 依赖新鲜度 | fastapi 0.141.1（最新 0.142.2）、sqlalchemy 2.0.52（2.1.3）、starlette 1.6.0（1.7.0）、uvicorn 0.52.4（0.54.0） | 无落后 majors、无已知高危；asyncpg/pymysql 走 extra 未装（符合设计） |
 | 协议一致性 | 双端 `PROTO_VER = 3` 同步；`KK_ALLOW_SHELL` 契约在 `config.py:89`/`executor.py:195` 落实 | ✅ 无漂移 |
 | 本机 Docker | **不可用** | 「Broker 可达时全 passed」这一叙事本轮**无法在开发机验证**（见 §7） |
@@ -118,6 +118,7 @@
 | QR-W7 | P2 | `api/containers.ts:73` + 5 处调用点 | `listHosts("summary")` 不带 limit → 500 台全量 JSON 喂非虚拟 el-table；monitor/welcome/shell/collect/HostPicker 各自重复全量拉取；`filtered` 每轮整体重算 | **部分已修**（ bbc8ee2：总览前端分页 100/200/500 + `reserve-selection` 保跨页勾选；`HostPicker` 加可选 `:hosts` 复用父页清单）。**未修**：接口仍无 limit（后端分页要改 `store` 查询，与在途 v4 改动同区）；`el-table-v2` 虚拟表放弃——本环境内置浏览器不可截图，重写 9 列富单元格的视觉风险无法自证 |
 | QR-W8 | P2 | `views/login/index.vue:40-41` | 登录表单把 `admin/admin123` 预填进生产构建，向内网任何人出示入口凭据 | **已修** |
 | QR-W9 | P2 | `utils/print.ts`(223) / `utils/localforage/`(275) / `utils/sso.ts` / `globalPolyfills.ts`；`update/index.vue:52` | 四块零引用死代码（print.ts 集中了全部 9 处 `@ts-expect-error`）；`.vue` 段 eslint `no-unused-vars:"off"` 掩盖未用常量；`auth.ts:53-85` token 同时落 cookie（无 Secure/SameSite 显式声明）与 localStorage | **部分已修**（be8cdec：四块死代码删除 −567 行，`.vue` 段规则改动后抓到两条真红灯——`update` 的 `SKIP_REASON_LABEL` 定义后从未使用、`welcome` 未用导入已清）。**未修**：eslint 规则改动因并行前端批次在 `update/index.vue` 留有未接线的 `upgradeSkipText` 导入，开启即红灯，暂扣未提交；`localforage` npm 依赖已无人引用但要动 lockfile，另步；`auth.ts` token 落 localStorage 属会话模型，登记 |
+| QR-W10 | P2 | `package.json:7,9`、Jenkinsfile ⑤（修复前无 lint 步骤） | **前端构建与 lint 的可执行性**：`dev`/`build` 用 POSIX `NODE_OPTIONS=… vite` 前缀，Windows cmd 下 `pnpm build` 与 `pnpm dev` 直接报「'NODE_OPTIONS' 不是内部或外部命令」（pnpm 12.4.1 + `shell-emulator=true` 也救不回来）；且 lint 不在任何门禁，格式违规攒到 **140 条**（87 prettier + `cdn.ts` 死类型导入 + 其余在脏页面上）无人发现 | **已修**（3e2b2eb 直调 `node --max-old-space-size=… node_modules/vite/bin/vite.js`，不新增 `cross-env`；aa4945c 清零 ts 侧；Jenkinsfile ⑤ 加**棘轮门禁**——8 个存量脏文件进 `LINT_DIRTY` 豁免，其余 120+ 个文件新增违规即红，见 §8.5）。**未修**：脏清单里的 8 个文件按页分批清理（并行批次 FE-6/FE-8/FE-11~13/FE-17/FE-21 正在改同一批页面，整文件 `--fix` 会撞在途编辑） |
 
 ### 3.4 流水线 / 部署 / 卫生
 
@@ -147,7 +148,7 @@
 | **可维护性** | ✅ 分层强 / ⚠ 规模失控 | 方言只收口两处、依赖注入默认拒绝、协议双端同步；但 `store.py` 已 976 行（自订 ≤500）、`mqtt_bridge.py` 514 行、Agent 侧几乎零类型注解（QR-A16）、无 ruff/mypy/cov、`strict:false`（QR-W2）、`.zcode/` 等工具目录混入版本库 |
 | **可观测性** | ⚠ 有盲区 | `/api/health` 未鉴权即返回 bridge 计数与版本（QR-S15）；Agent `stop()` 三段 `except: pass` 无日志（QR-A14）；夜测恒绿使规模退化不可见（QR-P1）；`.prev` 保留失败静默（QR-S19） |
 | **测试有效性** | ⚠ 单测扎实、门禁虚设 | 回归锁 docstring、fake 防御式断言、free_port、有界轮询都成立；但无覆盖率工具、skip 静默、弱断言两处未清、PG/MySQL 只走夜测、账本两条「已修复」与代码不符 |
-| **可发布性** | ⚠ | 回滚参数缺失（QR-P3）、产物同步改写工作区（QR-P7）、`pnpm build` 在 Windows 不可用（POSIX env 前缀）、前端 lint 不在任何门禁 |
+| **可发布性** | ⚠ 已补两块 | 回滚参数缺失已修（QR-P3）、产物同步改写工作区已修（QR-P7）、`pnpm build` 在 Windows 不可用已修（QR-W10，3e2b2eb）、前端 lint 已进 ⑤ 棘轮门禁（QR-W10）；剩余：脏清单 8 个文件待按页清理、Jenkins ⑤ 的 lint 步骤尚未在真流水线跑过一次（本地等价命令已红/绿双向自检，见 §8.5） |
 
 ---
 
@@ -244,5 +245,23 @@
 两条刻意的偏离，写在这里而不是藏在提交信息里：
 
 1. **总览用前端分页，没用 `el-table-v2`，也没做后端分页**。后端分页要改 `store` 的查询（与在途 v4 改动同区，改出来是给别人添冲突）；`el-table-v2` 要重写 9 列富单元格（勾选列 / 计量条 / 心跳三格 / 固定操作列），而本环境的内置浏览器无法截图取证（隐藏页），视觉回归没法自证——把一个不可验证的大改塞进「正确性」批次是不诚实的。前端分页把 DOM 行数从 500 压到 100，正好打在瓶颈（节点数）上，不是 JSON 大小。
-2. **`.vue` 的 eslint 规则改动暂扣未提交**：并行前端批次正在 `update/index.vue` 里把 skipped 文案收口成 `upgradeSkipText`，当前该导入尚未接线；规则一开就是一条属于别人的红灯。等它落地再开。
+2. ~~`.vue` 的 eslint 规则改动暂扣未提交~~ → **2026-10-07 已随 ⑤ 棘轮门禁提交**（见 §8.5）：门禁把 8 个存量脏文件整体豁免，`update/index.vue` 里并行批次尚未接线的 `upgradeSkipText` 因此不会变成别人的红灯；规则本身对清单外的 120+ 个文件立即生效。
+
+### 8.5 remediation 2.2（QR-W10：构建跨平台 + lint 进门禁）验证记录（2026-10-07）
+
+| 验证项 | 命令 | 结果 |
+|---|---|---|
+| Windows cmd 下构建（修复前） | `cmd.exe //c "pnpm build"` | **红**：`'NODE_OPTIONS' 不是内部或外部命令`，退出码 1；`pnpm dev` 同一病根。此前只能绕道 Git Bash 或手敲 `NODE_OPTIONS=… pnpm exec vite build` |
+| Windows cmd 下构建（修复后） | `cmd.exe //c "pnpm build"` | **绿**，退出码 0，`dist` 2.79 MB（与改前同量，无体积回归）；`✓ built in 15.13s` |
+| 命令行形态自检 | `cmd.exe //c "node --max-old-space-size=4096 node_modules/vite/bin/vite.js --version"` | `vite/7.1.12 win32-x64 node-v24.13.1`，退出码 0（`dev` 脚本用的就是这条，只是无参数即起 dev server） |
+| lint 全量基线量化 | `eslint -f json "{src,mock,build}/**/*.{vue,js,ts,tsx}"` | **140 条 / 14 文件**：`prettier/prettier` 138、`@typescript-eslint/no-unused-vars` 1（`cdn.ts` 死类型导入）、其余 1 条为脏页面上的在途未接线导入。按归属拆：并行批次在改的 3 个文件 52 条，其它 88 条 |
+| ts 侧清零 | `eslint --fix src/api build src/router/modules/kk.ts` + 手删死导入 | 6 文件 12 条清零（aa4945c），diff 纯换行、`pnpm typecheck` 绿 |
+| 棘轮门禁自检（正） | 照抄 Jenkinsfile ⑤ 段 bash，`LINT_DIRTY` 8 项豁免 | **退出码 0**，覆盖清单外 120+ 个文件 |
+| 棘轮门禁自检（反） | 临时放一个含未用变量的 `src/utils/__kkprobe.ts` 再跑同一条 | **退出码 1**，报错指名 `__kkprobe.ts`；探针文件已删（证明门禁有牙齿，不是摆设） |
+
+分工说明：`.vue` 脏清单的清理刻意**不在本轮做**——那 8 个文件全部在并行会话 FE 批次的认领清单里
+（`frontend-optimization-plan-2026-10-07.md` 的 FE-6/FE-8/FE-11~13/FE-17/FE-21 与 `utils/kk.ts`），
+prettier 是整文件重写，并行时改同一批页面必然撞车。棘轮的意义正在于此：**别人清一个，清单缩一行，门禁立刻开始护它**，
+而在途文件保持豁免不会把别人的中间态算成本轮的红。
+
 
