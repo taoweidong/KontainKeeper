@@ -481,3 +481,37 @@ src/ 171 文件 · 13,791 行（.vue + .ts）
 | — | `c966d38` 的信息写「清掉最后 51 条存量违规」，实际只提交 3 个文件，5 个业务页的格式化没进库；同一信息还写「删掉 LINT_DIRTY 机制」，diff 只把清单从 8 缩到 3 | `910d433` 补提交那 5 个文件；`0141287` 才真删豁免机制。两笔都记在质量账本 QR-W13 / QR-W14——**提交信息不是证据，引用前先 `git show <c> -- <file>`** |
 | — | `src/plugins/echarts.ts` 的删除搭在了 `a0becda`（信息未提及），因为 `git rm` 在上一条命令就已入暂存区 | 记录在此，避免按提交信息检索时找不到 |
 | — | `docs/ci-jenkins.md` 仍描述 lint **棘轮**与 8 个豁免文件；`c966d38` 之后门禁已是零豁免全量 | 该文件由并行会话接手，本轮**未改**，留待其收口 |
+
+### 7.2 v4 前端就绪度：卡点在契约，不在页面（2026-10-07 复核）
+
+v4 演进方案的前端部分（主机元信息列 / 分组筛选 / 容器总览 / TargetPicker / 容器 Tab / 审计容器维度）
+本轮**没有开工，也不能开工**。理由不是排期，是后端 REST 面一行都没变——下面是逐项证据。
+
+先看这一条就够：`git status --porcelain -- server/src/kk_server/controllers/ web/` 输出为空。
+在途的 v4 改动全部落在协议、Agent、模型与桥接层，**控制器与前端一处未动**。
+
+| 前端要渲染的东西 | 它需要的契约 | 后端现状（读代码所得，非推断） | 判定 |
+|---|---|---|---|
+| 总览页「类型 / 分组 / OS / Docker / 协议待升级」五列 | `GET /api/containers`（或 `/api/hosts`）的 summary 响应带 `host_type / group_name / os_name / ip / caps / docker_total / docker_running / docker_unhealthy / proto_ver` | `containers.py::_container_summary` 只回 12 个字段，上面 9 个**一个都没出**。而 `tables._SUMMARY_COLS` 已经是 19 列——数据**已随列表查询取回，在 mapper 处被丢弃** | 阻塞，且是最便宜的一条（纯接线） |
+| 筛选行：分组下拉 / 主机类型 segmented / 「仅 Docker 异常」 | 列表接口吃 `group / host_type / docker_unhealthy / proto_ver` 查询参数 | `list_containers(view, limit, offset)` 三个参数，无任何筛选与排序入口 | 阻塞 |
+| 读数条「Docker 异常」那一格 | 聚合计数（不能靠前端翻 500 行） | `list_containers` 的响应只有 `total/online/alerts/outdated` 四个数 | 阻塞 |
+| 容器总览 `/containers`、主机详情「容器」Tab | `GET /api/hosts/{h}/containers`、`/api/docker/containers`（跨主机分页） | 不存在。`kk_docker_containers` 表也还没建（在途 diff 里没有） | 阻塞 |
+| TargetPicker 的两级选择 + 「无能力主机置灰」 | 主机列表带 `caps.docker`；容器列表带 `state=running` | 同上，`caps` 不出响应；无容器端点 | 阻塞 |
+| 命令面板下发到容器 | `POST /api/commands` 吃 `target` / `container`；无能力 → `409 caps_not_supported`；容器不存在 → `404 container_not_found` | `CommandBody` 只有 `pods`；校验只有 `containers_exist(body.pods)`；黑名单只对 `body.pods` 的 argv 生效——**§3.3 那三层防线一层都还没落地** | 阻塞，且是 P0 安全项（不是体验项） |
+| 审计页「目标」列（`host` 或 `host / container`） | `kk_audit.detail` 带 container 维度 + 列表侧可按其筛选 | `audit.py` 无该维度 | 阻塞 |
+| 结果回显区分主机/容器命令 | `result` 帧的 `target` 回显并进 `kk_commands` | `kk_commands` 尚无 `target` / `container` 列 | 阻塞 |
+
+**可先行、不等后端的只有三项**：`/system` 系统统计页（`GET /api/system/stats` 已具备，方案本就标低优先）、
+空态三分文案（没主机 / 没容器 / 没命令，纯前端）、以及 `--kk-page-h` 与四档状态色在新页复用——
+这三项做完也不构成任何 v4 用户可见能力，所以本轮**没为它们单独开批次**（避免用「在做 v4」的壳交付一堆边角料）。
+
+给并行会话的最小交接清单（前端拿到就能开工的顺序，按 cost/benefit 排）：
+
+1. `_container_summary` 把已取回的 9 列透出，`HostSummary` 同步补字段——**一行 mapper 的差价，解锁总览页四列**。
+2. `list_containers` 增 `group / host_type / proto_ver / docker_unhealthy` 筛选与 `sort`（`store._host_filters` / `_SORTS` 在途代码里已经有了，只差控制器接线）。
+3. 容器清单端点（先 `/api/hosts/{h}/containers`，跨主机分页可后置）。
+4. `POST /api/commands` 的 `target` / `container` + §3.3 三层门禁（含 `kk_commands` 两列），**这条必须在 TargetPicker 上线之前**，否则前端做出来的是一个没有安全边界的按钮。
+
+不建议前端先按猜测写契约再等后端对齐：本仓库已经有过判例——版本落后判定（D1.2/D1.3）、
+skip 原因枚举（QR-W11：前端自己抄一份枚举，HEAD 就红了一轮）都要求**语义在服务端算好下发**。
+容器目标与 `caps` 门禁同属这类判定，前端先写只会把漂移固化成两份实现。
