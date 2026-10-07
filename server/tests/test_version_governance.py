@@ -6,8 +6,9 @@
   一次」——每行查一次就是与 P1-1 同型的 N+1。
 - **「最新版本是什么」要对运维可见**（D1.2）：500 台规模下若客户端无从得知版本号，
   需求②的「升级到最新版本」在 UI 上根本无从表达。
-- **文档不漂移**（D1.4）：`proto/messages.md` 的 update 示例版本必须始终高于
-  `AGENT_VER`（它是「服务端推着 Agent 升级」的方向）。
+- **文档不漂移**（D1.4 / QR-S32）：`proto/messages.md` 的 update 示例版本必须始终高于
+  `AGENT_VER`（它是「服务端推着 Agent 升级」的方向），且标题、头部声明与 status 示例帧
+  的 `proto_ver` 必须等于当前 `PROTO_VER`，v4 新增字段逐个有定义。
 """
 import re
 from pathlib import Path
@@ -16,6 +17,7 @@ import httpx
 import pytest
 
 from kk_agent.config import AGENT_VER
+from kk_server import PROTO_VER
 from kk_server.main import create_app
 from kk_server.models.version import count_outdated, version_lt
 
@@ -155,3 +157,20 @@ def test_proto_doc_example_version_in_sync():
     assert version_lt(AGENT_VER, example), (
         "proto/messages.md 的 update 示例版本 %r 不高于 AGENT_VER %r —— 文档已漂移"
         % (example, AGENT_VER))
+
+
+def test_proto_doc_states_current_version_and_v4_fields():
+    """QR-S32：文档必须报当前 `proto_ver`，并逐个定义 v4 新增字段。
+
+    协议四件套里代码那三件（双端 `PROTO_VER` + 服务端窗口闸门）抬版本时自动生效，
+    只有文档靠人手同步。文档停在旧版本号，照它实现的第二个 Agent 就会做出窗口外的帧，
+    而且第一帧上线就被整批拒收。
+    """
+    doc = (ROOT / "proto" / "messages.md").read_text(encoding="utf-8")
+    assert "# KontainKeeper 通信协议 v%d（MQTT）" % PROTO_VER in doc, "标题版本号没跟着抬"
+    assert "`proto_ver = %d`" % PROTO_VER in doc, "头部声明的 proto_ver 没跟着抬"
+    assert '"proto_ver":%d' % PROTO_VER in doc, "status 示例帧的 proto_ver 没跟着抬"
+    # 版本号不是硬相等而是窗口：文档不写窗口，读的人会把「抬版本」当成断网开关
+    assert "兼容窗口" in doc and "KK_DROP_PROTO_V3" in doc
+    for field in ("`env`", "`group`", "`labels`", "`caps`", "`docker`"):
+        assert field in doc, "v4 字段 %s 没进协议文档" % field
