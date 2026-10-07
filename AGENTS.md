@@ -56,10 +56,10 @@ pnpm build       # 产物输出到 web/dist/
 ```bash
 # CI/CD（定义在根 Jenkinsfile，节点要求与凭据见 docs/ci-jenkins.md）
 docker run -d --name kk-ci-broker -p 127.0.0.1:18830:1883 \
-  -v "$PWD/deploy/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" eclipse-mosquitto:2
+  -v "$PWD/docker/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" eclipse-mosquitto:2
 KK_IT_MQTT_URL=mqtt://127.0.0.1:18830 .venv/Scripts/python.exe -m pytest agent/tests server/tests -q  # 有 Broker 才是全 passed（无 Broker 时 4 条集成用例 skipped）
 KK_MQTT_URL=mqtt://127.0.0.1:18830 .venv/Scripts/python.exe scripts/mqtt_e2e.py                      # Broker 语义冒烟（LWT/离线队列）
-docker build -f server/Dockerfile -t kontainkeeper-server:local .                                    # 上下文必须是仓库根
+docker build -f docker/Dockerfile -t kontainkeeper-server:local .                                    # 上下文必须是仓库根
 bash scripts/ci_smoke.sh kontainkeeper-server:local agent/dist/kk-agent                              # 镜像级部署冒烟
 ```
 

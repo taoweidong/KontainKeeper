@@ -7,7 +7,7 @@
 
 | 镜像 | 级别 | 用途 | 官方地址 |
 |---|---|---|---|
-| `kk-server:latest`（构建产物） | core | 服务端（含前端托管产物） | 外网机 `docker build -f server/Dockerfile` 产出，无公共地址 |
+| `kk-server:latest`（构建产物） | core | 服务端（含前端托管产物） | 外网机 `docker build -f docker/Dockerfile` 产出，无公共地址 |
 | `eclipse-mosquitto:2` | core | MQTT Broker | https://hub.docker.com/_/eclipse-mosquitto |
 | `<KK_AGENT_IMAGE>`（构建产物） | core | 叠加了 kk-agent 二进制的 vscode-server 镜像 | 基于私有基础镜像经 `scripts/build.sh` 产出，无公共地址 |
 | `python:3.12-slim` | build | kk-server 镜像的构建基础 | https://hub.docker.com/_/python |
@@ -28,11 +28,11 @@
 scripts/build.sh <私有基础镜像> kk-vscode-server:2026-09
 
 # 2) 打包（自动构建 kk-server、拉取依赖镜像、save 并生成校验单）
-KK_AGENT_IMAGE=kk-vscode-server:2026-09 ./deploy/offline/pack.sh
-# 连 opt 级（前端独立镜像基础）一起打：PACK_OPT=1 ./deploy/offline/pack.sh
+KK_AGENT_IMAGE=kk-vscode-server:2026-09 ./docker/offline/pack.sh
+# 连 opt 级（前端独立镜像基础）一起打：PACK_OPT=1 ./docker/offline/pack.sh
 ```
 
-产物在 `deploy/offline/images/`：`*.tar.gz` + `SHA256SUMS`。
+产物在 `docker/offline/images/`：`*.tar.gz` + `SHA256SUMS`。
 
 无 Docker 的外网机备选：用 [skopeo](https://github.com/containers/skopeo)
 `skopeo copy docker://eclipse-mosquitto:2 docker-archive:eclipse-mosquitto_2.tar:eclipse-mosquitto:2`
@@ -42,7 +42,7 @@ KK_AGENT_IMAGE=kk-vscode-server:2026-09 ./deploy/offline/pack.sh
 
 - 脚本、清单（`manifest.txt`）、本说明随 git 入库；**tar 本体默认被 .gitignore 忽略**。
 - tar 合计约 300–600MB（gzip 后）。若要求 tar 也进 git：启用
-  [Git LFS](https://git-lfs.com)（`git lfs track "deploy/offline/images/*.tar.gz"`），
+  [Git LFS](https://git-lfs.com)（`git lfs track "docker/offline/images/*.tar.gz"`），
   或改用仓库 Release assets / 内网文件共享分发——直接 commit 大二进制会让仓库不可逆膨胀。
 
 ## 4. 内网导入与启动（离线机器）
@@ -52,8 +52,8 @@ Ubuntu 用 `apt download docker-ce docker-ce-cli containerd.io docker-buildx-plu
 CentOS 用 `yumdownloader`，U 盘带入安装）。
 
 ```bash
-# 1) 拷入仓库（含 deploy/offline/images/），校验并导入全部镜像
-./deploy/offline/load.sh
+# 1) 拷入仓库（含 docker/offline/images/），校验并导入全部镜像
+./docker/offline/load.sh
 
 # 2) 配置凭据/白名单（与在线部署一致）
 cp .env.example .env   # 填 KK_AGENT_IPS、KK_ADMIN_PASS

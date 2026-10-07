@@ -3,7 +3,7 @@
 # 修 P2-14：改用 uv 安装，与仓库根 uv.lock 对齐（不再 pip 手装依赖导致与锁文件脱节）。
 #
 # 仓库是 uv workspace（根 pyproject.toml 声明 members=[server, agent]，锁在根 uv.lock），
-# 因此构建上下文必须是仓库根（docker-compose 里 dockerfile: server/Dockerfile，context: .），
+# 因此构建上下文必须是仓库根（docker-compose 里 dockerfile: docker/Dockerfile，context: .），
 # .dockerignore 已把前端 / node_modules 等大目录排除，上下文很小。
 FROM python:3.12-slim
 

@@ -3,8 +3,8 @@
 #   docker compose -f docker-compose.prod.yml -f docker-compose.secure-mqtt.yml --env-file .env up -d
 #
 # 前置步骤：
-#   1. 按 deploy/mosquitto/mosquitto-secure.conf 头部说明生成
-#      deploy/mosquitto/auth/passwd（kk-server 与 kk-agent 两个账号）；
+#   1. 按 mosquitto/mosquitto-secure.conf 头部说明生成
+#      mosquitto/auth/passwd（kk-server 与 kk-agent 两个账号）；
 #   2. .env 中设置 KK_MQTT_USERNAME / KK_MQTT_PASSWORD（kk-server 侧凭据，
 #      用户名必须是 aclfile 里的 kk-server）；
 #   3. Agent 侧凭据在构建管理镜像时烧入：KK_MQTT_USERNAME=kk-agent +
@@ -16,8 +16,8 @@
 services:
   mosquitto:
     volumes:
-      - ./deploy/mosquitto/mosquitto-secure.conf:/mosquitto/config/mosquitto.conf:ro
-      - ./deploy/mosquitto/auth:/mosquitto/config/auth:ro
+      - ./mosquitto/mosquitto-secure.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto/auth:/mosquitto/config/auth:ro
       - mosquitto-data:/mosquitto/data
 
   kk-server:

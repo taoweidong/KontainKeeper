@@ -134,8 +134,8 @@ docs/                    deployment(生产部署) / development(开发搭建) / 
 | 缺陷清单与处置映射（P0/P1/P2 + R1–R13） | [架构评审](docs/architecture-review.md) |
 | 八阶段落地计划 | [实现路线图 v3](docs/completion-plan-mqtt.md) |
 | MQTT 主题布局、帧格式、QoS/retain 语义、IP 白名单接入管控 | [通信协议 v3](proto/messages.md) |
-| Mosquitto 匿名配置与安全模型 | [部署说明](deploy/mosquitto/README.md) |
-| 离线部署（内网无网场景的镜像打包与加载） | [离线部署说明](deploy/offline/README.md) |
+| Mosquitto 匿名配置与安全模型 | [部署说明](docker/mosquitto/README.md) |
+| 离线部署（内网无网场景的镜像打包与加载） | [离线部署说明](docker/offline/README.md) |
 
 > 所有协议与配置以代码为唯一真相源；文档若与代码冲突，以代码与 `git` 历史为准。
 
@@ -149,7 +149,7 @@ uv sync --all-packages          # 安装服务端依赖 + dev 组
 
 # 0. 起一个 MQTT Broker（匿名开放；接入管控由服务端 KK_AGENT_IPS 白名单承担）
 docker run -d --name mosquitto -p 1883:1883 \
-  -v $PWD/deploy/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf \
+  -v $PWD/docker/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf \
   eclipse-mosquitto:2
 
 # 1. 启动服务端
@@ -176,15 +176,15 @@ cp .env.example .env && vim .env
 #   KK_AGENT_IPS=10.0.0.0/24,192.168.1.5   ← 只有名单内 IP 的 Agent 能上报
 
 # 2. 起生产栈（匿名 Broker + 服务端白名单）
-docker compose -f docker-compose.prod.yml --env-file .env up -d --build
+docker compose -f docker/docker-compose.prod.yml --env-file .env up -d --build
 ```
 
 - **前端零部署**：构建产物已随包提交，由服务端 8443 端口直接托管；只有改过
   `web/` 前端代码才需重建同步（见部署指南 §5）。
 - **主机侧**：用 `scripts/build.sh` 把 Agent 叠加进 vscode-server 镜像，
   Agent 零凭据，无需注入任何令牌（见部署指南 §7）。
-- **离线部署**：内网无网场景用 `deploy/offline/pack.sh` 打 tar 包，`docker-compose.offline.yml`
-  + `deploy/offline/load.sh` 导入本地镜像启动（见 `deploy/offline/README.md`）。
+- **离线部署**：内网无网场景用 `docker/offline/pack.sh` 打 tar 包，`docker/docker-compose.offline.yml`
+  + `docker/offline/load.sh` 导入本地镜像启动（见 `docker/offline/README.md`）。
 - **TLS 硬约束**：管理界面必须前置 TLS 终结的反向代理，切勿让管理员令牌明文
   跨越不可信网络（见部署指南 §6）。
 

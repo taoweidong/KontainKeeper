@@ -2,7 +2,7 @@
 
 本文面向**搭建与维护这条流水线的人**（以及被它卡住时来排障的人）。
 流水线定义在仓库根 [Jenkinsfile](../Jenkinsfile)；手工部署流程见[生产部署指南](deployment.md)，
-两者用的是同一份 `docker-compose.prod.yml` 与同一套 `KK_*` 配置。
+两者用的是同一份 `docker/docker-compose.prod.yml` 与同一套 `KK_*` 配置。
 
 > 一句话：**测试 → Agent 二进制 → 服务端镜像 → 镜像冒烟 → 推送 → 目标机部署 → 部署验证**，
 > 每道关卡都复用仓库既有脚本，CI 里不另写一份构建逻辑。
@@ -17,12 +17,12 @@
 | ④ | Broker 端到端冒烟 | `scripts/mqtt_e2e.py` | 单测证不到的语义：retain 只落 status、LWT 触发、离线命令由 Broker 排队、大输出分块重组 |
 | ⑤ | 前端构建与产物同步 | `pnpm lint`（棘轮门禁）+ `pnpm typecheck && pnpm build` | 产物同步进 `server/src/kk_server/web/`（镜像靠它带 UI），并检查**产物漂移**；lint 让格式漂移不再攒到无人看见（QR-2.2） |
 | ⑥ | Agent 二进制 | `agent/build/build_binary.sh` | PyInstaller 单文件二进制，供镜像内置与冒烟使用 |
-| ⑦ | 构建服务端镜像 | `server/Dockerfile` | 构建上下文是仓库根（uv workspace 锁在根），并打上 git 修订标签 |
+| ⑦ | 构建服务端镜像 | `docker/Dockerfile` | 构建上下文是仓库根（uv workspace 锁在根），并打上 git 修订标签 |
 | ⑧ | 镜像部署冒烟 | `scripts/ci_smoke.sh` | **真起容器 + 真跑 Agent 二进制**走完整链路；跑不过就不许推送、不许部署 |
 | ⑨ | 推送镜像 | — | 仅当配了 `IMAGE_REGISTRY`；production 额外推 `latest` |
-| ⑩ | 部署 | `docker-compose.prod.yml` | 目标机 `git reset --hard` 到本次提交 → `pull` → `up -d`；生产需人工确认 |
+| ⑩ | 部署 | `docker/docker-compose.prod.yml` | 目标机 `git reset --hard` 到本次提交 → `pull` → `up -d`；生产需人工确认 |
 | ⑪ | 部署验证 | `GET /api/health`、`/api/login`、`/api/system/stats` | 断言「真起来了且连得上 Broker」，而不是「容器在跑」 |
-| ⑫ | 离线包（可选） | `deploy/offline/pack.sh` | 内网无网部署用，勾选 `PACK_OFFLINE` 才跑 |
+| ⑫ | 离线包（可选） | `docker/offline/pack.sh` | 内网无网部署用，勾选 `PACK_OFFLINE` 才跑 |
 | ⑬ | 真库 + 夜测（daily） | `scripts/db_smoke.py` + `scripts/loadtest.py`/`bench_agent.py` | PG/MySQL 真连建表扩列 + 500 连接压测 + Agent RSS 基线；默认仅 TimerTrigger 每日跑，调试打 `FORCE_NIGHTLY`，不随普通 push 跑 |
 
 **⑧ 是这条流水线的价值核心**。只做「构建成功 + 容器起来了」的 CI 会漏掉本项目最容易坏的地方——
@@ -252,7 +252,7 @@ uv sync --all-packages
 
 # 1) 后端测试（带真 Broker，期望 0 failed 0 skipped）
 docker run -d --name kk-ci-broker -p 127.0.0.1:18830:1883 \
-  -v "$PWD/deploy/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" eclipse-mosquitto:2
+  -v "$PWD/docker/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" eclipse-mosquitto:2
 KK_IT_MQTT_URL=mqtt://127.0.0.1:18830 .venv/bin/python -m pytest agent/tests server/tests -q
 
 # 2) Broker 语义冒烟
@@ -272,7 +272,7 @@ rm -rf server/src/kk_server/web/* && cp -r web/dist/* server/src/kk_server/web/
 
 # 4) Agent 二进制 + 服务端镜像
 agent/build/build_binary.sh
-docker build -f server/Dockerfile -t kontainkeeper-server:local .
+docker build -f docker/Dockerfile -t kontainkeeper-server:local .
 
 # 5) 镜像冒烟（会自己起 Broker 与服务端容器，跑完自动清理）
 scripts/ci_smoke.sh kontainkeeper-server:local agent/dist/kk-agent
@@ -304,6 +304,6 @@ scripts/ci_smoke.sh kontainkeeper-server:local agent/dist/kk-agent
 |---|---|---|
 | `Jenkinsfile` | 新增 | 流水线定义 |
 | `scripts/ci_smoke.sh` | 新增 | 镜像级部署冒烟；本地也能直接跑 |
-| `docker-compose.prod.yml` | 给 `kk-server` 加 `image: ${KK_SERVER_IMAGE:-kk-server:latest}` | 原文件只有 `build:`，**无法部署已推送到仓库的镜像**（`pull` 没有可拉的对象）。默认值与 `pack.sh` / offline compose 一致，手工部署行为不变 |
+| `docker/docker-compose.prod.yml` | 给 `kk-server` 加 `image: ${KK_SERVER_IMAGE:-kk-server:latest}` | 原文件只有 `build:`，**无法部署已推送到仓库的镜像**（`pull` 没有可拉的对象）。默认值与 `pack.sh` / offline compose 一致，手工部署行为不变 |
 | `.env.example` | 补 `KK_SERVER_IMAGE` 注释 | 让运维能发现这个开关 |
 | `.gitignore` | 忽略 `reports/`、`.ci-cache/`、`.ci-tools/`、离线镜像 tar | 前者是 CI 产物；后者是 `pack.sh` 的 GB 级产物，此前**未被忽略**（`git status` 噪音 + 误提交风险） |

@@ -199,7 +199,7 @@ echo ">> 端口：HTTP=$SMOKE_HTTP_PORT MQTT=$SMOKE_MQTT_PORT（均只绑 127.0.
 docker network create "$NET" >/dev/null
 docker run -d --name "$BROKER_CT" --network "$NET" \
   -p "127.0.0.1:${SMOKE_MQTT_PORT}:1883" \
-  -v "$REPO_ROOT/deploy/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" \
+  -v "$REPO_ROOT/docker/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" \
   "$BROKER_IMAGE" >/dev/null
 if wait_for 60 poll_broker >/dev/null; then
   check "Broker 容器就绪（匿名 1883，生产同源配置）" 1

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# 内网机器执行：校验并导入 deploy/offline/images/ 下全部镜像 tar。
+# 内网机器执行：校验并导入 offline/images/ 下全部镜像 tar。
 #
 # 用法（在仓库根目录）：
-#   ./deploy/offline/load.sh
-# 完成后按 deploy/offline/README.md 用 docker-compose.offline.yml 启动（切勿 --build）。
+#   ./docker/offline/load.sh
+# 完成后按 offline/README.md 用 docker/docker-compose.offline.yml 启动（切勿 --build）。
 set -euo pipefail
 
 cd "$(dirname "$0")"

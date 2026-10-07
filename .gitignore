@@ -21,7 +21,7 @@ agent_assets/
 *.prev
 .kk-agent.update.*
 # 凭据：Mosquitto 密码文件与本地 .env 严禁入库（代码审查 P0-2，仓库公开）
-deploy/mosquitto/passwordfile
+docker/mosquitto/passwordfile
 .env
 # 本地工作日志（审查会话记忆），非项目产物
 .workbuddy/
@@ -40,9 +40,9 @@ skills-lock.json
 reports/
 .ci-cache/
 .ci-tools/
-# 离线镜像 tar（deploy/offline/pack.sh 产出，动辄数 GB，严禁入库）
-deploy/offline/images/*.tar.gz
-deploy/offline/images/SHA256SUMS
+# 离线镜像 tar（docker/offline/pack.sh 产出，动辄数 GB，严禁入库）
+docker/offline/images/*.tar.gz
+docker/offline/images/SHA256SUMS
 
 # 本地三端运行时产物（pid/log，由会话托管，严禁入库）
 service/

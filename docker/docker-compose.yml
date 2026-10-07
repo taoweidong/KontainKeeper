@@ -8,7 +8,7 @@
 #   docker compose -f docker-compose.prod.yml --env-file .env up --build
 #
 # 说明：kk-server 构建上下文为仓库根（uv workspace，锁在根 uv.lock），
-# Dockerfile 在 server/Dockerfile，.dockerignore 已收敛构建上下文。
+# Dockerfile 在 docker/Dockerfile，.dockerignore 已收敛构建上下文。
 
 services:
   mosquitto:
@@ -16,14 +16,14 @@ services:
     ports:
       - "1883:1883"
     volumes:
-      - ./deploy/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - mosquitto-data:/mosquitto/data
     restart: unless-stopped
 
   kk-server:
     build:
       context: .
-      dockerfile: server/Dockerfile
+      dockerfile: docker/Dockerfile
     # 开发用：匿名 Broker + 未配 KK_AGENT_IPS（白名单为空 = 允许所有上报）
     environment:
       KK_MQTT_URL: mqtt://mosquitto:1883

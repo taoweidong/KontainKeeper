@@ -7,7 +7,7 @@
 #
 # 注意：tag 必须与引用处保持一致——
 #   eclipse-mosquitto:2 对应 docker-compose.prod.yml / docker-compose.offline.yml；
-#   python:3.12-slim、ghcr.io/astral-sh/uv:latest 对应 server/Dockerfile；
+#   python:3.12-slim、ghcr.io/astral-sh/uv:latest 对应 docker/Dockerfile；
 #   node:20-alpine、nginx:stable-alpine 对应 web/Dockerfile（默认不走该文件，产物由服务端托管）。
 
 eclipse-mosquitto:2|eclipse-mosquitto_2.tar.gz|core
@@ -19,4 +19,4 @@ nginx:stable-alpine|nginx_stable-alpine.tar.gz|opt
 
 # agent 叠加产物镜像（基础镜像为私有 vscode-server 镜像，无公共地址）：
 # 由 scripts/build.sh 在外网机构建，打包时用环境变量注入 tag，例如：
-#   KK_AGENT_IMAGE=kk-vscode-server:2026-09 ./deploy/offline/pack.sh
+#   KK_AGENT_IMAGE=kk-vscode-server:2026-09 ./docker/offline/pack.sh

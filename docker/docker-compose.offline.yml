@@ -1,4 +1,4 @@
-# KontainKeeper 离线启动栈：仅使用 deploy/offline/load.sh 导入的本地镜像。
+# KontainKeeper 离线启动栈：仅使用 offline/load.sh 导入的本地镜像。
 #
 # 与 docker-compose.prod.yml 的唯一差异：kk-server 用 image 引用而非 build 段——
 # 内网执行 docker build 会在镜像内 uv sync 联网装依赖，必然失败。
@@ -13,7 +13,7 @@ services:
     ports:
       - "1883:1883"
     volumes:
-      - ./deploy/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - mosquitto-data:/mosquitto/data
     restart: unless-stopped
 

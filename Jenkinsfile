@@ -5,8 +5,8 @@
 // 设计原则（与本仓库既有约定对齐）：
 //   1. **复用仓库脚本，不在 CI 里重写构建逻辑**：
 //      - Agent 二进制 → agent/build/build_binary.sh
-//      - 服务端镜像  → server/Dockerfile（构建上下文必须是仓库根，uv workspace 锁在根）
-//      - 部署        → docker-compose.prod.yml（与手工部署同一份文件，避免两套真相）
+//      - 服务端镜像  → docker/Dockerfile（构建上下文必须是仓库根，uv workspace 锁在根）
+//      - 部署        → docker/docker-compose.prod.yml（与手工部署同一份文件，避免两套真相）
 //      - Broker 冒烟 → scripts/mqtt_e2e.py（补单测证不到的 LWT / 离线排队语义）
 //      - 镜像冒烟    → scripts/ci_smoke.sh（真起容器 + 真跑 Agent 二进制走完整链路）
 //   2. **Broker 由流水线自己起**：server/tests 的 4 条集成用例在无 Broker 时自动 skip，
@@ -81,7 +81,7 @@ pipeline {
         TOPIC_PREFIX       = "${params.TOPIC_PREFIX}"
 
         IMAGE_NAME         = 'kontainkeeper-server'
-        // 与 deploy/offline/pack.sh、docker-compose.offline.yml 约定的本地标签保持一致
+        // 与 docker/offline/pack.sh、docker/docker-compose.offline.yml 约定的本地标签保持一致
         OFFLINE_IMAGE      = 'kk-server:latest'
         BROKER_IMAGE       = 'eclipse-mosquitto:2'
         BROKER_CT          = 'kk-ci-broker'
@@ -221,7 +221,7 @@ set -euo pipefail
 docker rm -f "$BROKER_CT" >/dev/null 2>&1 || true
 docker run -d --name "$BROKER_CT" \
   -p "127.0.0.1:${CI_MQTT_PORT}:1883" \
-  -v "$WORKSPACE/deploy/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" \
+  -v "$WORKSPACE/docker/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" \
   "$BROKER_IMAGE" >/dev/null
 
 for _ in $(seq 1 60); do
@@ -287,7 +287,7 @@ set -euo pipefail
 docker rm -f "$BROKER_CT" >/dev/null 2>&1 || true
 docker run -d --name "$BROKER_CT" \
   -p "127.0.0.1:${CI_MQTT_PORT}:1883" \
-  -v "$WORKSPACE/deploy/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" \
+  -v "$WORKSPACE/docker/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" \
   "$BROKER_IMAGE" >/dev/null
 for _ in $(seq 1 60); do
   python3 -c "import socket;socket.create_connection(('127.0.0.1',${CI_MQTT_PORT}),2)" 2>/dev/null && break
@@ -324,7 +324,7 @@ echo ">> lint 全域通过（零豁免）"
                 }
                 sh '''#!/usr/bin/env bash
 set -euo pipefail
-# 前端产物随 kk-server 包分发（server/Dockerfile 里 COPY server/src），
+# 前端产物随 kk-server 包分发（docker/Dockerfile 里 COPY server/src），
 # 所以镜像构建前必须把 web/dist 同步进包内目录，否则镜像里是上一次的旧 UI。
 test -f web/dist/index.html || { echo "!! web/dist 未产出，pnpm build 是否失败？"; exit 1; }
 rm -rf server/src/kk_server/web/*
@@ -381,14 +381,14 @@ echo "$WORKSPACE/agent/dist/kk-agent" > .ci-tools/agent-bin.path
 set -euo pipefail
 # 构建上下文必须是仓库根（uv workspace 的锁在根 uv.lock）；.dockerignore 已排除 web/ 等大目录
 docker build \
-  -f server/Dockerfile \
+  -f docker/Dockerfile \
   -t "$FULL_IMAGE" \
   --label "org.opencontainers.image.revision=$GIT_SHA" \
   --label "org.opencontainers.image.version=$IMAGE_TAG" \
   --label "org.opencontainers.image.source=https://github.com/taoweidong/KontainKeeper" \
   .
 
-# 同步本地约定标签：deploy/offline/pack.sh 与 docker-compose.offline.yml 都用 kk-server:latest
+# 同步本地约定标签：docker/offline/pack.sh 与 docker/docker-compose.offline.yml 都用 kk-server:latest
 docker tag "$FULL_IMAGE" "$OFFLINE_IMAGE"
 
 docker image inspect "$FULL_IMAGE" \
@@ -484,14 +484,14 @@ remote() { ssh $SSH_OPTS -i "$DEPLOY_KEY" "$TARGET" "$@"; }
 # 3) 目标机拉取镜像并滚动重启；无仓库时退回本地构建（--build）
 if [ -n "$REGISTRY" ]; then
   remote "set -e; cd '$DEPLOY_DIR';
-          docker compose -f docker-compose.prod.yml --env-file .env pull;
-          docker compose -f docker-compose.prod.yml --env-file .env up -d --remove-orphans;
-          docker compose -f docker-compose.prod.yml --env-file .env ps"
+          docker compose -f docker/docker-compose.prod.yml --env-file .env pull;
+          docker compose -f docker/docker-compose.prod.yml --env-file .env up -d --remove-orphans;
+          docker compose -f docker/docker-compose.prod.yml --env-file .env ps"
 else
   echo ">> 未配置 IMAGE_REGISTRY：在目标机本地构建（较慢，适合内网/单机场景）"
   remote "set -e; cd '$DEPLOY_DIR';
-          docker compose -f docker-compose.prod.yml --env-file .env up -d --build --remove-orphans;
-          docker compose -f docker-compose.prod.yml --env-file .env ps"
+          docker compose -f docker/docker-compose.prod.yml --env-file .env up -d --build --remove-orphans;
+          docker compose -f docker/docker-compose.prod.yml --env-file .env ps"
 fi
 '''
                     sh '''#!/usr/bin/env bash
@@ -555,8 +555,8 @@ echo ">> 部署验证通过：健康 / Broker / 登录 / stats 全通"
 set -euo pipefail
 # 内网无网部署用：把 kk-server / Broker / 基础镜像打成 tar。
 # 走仓库既有脚本（manifest.txt 是单一事实源），不在这里另写一份清单。
-./deploy/offline/pack.sh
-ls -lh deploy/offline/images
+./docker/offline/pack.sh
+ls -lh docker/offline/images
 '''
             }
         }
@@ -602,7 +602,7 @@ set -euo pipefail
 # 连不上就是流水线失明（旧实现静默「跳过」并 return 0，等于假绿）。
 docker rm -f "$BROKER_CT" >/dev/null 2>&1 || true
 docker run -d --name "$BROKER_CT" -p "127.0.0.1:${CI_MQTT_PORT}:1883" \\
-  -v "$WORKSPACE/deploy/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" "$BROKER_IMAGE" >/dev/null
+  -v "$WORKSPACE/docker/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" "$BROKER_IMAGE" >/dev/null
 for _ in $(seq 1 60); do
   python3 -c "import socket;socket.create_connection(('127.0.0.1',${CI_MQTT_PORT}),2)" 2>/dev/null && break
   sleep 1

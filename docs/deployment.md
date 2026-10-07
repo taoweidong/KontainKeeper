@@ -60,11 +60,11 @@ cd KontainKeeper
 
 ## 3. 部署 MQTT Broker（Mosquitto）
 
-推荐直接使用仓库自带的生产栈（`docker-compose.prod.yml` 里的 `mosquitto` 服务，
+推荐直接使用仓库自带的生产栈（`docker/docker-compose.prod.yml` 里的 `mosquitto` 服务，
 Broker 与 kk-server 一起起）。若 Broker 必须独立部署，参照
-[deploy/mosquitto/README.md](../deploy/mosquitto/README.md) 用同一套配置文件单独起。
+[docker/mosquitto/README.md](../docker/mosquitto/README.md) 用同一套配置文件单独起。
 
-### 3.1 配置要点（`deploy/mosquitto/mosquitto.conf`）
+### 3.1 配置要点（`docker/mosquitto/mosquitto.conf`）
 
 - **匿名开放**（`allow_anonymous true`）：Agent 零凭据接入，无需生成
   passwordfile / aclfile / 逐主机账号；
@@ -78,7 +78,7 @@ Broker 与 kk-server 一起起）。若 Broker 必须独立部署，参照
 匿名即可正常订阅（挂起等待消息，Ctrl-C 退出即可）：
 
 ```bash
-docker compose -f docker-compose.prod.yml run --rm mosquitto \
+docker compose -f docker/docker-compose.prod.yml run --rm mosquitto \
   mosquitto_sub -h mosquitto -p 1883 -t 'kk/v1/#' -C 1 -W 5
 ```
 
@@ -127,7 +127,7 @@ KK_AGENT_IPS=10.0.0.0/24,10.99.0.0/16
 **第二步：启动**：
 
 ```bash
-docker compose -f docker-compose.prod.yml --env-file .env up -d --build
+docker compose -f docker/docker-compose.prod.yml --env-file .env up -d --build
 ```
 
 生产栈自动带上 `KK_ENV=production`，启动时做安全自检（见 4.4）。
@@ -135,7 +135,7 @@ docker compose -f docker-compose.prod.yml --env-file .env up -d --build
 **第三步：确认**：
 
 ```bash
-docker compose -f docker-compose.prod.yml ps        # 两个服务 running
+docker compose -f docker/docker-compose.prod.yml ps        # 两个服务 running
 curl http://127.0.0.1:8443/api/health               # {"ok":true,"broker":"connected",...}
 ```
 
@@ -146,7 +146,7 @@ curl http://127.0.0.1:8443/api/health               # {"ok":true,"broker":"conne
 镜像构建上下文是**仓库根**（uv workspace，锁在根 `uv.lock`）：
 
 ```bash
-docker build -f server/Dockerfile -t registry.example.com/kontainkeeper-server:0.1.0 .
+docker build -f docker/Dockerfile -t registry.example.com/kontainkeeper-server:0.1.0 .
 docker run -d --name kontainkeeper \
   -p 8443:8443 \
   -v kontainkeeper-data:/data \
@@ -213,13 +213,13 @@ uv run kk-server                            # 监听 0.0.0.0:8443
 默认模式是**匿名 Broker + 服务端 `KK_AGENT_IPS` 白名单**（v3 设计，安全边界依赖网络层
 对 1883 的可达控制）。若需要 Broker 层的硬边界（安全评审 P0 建议），叠加鉴权配置：
 
-1. 生成密码文件（两个账号；`deploy/mosquitto/auth/aclfile` 已按最小权限写好：
+1. 生成密码文件（两个账号；`docker/mosquitto/auth/aclfile` 已按最小权限写好：
    下行 cmd 主题仅服务端账号可发布）：
 
    ```bash
-   docker run --rm -v "$PWD/deploy/mosquitto/auth:/auth" eclipse-mosquitto:2 \
+   docker run --rm -v "$PWD/docker/mosquitto/auth:/auth" eclipse-mosquitto:2 \
      mosquitto_passwd -c /auth/passwd kk-server      # 服务端账号，交互输入口令
-   docker run --rm -v "$PWD/deploy/mosquitto/auth:/auth" eclipse-mosquitto:2 \
+   docker run --rm -v "$PWD/docker/mosquitto/auth:/auth" eclipse-mosquitto:2 \
      mosquitto_passwd -b /auth/passwd kk-agent <AGENT口令>
    ```
 
@@ -227,7 +227,7 @@ uv run kk-server                            # 监听 0.0.0.0:8443
 3. 叠加启动：
 
    ```bash
-   docker compose -f docker-compose.prod.yml -f docker-compose.secure-mqtt.yml --env-file .env up -d
+   docker compose -f docker/docker-compose.prod.yml -f docker/docker-compose.secure-mqtt.yml --env-file .env up -d
    ```
 
 4. Agent 侧凭据随镜像烧入：构建时带 `KK_MQTT_USERNAME=kk-agent` 与
@@ -250,7 +250,7 @@ cd web
 pnpm install && pnpm build          # 产物输出 web/dist/
 # 人工同步产物（web/dist 被 .gitignore 忽略，不会自动进包）
 rm -rf ../server/src/kk_server/web/* && cp -r dist/* ../server/src/kk_server/web/
-cd .. && docker compose -f docker-compose.prod.yml --env-file .env up -d --build
+cd .. && docker compose -f docker/docker-compose.prod.yml --env-file .env up -d --build
 ```
 
 前端构建要求 Node ≥ 20.19（或 ≥ 22.13）、pnpm ≥ 9，且 `web/mock/` 目录存在（空目录即可）。
@@ -462,7 +462,7 @@ Agent 日志（容器内 `/var/log/kk-agent.log`）→ 该主机自报 IP 是否
 服务端无状态，直接换镜像滚动重启：
 
 ```bash
-git pull && docker compose -f docker-compose.prod.yml --env-file .env up -d --build
+git pull && docker compose -f docker/docker-compose.prod.yml --env-file .env up -d --build
 ```
 
 数据在 `kk-data` 卷（SQLite 于 `/data/kk-server.db`），不受重建影响；
@@ -565,16 +565,16 @@ kk-server 可水平扩容，唯一硬性要求：**每实例 `KK_MQTT_CLIENT_ID`
 ## 12. 离线部署（内网无网场景）
 
 内网目标机访问不到 Docker Hub / GHCR 的场景：用外网构建机把镜像打成 tar 包带入。
-镜像清单、外网打包、内网加载的完整流程见 [deploy/offline/README.md](../deploy/offline/README.md)。
+镜像清单、外网打包、内网加载的完整流程见 [docker/offline/README.md](../docker/offline/README.md)。
 
 要点速览：
 - 最小集合 = `kk-server_latest.tar.gz` + `eclipse-mosquitto_2.tar.gz` + Agent 产物 tar；
-- 内网 compose 用 `docker-compose.offline.yml`（与 `docker-compose.prod.yml` 唯一差异：
+- 内网 compose 用 `docker/docker-compose.offline.yml`（与 `docker/docker-compose.prod.yml` 唯一差异：
   kk-server 用本地 image 引用而非 build 段）；
-- `deploy/offline/manifest.txt` 是单一事实源，新增/删减镜像改这里 + `pack.sh`。
+- `docker/offline/manifest.txt` 是单一事实源，新增/删减镜像改这里 + `pack.sh`。
 
 ---
 
-- 部署相关问题先查 [deploy/mosquitto/README.md](../deploy/mosquitto/README.md)（Broker 专题）
+- 部署相关问题先查 [docker/mosquitto/README.md](../docker/mosquitto/README.md)（Broker 专题）
   与 [proto/messages.md](../proto/messages.md)（协议契约）。
 - 本文档与代码冲突时，以代码与 `git` 历史为准。
