@@ -156,7 +156,7 @@
 | **可维护性** | ✅ 分层强 / ⚠ 规模失控 | 方言只收口两处、依赖注入默认拒绝、协议双端同步；但 `store.py` 已 976 行（自订 ≤500）、`mqtt_bridge.py` 514 行、Agent 侧几乎零类型注解（QR-A16）、无 ruff/mypy/cov、`strict:false`（QR-W2）、`.zcode/` 等工具目录混入版本库 |
 | **可观测性** | ⚠ 有盲区 | `/api/health` 未鉴权即返回 bridge 计数与版本（QR-S15）；Agent `stop()` 三段 `except: pass` 无日志（QR-A14）；夜测恒绿使规模退化不可见（QR-P1）；`.prev` 保留失败静默（QR-S19） |
 | **测试有效性** | ⚠ 单测扎实、门禁虚设 | 回归锁 docstring、fake 防御式断言、free_port、有界轮询都成立；但无覆盖率工具、skip 静默、弱断言两处未清、PG/MySQL 只走夜测、账本两条「已修复」与代码不符 |
-| **可发布性** | ⚠ 已补三块 | 回滚参数缺失已修（QR-P3）、产物同步改写工作区已修（QR-P7）、`pnpm build` 在 Windows 不可用已修（QR-W10，3e2b2eb）、前端 lint 已进门禁且**零豁免**（QR-W10/QR-W14，0141287）；FE-1…FE-33 批次 A/B 的正确性项已落地（`docs/frontend-optimization-plan-2026-10-07.md` §7）。剩余：`server/src/kk_server/web/` 的入库产物落后于前端源码（本轮末次同步）、Jenkins ⑤ 的 lint 步骤尚未在真流水线跑过一次（本地等价命令红/绿双向自检，见 §8.5） |
+| **可发布性** | ⚠ 已补三块 | 回滚参数缺失已修（QR-P3）、产物同步改写工作区已修（QR-P7）、`pnpm build` 在 Windows 不可用已修（QR-W10，3e2b2eb）、前端 lint 已进门禁且**零豁免**（QR-W10/QR-W14，0141287）；FE-1…FE-33 批次 A/B/C 的正确性项已落地（`docs/frontend-optimization-plan-2026-10-07.md` §7）。入库产物已从前端的**已提交源码**重构建并整目录同步（`ac495cc`，43 个文件逐字节比对与 `web/dist` 一致，`git status --porcelain server/src/kk_server/web` 为空）。剩余：Jenkins ⑤ 的 lint 步骤尚未在真流水线跑过一次（本地等价命令红/绿双向自检，见 §8.5）；需要人眼判读的 FE-5 / FE-9 / FE-19 / FE-16 轴格式化四条**明确未做**，理由同 §7。 |
 
 ---
 

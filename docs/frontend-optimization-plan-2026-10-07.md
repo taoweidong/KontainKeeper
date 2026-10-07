@@ -431,6 +431,8 @@ src/ 171 文件 · 13,791 行（.vue + .ts）
 > 编号沿用本方案的 `FE-x`，提交信息里同步标注。
 > 本轮门禁实测：`pnpm typecheck` 退出码 0、`eslint --max-warnings 0 "{src,mock,build}/**"` 退出码 0（零豁免）、
 > `pnpm build` 成功（产物 2.79 MB，首屏最大 chunk 1,310.78 kB / gzip 438.51 kB）。
+> 产物同步（`web/dist` → `server/src/kk_server/web/`）已在**干净的前端源码树**上重构建并整目录替换入库（`ac495cc`）：
+> 两侧各 43 个文件，逐文件 sha256 汇总一致，提交后 `git status --porcelain server/src/kk_server/web` 为空。
 > 本方案 §5 第 1 条「未运行 build」已失效；第 2 条仍然成立——**内置浏览器是隐藏页，截图与几何不可信**，
 > 所以凡是要靠眼睛判读的条目这轮都没做。
 
