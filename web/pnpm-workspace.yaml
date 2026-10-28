@@ -1,0 +1,24 @@
+# pnpm >= 10 不再读取 package.json 的 `pnpm` 字段，构建脚本白名单必须写在这里，
+# 否则 `pnpm install` 会以 ERR_PNPM_IGNORED_BUILDS 退出 1（L1-2）。
+# pnpm 9（CI 用 corepack pnpm@9 跑 `pnpm install --frozen-lockfile`，见 Jenkinsfile 阶段⑤）
+# 反过来只读 package.json 的 `pnpm.onlyBuiltDependencies`——两份白名单内容必须保持一致，改一处就要改另一处。
+#
+# 键位按版本分工（本机 pnpm 12.4.1 与 pnpm 9.15.9 实测，勿删任一份）：
+# - pnpm 10/11 读 onlyBuiltDependencies（列表）；
+# - pnpm 12（Rust 重写）只读 allowBuilds（map，true=放行/false=明确禁用），
+#   实测它会静默忽略 onlyBuiltDependencies 并退回 ERR_PNPM_IGNORED_BUILDS；
+# - pnpm 9 见到本文件但没有 `packages` 字段会直接 ERROR「packages field missing or empty」，
+#   空列表 `packages: []` 才放行——本仓 web/ 是单项目，写 [] 即「除根外无成员」。
+packages: []
+onlyBuiltDependencies:
+  - '@parcel/watcher'
+  - core-js
+  - es5-ext
+  - esbuild
+  - typeit
+allowBuilds:
+  '@parcel/watcher': true
+  core-js: true
+  es5-ext: true
+  esbuild: true
+  typeit: true

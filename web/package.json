@@ -152,8 +152,7 @@
       "core-js",
       "es5-ext",
       "esbuild",
-      "typeit",
-      "vue-demi"
+      "typeit"
     ],
     "ignoredBuiltDependencies": [
       "@tailwindcss/oxide"
