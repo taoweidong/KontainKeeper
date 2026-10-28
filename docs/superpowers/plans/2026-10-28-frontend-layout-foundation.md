@@ -26,6 +26,8 @@
 - **每一列都必须有唯一、非空的 `label`（Task 4 实测，Tasks 6–10 硬约束）**：`PureTableBar` 的列显隐/固定/拖拽**全部按 `label` 匹配**，而 `getKeyList` 的行为是实测出来的、不是猜的——它**不去重**，并且**静默丢弃没有 `label` 键的列**。后果两条：① 两列同名（例如两个「操作」）时，弹层里出现两行无法区分的条目、共用同一个开关值，且三处 `.find`/`filter[0]` 匹配器只命中**第一列**，第二列永远隐不掉也固定不了；② 没有 `label` 的列（最典型就是裸 `{ type: "selection" }`）会让 `checkColumnList.length < dynamicColumns.length`，而 `rowDrop.onEnd` 是**按下标位置**去对 `dynamicColumns` 的，拖拽排序会移动错列。这两条 typecheck/eslint/build **全都测不出来**，只在运行时出现。
   所以：写 `columns` 时每列给一个页内唯一的 `label`；**勾选列必须显式写 `label`**（开源的做法是 `{ label: "勾选列", type: "selection", fixed: "left", reserveSelection: true }`，照它写），不要留裸 `{ type: "selection" }`。
 - **本仓对上游的一处有意偏离**：`bar.tsx` 里 `fixed: true` 归到**左**固定（与 element-plus 一致；上游 `main` 把它当右固定是 bug，依据见 `element-plus/es/components/table/src/store/watcher.mjs` 的 `updateColumns` 与 `@pureadmin/table` 的 `TableColumnFixed` 注释）。**将来任何人重新对齐上游 bar.tsx 时必须保留这条偏离**，改代码前先读 `bar.tsx:237-241` 的注释。
+- **`pnpm lint:stylelint` 在本仓是 repo 级 `--fix`，且会静默改坏 CSS——Tasks 6–10 禁止裸跑。** `web/stylelint.config.js:67` 的 `order/order` 把泛型 `"at-rules"` 排在 `"rules"` **之前**，于是 `--fix` 会把 `@media (max-width:1200px){…}` 整块**提到它要覆盖的基础规则上面**——同特异性下后来者胜，媒体查询从此失效。Task 5 实测抓到它把 `CommandWorkbench.vue` 的窄屏折叠改没了（已回退）。要求：**只用 `npx stylelint <自己改过的文件>` 限定范围跑，且必须逐行看它对别人文件做了什么**；绝不允许把 stylelint 顺带重排出的无关 diff 提交进去。这条属仓级既有缺陷（任何人跑 `pnpm lint` 都会中招），本程序内先按规避处理，是否修配置留给收口时向用户提出。
+- **几何测量前必须让页面 settle ~2s**（Task 5 实测）：`goto` 之后立刻 eval 会读到过渡中的坐标（整页偏 −30px，`left:180` 而非 210）。读完先核对 `sideCols`/`bandTop` 是否落在稳定值上，再判定。
 - **测量环境事实（Task 2 实测校正，后续任务的命令里若与此不符以此处为准）**：dev server 实际端口 **8849**（8848 被本机另一个 vite 占用，别去动它）；后端 8443；playwright 会话名 `-s=layout`，认证态存 `%TEMP%\kk-layout-state.json`，**重开会话会掉回 1280×720，必须重新 `resize`**；种子库里主机名是 `vscode-0000` 这种格式，**没有 `Web-01`**——详情类路由一律用 `#/hosts/detail/vscode-0000`；探针 `scripts/fe_layout_probe.js` 的内容区滚动容器判据是「包着 `.main-content` 的那个 `.el-scrollbar__wrap`」（裸 `.el-scrollbar__wrap` 会命中侧边栏，把整页滚读成菜单滚）。
 - **门禁三件套每任务收尾必跑**：`pnpm typecheck`、`pnpm lint:eslint`（`--max-warnings 0`，零豁免）、`pnpm build`。
 - **提交**：中文信息 + `feat/fix/perf/refactor/chore/docs` 前缀 + 按模块分批；编号沿用 `FE-x`（10-07 方案）、`QR-x`（质量账本），本计划新增 `L1-x`（布局一期）。
@@ -742,7 +744,7 @@ cd web && pnpm typecheck && pnpm lint:eslint && pnpm build
 playwright-cli -s=layout goto http://127.0.0.1:8849/#/audit/index
 playwright-cli -s=layout eval "$(cat scripts/fe_layout_probe.js)"
 ```
-预期：`pageScrolls:false`、`pagerRect.bottom <= 1080`、`reachableAt` 全 `true`、`tableRect.height` 在 600~900 之间。然后 **1366×768 复测**（`resize 1366 768`）：分页器仍须在视口内——这是 `offsetBottom: 108` 的取值依据，若被裁就调大该值并在提交信息里写下实测数值与调整原因（不许照抄开源的 108）。
+预期：`pageScrolls:false`、`pagerRect.bottom <= scrollHeights.client`（**不用 `reachableAt` 判据**，它在 1920 下恒真）、`tableRect.height` 在 600~900 之间，且测量前先 settle ~2s。然后 **1366×768 复测**（`resize 1366 768`）：分页器仍须在视口内——这是 `offsetBottom: 108` 的取值依据，若被裁就调大该值并在提交信息里写下实测数值与调整原因（不许照抄开源的 108）。
 
 - [ ] **Step 6: 功能回归（人眼 + 探针之外）**
 
@@ -804,7 +806,10 @@ cd web && pnpm typecheck && pnpm lint:eslint && pnpm build
 playwright-cli -s=layout goto http://127.0.0.1:8849/#/command/shell
 playwright-cli -s=layout eval "$(cat scripts/fe_layout_probe.js)"
 ```
-预期：`sideCols` 两项 **left 不同**、宽比≈34%:66%（R1）；`pagerRect` 在视口内、`reachableAt` 全 `true`（R2）；`canScroll:false` 且 `pageScrolls:false`——滚动交给表内（R3）。
+预期（**控制基线已随 Task 5 的 `.kk-side` 修复更新，不再是 `167bb84` 的 shell 读数**）：
+- **R1 现在是回归检查而非待修项**——Task 5 已把双栏修好（实测 `sideCols` `[{210,581},{807,1113}]`，34.3:65.7）。本页迁移后两栏必须**仍是**两个不同 `left`；若变回相同，说明迁移把 `.kk-side`/`.kk-page__body` 的共挂结构改坏了。
+- **R2/R3 才是本页要转绿的**：迁移前 shell 页 `pageScrolls` 为 2128/999、`pagerRect.bottom` 约 1856（仍在视口外）、`canScroll:false`；迁移后要求 `pageScrolls:false`、`pagerRect.bottom <= scrollHeights.client`、表内可滚。**`reachableAt` 不作为判据**（1920 下恒 `[true,true,true]`，见 Global Constraints）。
+- 1100×800 下两栏须堆叠（`.kk-side` 的媒体查询本意），这条 Task 5 已实测，本页迁移后不得失效。
 功能必测：下发一批命令后新批次行可见、批次统计读数随轮询更新、勾掉「自动刷新」后定时器真停（`clearPoll`）、导出范围与筛选一致、点行开输出框、连点两行不出现输出错配（`useSeq`）。
 
 - [ ] **Step 6: 提交**
