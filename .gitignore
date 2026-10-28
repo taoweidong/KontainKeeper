@@ -40,6 +40,8 @@ skills-lock.json
 reports/
 .ci-cache/
 .ci-tools/
+# 本地跑门禁的 junitxml 临时产物（AGENTS.md 协作规范：跑完即删，这里兜底防手滑入库）
+test-results*.xml
 # 离线镜像 tar（docker/offline/pack.sh 产出，动辄数 GB，严禁入库）
 docker/offline/images/*.tar.gz
 docker/offline/images/SHA256SUMS
