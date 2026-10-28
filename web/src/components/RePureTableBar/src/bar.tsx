@@ -1,4 +1,5 @@
 import Sortable from "sortablejs";
+import type { CheckboxValueType } from "element-plus";
 import { useEpThemeStoreHook } from "@/store/modules/epTheme";
 import {
   type PropType,
@@ -17,7 +18,9 @@ import {
   getKeyList
 } from "@pureadmin/utils";
 
+import PinAngle from "~icons/bi/pin-angle";
 import Fullscreen from "~icons/ri/fullscreen-fill";
+import PinAngleFill from "~icons/bi/pin-angle-fill";
 import ExitFullscreen from "~icons/ri/fullscreen-exit-fill";
 import DragIcon from "@/assets/table-bar/drag.svg?component";
 import ExpandIcon from "@/assets/table-bar/expand.svg?component";
@@ -130,7 +133,7 @@ export default defineComponent({
       });
     }
 
-    function handleCheckAllChange(val: boolean) {
+    function handleCheckAllChange(val: CheckboxValueType) {
       checkedColumns.value = val ? checkColumnList : [];
       isIndeterminate.value = false;
       dynamicColumns.value.map(column =>
@@ -138,7 +141,7 @@ export default defineComponent({
       );
     }
 
-    function handleCheckedColumnsChange(value: string[]) {
+    function handleCheckedColumnsChange(value: CheckboxValueType[]) {
       checkedColumns.value = value;
       const checkedCount = value.length;
       checkAll.value = checkedCount === checkColumnList.length;
@@ -146,8 +149,19 @@ export default defineComponent({
         checkedCount > 0 && checkedCount < checkColumnList.length;
     }
 
-    function handleCheckColumnListChange(val: boolean, label: string) {
+    function handleCheckColumnListChange(
+      val: CheckboxValueType,
+      label: string
+    ) {
       dynamicColumns.value.filter(item => item.label === label)[0].hide = !val;
+    }
+
+    /** 列固定：`fixed` 传 `"left"` / `"right"` 固定到对应侧，传 `false` 取消固定 */
+    function handleToggleColumnFixed(fixed, label: string) {
+      const column = dynamicColumns.value.find(item => item.label === label);
+      if (column) {
+        column.fixed = fixed;
+      }
     }
 
     async function onReset() {
@@ -219,10 +233,18 @@ export default defineComponent({
       });
     };
 
+    /**
+     * 返回某列的固定状态
+     * 注：`element-plus` 里 `fixed: true` 等价于 `"left"`（见其 table store 的
+     * `[true, "left"].includes(column.fixed)`），上游 bar 把 `true` 归到右侧，这里按
+     * 组件库真实语义修正，避免页面声明 `fixed: true` 时高亮到错误的图钉
+     */
     const isFixedColumn = (label: string) => {
-      return dynamicColumns.value.filter(item => item.label === label)[0].fixed
-        ? true
-        : false;
+      const column = dynamicColumns.value.find(item => item.label === label);
+      const fixedOption = column?.fixed;
+      const left = fixedOption === true || fixedOption === "left";
+      const right = fixedOption === "right";
+      return { fixed: left || right, left, right };
     };
 
     const rendTippyProps = (content: string) => {
@@ -307,7 +329,7 @@ export default defineComponent({
                 v-slots={reference}
                 placement="bottom-start"
                 popper-style={{ padding: 0 }}
-                width="200"
+                width="245"
                 trigger="click"
               >
                 <div class={[topClass.value]}>
@@ -336,14 +358,13 @@ export default defineComponent({
                         size={0}
                       >
                         {checkColumnList.map((item, index) => {
+                          const { fixed, left, right } = isFixedColumn(item);
                           return (
                             <div class="flex items-center">
                               <DragIcon
                                 class={[
                                   "drag-btn w-[16px] mr-2",
-                                  isFixedColumn(item)
-                                    ? "cursor-no-drop!"
-                                    : "cursor-grab!"
+                                  fixed ? "cursor-no-drop!" : "cursor-grab!"
                                 ]}
                                 onMouseenter={(event: {
                                   preventDefault: () => void;
@@ -364,6 +385,43 @@ export default defineComponent({
                                   {item}
                                 </span>
                               </el-checkbox>
+                              <iconifyIconOffline
+                                class={[
+                                  "ml-2",
+                                  "w-[16px]",
+                                  "h-[16px]",
+                                  "hover:text-primary",
+                                  "cursor-pointer",
+                                  left ? "text-primary" : ""
+                                ]}
+                                icon={left ? PinAngleFill : PinAngle}
+                                v-tippy={left ? "取消固定" : "固定在左边"}
+                                onClick={() =>
+                                  handleToggleColumnFixed(
+                                    left ? false : "left",
+                                    item
+                                  )
+                                }
+                              />
+                              <iconifyIconOffline
+                                class={[
+                                  "ml-2",
+                                  "w-[16px]",
+                                  "h-[16px]",
+                                  "hover:text-primary",
+                                  "scale-x-[-1]",
+                                  "cursor-pointer",
+                                  right ? "text-primary" : ""
+                                ]}
+                                icon={right ? PinAngleFill : PinAngle}
+                                v-tippy={right ? "取消固定" : "固定在右边"}
+                                onClick={() =>
+                                  handleToggleColumnFixed(
+                                    right ? false : "right",
+                                    item
+                                  )
+                                }
+                              />
                             </div>
                           );
                         })}
