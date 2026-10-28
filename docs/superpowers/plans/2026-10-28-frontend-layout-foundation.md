@@ -798,6 +798,12 @@ git commit -m "refactor(web): 审计页改开源列表页范式，表格填高�
 - Consumes: Task 6 定形的 `PureTableBar` + `pure-table[adaptive]` 模板；`CommandHistory` 现有的 `loadCommands`/`loadBatches`/`showOut`/`focusBatch`/`rowClass`/`restartTimer`/`POLL_KEY`/`defineExpose({ reload, focusBatch })`
 - Produces: `CommandHistory` 对外契约**不变**（`defineExpose({ reload: () => loadCommands(), focusBatch })`），因为 shell/collect 两页的 ref 调用依赖它
 
+- [ ] **Step 0: 先替 Task 5 收两笔 kk.scss 注释债（本任务是唯一同时动 `CommandWorkbench` 与 `kk.scss` 的任务，顺手带上）**
+
+1. 给 `.kk-main` 的 `min-height: 100%` 补一句「**承重、勿删**」并写清依据（实测带规则 970 / `auto` 939，对照组 3000px→3000px 同时否掉「包含块被内容撑开」）。这条注释缺席就会被下一个只读 CSS 的人再删一次——控制器曾据错误前提下过删除裁决（`c21510e`，已由 `828041c` 反转）。
+2. 修正 `kk.scss:11-13` 的旧模型：它写着「中间 `.el-scrollbar__view` 由内容撑开，所以各页只能写 `calc(100vh - N)`」。**实测不是**：view 被 inline `flex:auto` 拉到确定高 999，`.grow` 由 Tailwind `flex-grow:1` 得到 970，页面根的百分比因此能解算。这段注释是 Tasks 7–10 直接读的文本，留着就会让四个任务继承错的因果模型（也是日后判断 `--kk-page-h` 能否退役的依据）。
+3. 本步骤把 `CommandWorkbench.vue:16` 的 `kk-page__body` 摘掉之后，`kk.scss:85-86` 那条「(Task 7 摘掉 .kk-page__body 后可删)」的层叠说明就到期了——**删掉它**，别留下解释一个已不存在的平局。
+
 - [ ] **Step 1: 保住不变量清单**
 
 先 `git log --oneline -1 -- web/src/views/command` 与 `grep -n "useSeq\|pollFailed\|kk-sync\|autoRefresh\|usePolls\|clearPoll\|restartTimer" web/src/views/command/components/CommandHistory.vue`，把命中的行号抄进本次提交信息。**`defineExpose` 那一行一个字不许改**。
