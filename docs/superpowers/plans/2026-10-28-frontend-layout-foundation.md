@@ -28,6 +28,7 @@
 - **本仓对上游的一处有意偏离**：`bar.tsx` 里 `fixed: true` 归到**左**固定（与 element-plus 一致；上游 `main` 把它当右固定是 bug，依据见 `element-plus/es/components/table/src/store/watcher.mjs` 的 `updateColumns` 与 `@pureadmin/table` 的 `TableColumnFixed` 注释）。**将来任何人重新对齐上游 bar.tsx 时必须保留这条偏离**，改代码前先读 `bar.tsx:237-241` 的注释。
 - **`pnpm lint:stylelint` 在本仓是 repo 级 `--fix`，且会静默改坏 CSS。** `web/stylelint.config.js:67` 的 `order/order` 把泛型 `"at-rules"` 排在 `"rules"` **之前**，于是 `--fix` 会把 `@media (max-width:1200px){…}` 整块**提到它要覆盖的基础规则上面**——同特异性下后来者胜，媒体查询从此失效。Task 5 实测抓到它把 `CommandWorkbench.vue` 的窄屏折叠改没（已回退），评审又在副本上端到端复现。**触发条件危险**：`.vue` 的 style 块「首节点是注释 + 后面有 `@media` 跟随规则」才告警，plain `.scss` 不告警，删掉头注释告警也会消失——所以「我的文件没告警」不是安全信号。
   **Task 5 评审后的处置（已裁决）**：① `order/order` 加 `disableFix: true`（保留告警、禁止自动重排）；② `lint:stylelint` 拆成不 `--fix` 的默认档 + 显式 `lint:stylelint:fix`；③ Tasks 6–10 的 stylelint 证据固定为 **`pnpm exec stylelint --no-cache <自己改过的文件>` 零告警 ＋ `git status --short` 除本任务申报文件外干净**，看到 `@media` 被搬位置立即回退。此外 `--cache` 会在热跑时把 8 个 scss 的 1680 条 prettier/CRLF 噪声全藏起来，`lint:stylelint` EXIT 0 近乎无意义，别拿它当证据。
+  **新副作用（Task 5 re-review 提醒）**：去掉 `--fix` 之后，`pnpm lint:stylelint` 从「永远过」变成**会因为别人文件里的既有 prettier/CRLF 报错而非零退出**——配置哈希一变，旧缓存失效，冷跑很可能 exit 2。所以**绝不允许把它写进 `&&` 链**（会在 typecheck/build 之前就中断门禁），也不许为了让它变绿而去跑 `lint:stylelint:fix` 全仓重排——那正是刚被关掉的危险。门禁三件套只用 `pnpm typecheck && pnpm lint:eslint && pnpm build`；stylelint 证据永远用单文件形式。
 - **几何测量前必须让页面 settle ~2s**（Task 5 实测）：`goto` 之后立刻 eval 会读到过渡中的坐标（整页偏 −30px，`left:180` 而非 210）。读完先核对 `sideCols`/`bandTop` 是否落在稳定值上，再判定。
 - **图标只能用 `~icons/*` 导入形式，禁止 `useRenderIcon('ep/xxx')` 字符串**（Task 6 查证并在 bundle 里复核）：本仓 `components/ReIcon/src/offlineIcon.ts` 只注册了 **3 个**字符串（`ep/home-filled`、`ri/search-line`、`ri/information-line`），`hooks.ts:47-61` 会把不含冒号的字符串路由给 `IconifyIconOffline`——于是 `useRenderIcon('ep/refresh')` **静默渲染成空白**，typecheck 全绿。计划样板代码里那两处字符串写法是错的，抄作业时别再抄。仓内主流写法是 `import refresh from "~icons/ep/refresh"` 后 `:icon="refresh"`。
 - **`pure-table` 的 `:pagination` 必须直接绑响应式对象**，不能写开源那种 `:pagination="{ ...pagination, size }"`（Task 6 实测、评审在 `@pureadmin/table/dist/index.es.js:137-140` 复核）：组件会对**作为 prop 传入的那个对象**就地写 `currentPage`/`pageSize`，展开写法把写入落在一次性快照上，页码/条数读数立刻变陈旧——**翻页直接失效**。代价是分页器不跟随密度 `size`（纯观感），属机制差异不是样式不对齐。**两个位置都必须在模板里留 HTML 注释**，否则后人会「照上游改回去」。
@@ -375,14 +376,17 @@ git commit -m "feat(web): 移植 v7 的 PureTableBar（列固定 + 剥 i18n）�
  * 实测的 P0-2/P1-1/P2-1 三条同源缺陷在这套结构里不存在。表格填高交给 @pureadmin/table
  * 的 adaptive（视口绝对测量），不要再挂 .kk-fill-table。
  */
-/* 页面根：只声明 flex 容器。
-   **不要加 `min-height: 100%`**——百分比 min-height 相对「由内容撑开」的包含块
-   （.el-scrollbar__view）按 CSS 2.1 §10.5 回落为 auto，即惰性；而
-   getComputedStyle().minHeight 会照样回显 "100%"，构成假证据。
-   要撑满请用能证明 used value 的手段：开/关这个类、读 offsetHeight。 */
+/* 列表页根。
+   `min-height: 100%` **是承重的，别删**（Task 5 修复轮实测：带规则 offsetHeight 970、
+   `auto`/`0` 时 939；对照组 3000px→3000px 同时证明包含块并未被内容撑开）。
+   包含块链条是确定高度的 flex：`.app-main` 100vh+padding → view 999（inline flex:auto）
+   → `.grow` 970（Tailwind flex-grow:1），所以百分比能解算，CSS 2.1 §10.5 的
+   「按 auto 处理」前提在这里不成立。评审与本仓 kk.scss:11-13 的旧注释都曾判它惰性——
+   那是把 `.el-scrollbar__view` 当成内容撑开的块，实测证伪。 */
 .kk-main {
   display: flex;
   flex-direction: column;
+  min-height: 100%;
 }
 
 /* 搜索条：与开源逐字同构（bg-bg_color 是它的卡片替身）。
@@ -421,8 +425,9 @@ git commit -m "feat(web): 移植 v7 的 PureTableBar（列固定 + 剥 i18n）�
 - [ ] **Step 4: 门禁 + 单页目视**
 
 ```bash
-cd web && pnpm lint:stylelint && pnpm typecheck && pnpm build
+cd web && pnpm exec stylelint --no-cache src/style/kk.scss && pnpm typecheck && pnpm build
 ```
+（stylelint **只准单文件跑**：repo 级 `pnpm lint:stylelint` 去掉 `--fix` 后会因别人文件里的既有 prettier/CRLF 报错非零退出，串进 `&&` 会在 typecheck 之前就把门禁打断。）
 预期全 0。新类此时仍无调用方，所以**除 R1 外**的基线应当原样复现——`sideCols` 是**唯一会合理转绿的指标**（Step 1 就是修它的：两栏 `left` 从相同变为不同、宽比≈34%:66%）。其余任何一条在 Task 5 就变绿都说明测错了对象，回 Task 2 复核探针，别往下走。把 Task 5 之后的 `sideCols` 读数记进提交信息，作为 P0-1 的第一个证据。
 
 - [ ] **Step 5: 提交**
