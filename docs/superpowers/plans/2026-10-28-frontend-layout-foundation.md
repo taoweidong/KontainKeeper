@@ -355,11 +355,11 @@ git commit -m "feat(web): 移植 v7 的 PureTableBar（列固定 + 剥 i18n）�
   min-height: 100%;
 }
 
-/* 搜索条：与开源逐字同构（bg-bg_color 是它的卡片替身） */
-.kk-search-form {
-  :deep(.el-form-item) {
-    margin-bottom: 12px;
-  }
+/* 搜索条：与开源逐字同构（bg-bg_color 是它的卡片替身）。
+   注意：本文件是全局样式，**不能**用 :deep()——那是 SFC scoped 的专属语法，
+   在全局 scss 里会原样编译成无效选择器、静默不生效（10-15 的「安慰剂类名」同族坑）。 */
+.kk-search-form .el-form-item {
+  margin-bottom: 12px;
 }
 
 /* 选中横幅：取代 .kk-sticky-bar（sticky 的 scrollport 是 el-card，而它自己不滚，
@@ -379,7 +379,7 @@ git commit -m "feat(web): 移植 v7 的 PureTableBar（列固定 + 剥 i18n）�
   margin-left: 0;
 }
 ```
-并加一条 layout-content 的每页覆盖说明注释：**不**在 kk.scss 里全局改 `.main-content` 的 margin（会波welcome/详情等保留卡片页），由各列表页 scoped 里写 `:deep(.main-content){ margin: 24px 24px 0 !important }`——与开源每页自带一条的做法一致。
+**不要**写 `.main-content { margin: 24px 24px 0 !important }` 这类每页覆盖（Task 6 原样板里有，已删）。理由：`.main-content` 是 `lay-content` 渲染的**页面组件的祖先**元素，子组件的 scoped 样式和 `:deep()` 都只作用于自身渲染的后代，够不到祖先——这行在全仓会**静默不生效**，正是要避免的安慰剂 CSS。开源那条能生效是因为它的写法与本仓不同，照搬前先验证。页底留白差异由 `adaptive` 的 `offsetBottom` 实测吸收（验收口径是「分页器在视口内」，不是「margin 等于 24px 0」）。
 
 - [ ] **Step 4: 门禁 + 单页目视**
 
@@ -406,8 +406,9 @@ git commit -m "fix(web): .kk-side 补 flex-direction:row 修双栏坍塌，并�
 
 **Files:**
 - Create: `web/src/views/audit/utils/hook.tsx`
-- Create: `web/src/views/audit/utils/types.ts`
 - Modify: `web/src/views/audit/index.vue`（整文件重写）
+
+> 本任务**不建 `utils/types.ts`**：审计页是只读页，没有弹窗表单，`FormItemProps` 之类没有消费方——写一份没人 import 的类型就是 10-15 文档点名的「安慰剂文件」。P3 的三张 RBAC 页有表单，那时再建。
 
 **Interfaces:**
 - Consumes: `PureTableBar`（Task 4）、`addDialog`（Task 3）、`.kk-main`/`.kk-search-form`/`.reset-margin`（Task 5）、`@/api/audit` 的 `listAudit({limit,offset,keyword})`/`parseDetail`、`@/utils/kk` 的 `tsText`/`errText`/`downloadBlob`/`fileStamp`、`@/utils/kkPoll` 的 `useSeq`
@@ -415,27 +416,27 @@ git commit -m "fix(web): .kk-side 补 flex-direction:row 修双栏坍塌，并�
 
 > 这页先做：它只有 5 列、无批量勾选、无图表，是验证 `adaptive` + `PureTableBar` + 分页三件套是否真能咬合的**最小完整用例**。范式在这里定形，后面五页照抄。
 
-- [ ] **Step 1: `utils/types.ts`**
+- [ ] **Step 1: 先定「条数」的单一状态源（本任务唯一的判断题，已裁决）**
 
-```ts
-interface SearchFormProps {
-  keyword: string;
-  limit: number;
-}
+原页面用 `limit`/`offset` 两个 ref 表达分页；迁移后 `pure-table` 的 `pagination` 自带 `pageSize`/`currentPage`。**两处都能改 = 必然漂移**，所以本计划裁决（Task 8、9 沿用同一条）：
 
-export type { SearchFormProps };
-```
+- **`pagination` 是唯一来源**。删除 `form.limit`，搜索条里**不放**条数下拉——条数交给分页器的 `sizes`（`pageSizes: [100, 200, 500]`），与开源一致。
+- `offset` 由 `(currentPage - 1) * pageSize` 推导，不再单独持有。
+- `watch(pagination.pageSize)` 继续承担「条数变了重置到第 1 页并重载」，`@page-size-change`/`@page-current-change` 里**只调 `onSearch()`，不再赋值** `currentPage`/`pageSize`（pure-table 已改过，重复赋值打两遍后端——FE-8 同族）。
+- `read` 位（QR-W16「没读到 ≠ 暂无审计记录」）随 hook 一起导出，模板的 `#empty` 继续用它。
+
+下面 Step 2/3 的代码即按这条裁决书写。
 
 - [ ] **Step 2: `utils/hook.tsx` 写列定义与数据流**
 
 ```tsx
+import { onBeforeUnmount, reactive, ref, onMounted, watch } from "vue";
 import type { PaginationProps } from "@pureadmin/table";
 import { message } from "@/utils/message";
 import { listAudit, parseDetail, type AuditRow } from "@/api/audit";
 import { exportAudit } from "@/api/exporting";
 import { downloadBlob, errText, fileStamp, tsText } from "@/utils/kk";
 import { useSeq } from "@/utils/kkPoll";
-import { reactive, ref, onMounted, h } from "vue";
 
 /** 动作色档：沿用原页面的判级，一处都不改语义（QR-W16 只关心「没读到」，
  *  这里关心「读到了算哪档」）。 */
@@ -449,7 +450,7 @@ const actionType = (a: string) => {
 };
 
 export function useAuditLog() {
-  const form = reactive({ keyword: "", limit: 200 });
+  const form = reactive({ keyword: "" });
   const loading = ref(false);
   const exporting = ref(false);
   const dataList = ref<AuditRow[]>([]);
@@ -584,7 +585,7 @@ export function useAuditLog() {
   };
 }
 ```
-补 import：文件顶部 `import { onBeforeUnmount, watch } from "vue";`（上面代码块用了 `watch`/`onBeforeUnmount` 但只列了部分 import——**按这行补齐**）。`message` 来自 `@/utils/message`（thin 自带），不再用 `ElMessage` 直调——静默轮询不刷屏的既有约定靠它。
+`message` 来自 `@/utils/message`（thin 自带），不再直调 `ElMessage`——静默轮询不刷屏的既有约定靠它保证。
 
 - [ ] **Step 3: `index.vue` 重写**
 
@@ -631,13 +632,6 @@ function onSelectionChange(rows: any[]) {
           clearable
           class="w-45!"
         />
-      </el-form-item>
-      <el-form-item label="条数：" prop="limit">
-        <el-select v-model="form.limit" class="w-32!">
-          <el-option label="最近 100 条" :value="100" />
-          <el-option label="最近 200 条" :value="200" />
-          <el-option label="最近 500 条" :value="500" />
-        </el-select>
       </el-form-item>
       <el-form-item>
         <el-button
@@ -706,23 +700,14 @@ function onSelectionChange(rows: any[]) {
     </PureTableBar>
   </div>
 </template>
-
-<style scoped lang="scss">
-.main-content {
-  margin: 24px 24px 0 !important;
-}
-:deep(.kk-search-form) {
-  .el-form-item {
-    margin-bottom: 12px;
-  }
-}
-</style>
 ```
 
 三条必须照办的细节（都是本仓踩过的位置）：
-1. **`form.limit` 与 `pagination.pageSize` 是两份状态**——上面模板把条数放在搜索表单、分页组件也带 `sizes`，会漂移。**采用分页组件为准**：删掉模板里的「条数」`el-form-item`，并在 hook 里把 `form.limit` 改成 `pagination.pageSize` 的 computed 别名，或干脆保留 `pagination` 单一来源。**动手前先定一条，不要两处都能改。**（原页面只有 `limit` 一处，迁移后必须仍是一处——这就是「功能不变量」的具体落点。）
+1. **条数只有一个来源**（Step 1 已裁决）：模板里没有条数下拉，`form` 里也没有 `limit`，只有 `pagination.pageSize`。原页面的 `limit`/`offset` 两个 ref 全部由 `pagination` 取代。
 2. `@page-size-change`/`@page-current-change` 里 **不要再改 `pagination.currentPage`**，pure-table 已改过，重复赋值会打两遍后端（FE-8 同族坑）。
 3. `#empty` 若 pure-table 不透传（3.3.0 支持转发，但以实测为准），退路是 `:pagination="false"` 外加 el-table 的 `empty-text`；**不许**为了绕过而把「没读到」断言弱化成默认「暂无数据」——那是 QR-W16 的回归。
+
+**本任务不需要 `<style>` 块**：`.el-form-item` 的 12px 下边距由 Task 5 的全局 `.kk-search-form` 提供；`.main-content` 的 margin 覆盖已按 Task 5 的裁决删除（子组件够不到祖先，写了也静默无效）。若模板里确实出现本页独有的样式，才加 `scoped` 块。
 
 - [ ] **Step 4: 跑门禁**
 
