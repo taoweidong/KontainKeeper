@@ -1021,6 +1021,11 @@ git commit -m "refactor(web): 首页/详情/统计页收进统一锚点，退役
 - Consumes: Task 1–10 全部完成
 - Produces: RBAC 计划（P2/P3）开工的干净基线
 
+- [ ] **Step 0: 收两笔 Task 6 re-review 留下的审计页判级债（单独一个 `fix(web)` 小提交，别混进产物同步）**
+
+1. **`unknown` 归入 warn 档**：`hb_unknown_host` 与 `result_unknown_cmd` 现在渲染成空心中性，但服务端把它们和 `result_mismatch` 计入**同一个 `stats["rejected"]` 计数器**（`server/src/kk_server/services/mqtt_bridge.py:286`、`:336`），且 `:285` 直接写明「多半是伪造」。在安全追溯页上把疑似伪造读成「无所谓」是低估——给 `actionStateClass` 的 warn 档加 `unknown` 关键词（它恰好只命中这两条，不误伤其余 17 个动作名）。
+2. **给 `a.includes("ok")` 的脆弱匹配留一句注释**：这是名字子串匹配，将来出现 `webhook_*` 这类动作名会被静默判成「健康绿」。今天 19 个真名零碰撞，属潜在坑而非现症缺陷；在分类器旁写明这个前提，改判级的人才会去核。
+
 - [ ] **Step 1: 两档分辨率全量复测**
 
 ```bash
