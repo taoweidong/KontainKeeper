@@ -873,6 +873,13 @@ elementFromPoint(960,1500)=null——分页器与表格下半从未能点到。
 - Consumes: Task 6 范式；`@/api/agent` 的清单/上传/回滚/推送；`upgradeSkipText`（`@/utils/kk`）
 - Produces: 两张表（台账表 + 主机版本表）各自的 `columns`，同页共存时 `adaptive` 的 offsetBottom **必须分别取值**
 
+- [ ] **Step 0.5: 本页列标签的实测预检（控制器在派发前扫出）**
+
+`update/index.vue` 现在是 **2 张表 / 12 列**，扫描结果两条必须处理：
+- 第 1 列 `type="selection"` **没有 `label`** → 会被 `getKeyList` 静默丢弃（补 `label: "勾选列"`）。
+- 「主机」×2 与「状态」×2 分布在两张表上（表一：主机/当前版本/目标版本/状态/最近心跳；表二：台账 ID/主机/从 → 到/状态/原因/时间）。**唯一性只需在同一个 `PureTableBar` 内成立**——按 Step 1 的裁决，只有主表套 bar，台账表保留自然高度、不套 bar，所以这两对同名当前不冲突。但若你后来改主意给台账表也套 bar，就必须在各自 bar 内把 label 区分开（例如「主机（台账）」/「状态（台账）」），否则第二份同名列永远隐不掉也固定不了。
+- 另有 `el-pagination` 的 `small` 5 处、`kk-fill-table` 2 处、`kk-sticky-bar` 1 处（与 `kk-batch` 共挂），都归本任务清掉。
+
 - [ ] **Step 1: 结构决策（写进提交信息）**
 
 本页原有两张表 + `kk-sticky-bar`。两张表同屏都开 `adaptive` 会互相抢高度（视口测量按各自 `getBoundingClientRect().top` 算，前一张撑开后一张就溢出）。**采用**：台账表（上方、行数少）保留自然高度并 `:max-height="320"`；主机版本表（下方、主表）用 `adaptive` + 实测 offsetBottom。**不要**两张都 adaptive——这是本页与开源单页结构的必要偏离，理由写进注释。
@@ -913,6 +920,16 @@ git commit -m "refactor(web): 版本与更新页改列表范式（P2-1/L1-7）"
 **Interfaces:**
 - Consumes: Task 1 落地后的 monitor 页（QR-S36 的筛选/排序下推参数、`HostFilters` 契约）、`kk-band` 仪表带、`usePolls`
 - Produces: 全站最重要的勾选批量路径（`kk-select-banner` 取代 `kk-sticky-bar`）
+
+- [ ] **Step 0.5: 本页列标签的实测预检（控制器在派发前扫出，必须照此改）**
+
+`monitor/index.vue` 现在有 **11 列**，其中**两列没有 `label`**：
+- 第 1 列 `type="selection"` 无 label；
+- 第 10 列（`prop="last_seen"`，最后心跳）也没有 label。
+
+两列都会被 `getKeyList` 静默丢弃 → `checkColumnList.length` 比 `dynamicColumns.length` 少 2 → 列设置弹层条目与列下标错位，拖拽排序会移动错的列，且那两列永远无法被隐藏或固定。**迁移时必须补**：勾选列 `label: "勾选列"`，最后心跳列 `label: "最后心跳"`。其余 9 列现有 label 互不重复（主机/状态/类型/系统 · 地址/CPU/内存/磁盘/Agent/操作），可直接沿用。
+
+`el-pagination` 的 `small` 在本页出现 4 处，`kk-fill-table` 1 处、`kk-sticky-bar` 1 处（与 `kk-batch` 共挂在同一元素）——都归本任务清掉。
 
 - [ ] **Step 1: 重新读文件，别照抄本计划里的行号**
 
