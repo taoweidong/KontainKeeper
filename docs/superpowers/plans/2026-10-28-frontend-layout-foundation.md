@@ -36,6 +36,9 @@
 - **Vue SFC 模板里注释不能夹在元素属性之间**（Task 6 实测：`<!--` 会被解析成属性名并报 "Element is missing end tag"）。要给某个属性写说明，**把整块注释放在该元素的上方并在注释里点名属性名**，不要试图插进属性列表。Tasks 7–10 迁移时若要挪这些说明，**整块搬动**，别往属性中间塞。
 - **本工作树有另一个会话的在途产物**：未跟踪的 `docs/quality-review-2026-10-29.md`（Task 6 报告时发现）。**不要提交、不要删除、不要当成自己的污染清理**。各任务的「`git status` 干净」检查以此为豁免项；若它消失或变成已修改，先停手问控制器，别动它。
 - **`severity` 的 warn 档只染圆点、不染文字**（控制器裁决）：`.kk-state--warn::before` 给琥珀色点即可，**不要**顺手加 `kk-warn` 文字色——`kk-warn` 在本仓明确记为「落后于待分发版本的 Agent 版本号」，挪用会让一个语义承载两种含义。要文字色就另起一个类名。
+- **列对齐规则：长文本一律 `align:"left"`**（Task 7 评审揪出，Tasks 8–10 会照抄）：`align-whole="center"` 会作用到**每个没显式写 `align` 的列**，Task 7 只给「主机」写了 left，结果「命令 / 采集项」「输出」两列被居中，而原 `el-table` 是左对齐。audit 页的长「明细」列也是 left。判据：**文字长度不可预测的列必须左对齐**，居中只留给状态点、数字、操作。
+- **刷新入口只留一枚**：`PureTableBar` 自带刷新图标，**不要再在 `#buttons` 里加一个带文字的「刷新」按钮**（Task 7 依 brief 这么写了，形成同页两个刷新入口）。audit 页用的是「只留 bar 那枚」的形态，以它为准；`#buttons` 留给导出/新增等业务动作。
+- **`offsetBottom` 的推导必须用同一把尺**（Task 7 评审提醒）：`pagerRect.bottom` 是**视口坐标**，`scrollHeights.client` 是**容器高度**，两者差着顶部 chrome 的 81px——直接相减推出的下限会比真实限制严 ~10px，写成「≥129」这种算术会被后面四页照抄成错误的通用规则。正确判据是**元素底边 vs 视口底**（或 `.kk-page` 定高盒的底边），并在注释里写清用的是哪一种。
 - **测量环境事实（Task 2 实测校正，后续任务的命令里若与此不符以此处为准）**：dev server 实际端口 **8849**（8848 被本机另一个 vite 占用，别去动它）；后端 8443；playwright 会话名 `-s=layout`，认证态存 `%TEMP%\kk-layout-state.json`，**重开会话会掉回 1280×720，必须重新 `resize`**；种子库里主机名是 `vscode-0000` 这种格式，**没有 `Web-01`**——详情类路由一律用 `#/hosts/detail/vscode-0000`；探针 `scripts/fe_layout_probe.js` 的内容区滚动容器判据是「包着 `.main-content` 的那个 `.el-scrollbar__wrap`」（裸 `.el-scrollbar__wrap` 会命中侧边栏，把整页滚读成菜单滚）。
 - **门禁三件套每任务收尾必跑**：`pnpm typecheck`、`pnpm lint:eslint`（`--max-warnings 0`，零豁免）、`pnpm build`。
 - **提交**：中文信息 + `feat/fix/perf/refactor/chore/docs` 前缀 + 按模块分批；编号沿用 `FE-x`（10-07 方案）、`QR-x`（质量账本），本计划新增 `L1-x`（布局一期）。
