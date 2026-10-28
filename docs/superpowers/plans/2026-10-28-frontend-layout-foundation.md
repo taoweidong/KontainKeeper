@@ -921,6 +921,19 @@ git commit -m "refactor(web): 版本与更新页改列表范式（P2-1/L1-7）"
 - Consumes: Task 1 落地后的 monitor 页（QR-S36 的筛选/排序下推参数、`HostFilters` 契约）、`kk-band` 仪表带、`usePolls`
 - Produces: 全站最重要的勾选批量路径（`kk-select-banner` 取代 `kk-sticky-bar`）
 
+- [ ] **Step 0.6: 先把命令通道打通（本页主链路要真跑，控制器已探好端口）**
+
+Task 7 报告如实记录：当时后端**没接 Broker**（`POST /api/commands` 回 503、0 agents 在线），所以「下发 → 结果回显 → 自动聚焦批次」这条主链路只验到 ref 与 CSS 层面。控制器已实测 `127.0.0.1:1883` 从 Windows 可达（WSL 里 systemd 的 mosquitto 1.6.9；**mirrored 网络下这条是间歇性的**，连不上就按下述降级并如实记录）。
+
+做法（一次配置，Task 9 与 Task 11 共用）：
+1. 重启后端时带上 `KK_MQTT_URL=mqtt://127.0.0.1:1883`（其余 env 不变：`KK_DB_PATH=service/kk-analysis.db`）。
+2. 在 Windows 侧用 `.venv/Scripts/python.exe -m kk_agent`（psutil/paho 跨平台，AGENTS.md 已确认）起**一个真 Agent**，让它注册成第 501 台。非 production 下无 `KK_AGENT_IPS` 白名单限制。
+3. 验收前确认 `/api/containers` 里这台是真在线（有 `metrics.mem_mb` 非空——Agent 上线即可见，指标要等首帧心跳，这是本仓已知时序）。
+4. 于是本页的「批量下发 / 采集下发」可以**真跑**：真发一条无害命令（如 `id`），确认 result 帧回显、批次聚焦生效、`kk-row-fresh` 高亮真出现。
+5. **收尾回滚**：任务结束后把后端重启回不带 `KK_MQTT_URL` 的状态，并停掉 agent 进程，别把这台真机留在共享分析库里影响后续读数。
+
+降级路径（Broker 连不上时）：照旧只验 UI 与 ref，并**在报告里明确写出「下发主链路未端到端验证」**，不许用 CSS 探测冒充链路验证。
+
 - [ ] **Step 0.5: 本页列标签的实测预检（控制器在派发前扫出，必须照此改）**
 
 `monitor/index.vue` 现在有 **11 列**，其中**两列没有 `label`**：
