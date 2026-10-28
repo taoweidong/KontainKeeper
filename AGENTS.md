@@ -85,6 +85,31 @@ bash scripts/ci_smoke.sh kontainkeeper-server:local agent/dist/kk-agent         
 - **`KK_LOG` 一个文件只有一个写入者（A7.4）**：`KK_LOG` 由 Agent 进程独占（loguru 文件 sink 负责轮转/保留），`entrypoint-wrapper.sh` 不再把 Agent 输出重定向到该路径（supervisor 消息走 `KK_SUPERVISOR_LOG`）；服务端 `KK_LOG` 留空即只写 stdout，由 docker 采集——两侧 compose 都设了 `logging.max-size: 50m / max-file: 5`。
 - `setup_logging` 的 sink 装配**必须幂等**（`create_app` 在测试里被调用数百次，重复 `logger.add()` 会让一条日志打几百遍）；patcher 走 `Logger.patch()` 而非 `add(patch=...)`（后者是运行期 TypeError）。
 
+## 协作规范（AI 交互测试门禁，2026-10-29 起生效）
+
+**每一次 AI 交互涉及代码改动时，提交前必须执行前端与后端的单元测试，全部通过后才允许提交代码；测试未通过时不得提交**，需先定位并修复问题，再重新运行验证。禁止「跳过 / 搁置 / 注释掉测试」式的提交；发现既有用例与新行为冲突时，要么证明新行为是正确裁决并同步改锁（在测试 docstring 写明依据），要么改代码——二选一，不许静默绕过。
+
+```bash
+# 后端（仓库根目录）。有 Broker 时全 passed；无 Broker 时允许恰好 5 条集成用例 skipped，
+# skipped > 5 视为异常，须排查而不是忽略。
+.venv/Scripts/python.exe -m pytest agent/tests server/tests -q --junitxml=test-results.xml
+# 汇总必须解析 junitxml，**不许用 `| tail` 截断**：失败行在进度条之前，会被截掉
+# （本仓库已两次因此漏看红灯）。
+.venv/Scripts/python.exe -c "import xml.etree.ElementTree as ET; s=ET.parse('test-results.xml').getroot().find('testsuite'); print({k: s.get(k) for k in ('tests','failures','errors','skipped')})"
+# 跑完即删临时文件，不进版本库：rm test-results.xml
+
+# 前端（web/ 目录）：类型检查 + 单元测试（vitest）
+pnpm typecheck && pnpm test
+```
+
+判定口径：
+
+- 后端 `failures` / `errors` 必须为 0，`skipped` 必须恰好 5（Broker 级集成用例）；
+- 前端 `pnpm typecheck` 与 `pnpm test` 都必须绿；
+- 测试必须可稳定重复、无相互依赖：新用例不得依赖真实 Broker / 网络 / 真实时钟 / 执行顺序；
+- 改动语义的修复（旧行为本身是缺陷）必须随附锁定新语义的回归测试，并在 docstring 标注缺陷编号（QR29-xx 等）；
+- 覆盖率盲区比低覆盖率更危险：新增模块（尤其是协议字段的生产者，如 `hostinfo`）必须连带单测。
+
 ## 背景阅读
 
 改协议、Agent 资源策略或部署方式前先读 `docs/design.md`（总体设计）与 `proto/messages.md`（v4 MQTT 主题与帧格式，§3.1.1 是兼容窗口与 v4 字段的契约）；执行路线图与缺陷账本在 `docs/completion-plan-mqtt.md`；生产部署流程在 `docs/deployment.md`，开发环境搭建在 `docs/development.md`，CI/CD 流水线在 `docs/ci-jenkins.md`。
