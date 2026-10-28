@@ -1,289 +1,124 @@
 <script setup lang="ts">
-/** 执行历史（采集面板 / 命令面板共用）：分页 + 搜索 + 批次 + 自适应轮询 + 输出抽屉。
+/** 执行历史（命令面板 / 采集面板共用的右栏）：分页 + 搜索 + 批次 + 自适应轮询 + 输出抽屉。
 
-改造要点（A5.6 / A3 前端）：
-- 筛选全部下推后端（分页 / 状态 / 关键字 / 批次），否则导出与所见不一致
-- 轮询自适应：有未终态命令时 3s，否则 10s；不再无条件 5s 空转
-- 输出改右侧抽屉：原 el-dialog 居中弹窗会完全遮挡列表，无法连续对比多条
-- 本次下发的行加左侧色条：500 台里一眼找到刚才发的那批
+结构对齐 web/src/views/audit/（Task 6 定形的开源列表页范式）：
+根 div.kk-main + 搜索条 el-form.kk-search-form + PureTableBar + pure-table[adaptive]，
+表格填高交给 adaptive 的视口绝对测量，不再依赖祖先高度链与 el-card 的 overflow:hidden。
+数据流与列定义在 ./utils/hook.tsx；对外契约（defineExpose 的 reload / focusBatch）
+由 shell/index.vue、collect/index.vue 经 ref 调用，一个字不许改。
 */
-import {
-  computed,
-  onBeforeUnmount,
-  onMounted,
-  reactive,
-  ref,
-  watch
-} from "vue";
-import { ElMessage } from "element-plus";
+import { ref } from "vue";
 
-import {
-  getCommandOut,
-  listBatches,
-  listCommands,
-  type BatchSummary,
-  type CommandRow
-} from "@/api/commands";
-import { exportCommands } from "@/api/exporting";
-import {
-  downloadBlob,
-  elapsedText,
-  errText,
-  fileStamp,
-  statusLabel,
-  statusType,
-  tsText
-} from "@/utils/kk";
-import { usePolls, useSeq } from "@/utils/kkPoll";
+import type { CommandRow } from "@/api/commands";
+import { PureTableBar } from "@/components/RePureTableBar";
+import { useRenderIcon } from "@/components/ReIcon/src/hooks";
+import DownloadIcon from "~icons/ep/download";
+import RefreshIcon from "~icons/ep/refresh";
+
+import { useCommandHistory } from "./utils/hook";
 
 defineOptions({ name: "CommandHistory" });
 
-const POLL_KEY = "command-history";
-
-const rows = ref<CommandRow[]>([]);
-const total = ref(0);
-/** 读到过真值没有：「还没有命令记录」在接口挂掉时是一句假话（QR-W16）。
- *  total 是**筛选后**的总数，所以空表还要再分「筛选无匹配」与「真的没有记录」。 */
-const read = ref(false);
-const loading = ref(false);
-const statusFilter = ref("");
-const keyword = ref("");
-const batchFilter = ref("");
-const pageSize = ref(50);
-const offset = ref(0);
-const autoRefresh = ref(true);
-/** 本次（或最近一次）下发的命令 id：给这些行加左侧色条 */
-const fresh = ref<Set<string>>(new Set());
-const batches = ref<BatchSummary[]>([]);
-const exporting = ref(false);
-/** 静默轮询失败：状态进表头读数，不再每 3~10s 弹一次 toast（W5） */
-const pollFailed = ref(false);
-
-const out = reactive({
-  visible: false,
-  title: "",
-  text: "",
-  loading: false,
-  id: ""
-});
-
-// 作用域版 setPoll/clearPoll：卸载只清本组件注册的 key，不再误清其他页面的轮询
-const { setPoll, clearPoll } = usePolls();
-
-// 手动触发的请求不走轮询那条在途防抖：列表与抽屉输出各一路「最新一次」票据（QR-W4）。
-// 没有它，连点两行时先点的慢响应会后到，把标题为 B 的抽屉填上 A 的输出。
-const beginLoad = useSeq();
-const beginOut = useSeq();
-
-async function loadCommands(silent = false) {
-  const isLatest = beginLoad();
-  if (!silent) loading.value = true;
-  try {
-    const data = await listCommands({
-      status: statusFilter.value || undefined,
-      keyword: keyword.value.trim() || undefined,
-      batch: batchFilter.value || undefined,
-      limit: pageSize.value,
-      offset: offset.value
-    });
-    if (!isLatest()) return;
-    rows.value = data.items;
-    total.value = data.total;
-    read.value = true;
-    pollFailed.value = false;
-  } catch (e: any) {
-    if (!isLatest()) return;
-    // 自适应轮询最密到 3s 一轮：失败刷 toast 会把噪音做成刷屏，状态改由表头读数承担（W5）
-    pollFailed.value = silent;
-    if (!silent) ElMessage.error("加载命令历史失败：" + (e?.message ?? e));
-  } finally {
-    // 只有最新一路负责收 spinner：迟到包不该把仍在途的请求的加载态关掉
-    if (isLatest()) loading.value = false;
-  }
-}
-
-async function loadBatches() {
-  try {
-    batches.value = (await listBatches(20)).items;
-  } catch {
-    batches.value = [];
-  }
-}
-
-/** 是否有未终态命令：决定 3s / 10s 两档节奏 */
-const hasActive = computed(() =>
-  rows.value.some(r => ["pending", "sent", "running"].includes(r.status))
-);
-
-/** 自适应轮询：有未终态命令时 3s，否则 10s */
-function restartTimer() {
-  if (!autoRefresh.value) return clearPoll(POLL_KEY);
-  setPoll(POLL_KEY, () => loadCommands(true), hasActive.value ? 3000 : 10000);
-}
-
-// 只按「未终态 ↔ 全终态」的翻转重建定时器。挂到 rows 上等于每次回包都
-// clearPoll + 新建 setInterval：间隔变成「设定值 + 请求耗时」越跑越慢，
-// 而且是在自己的回调里拆掉自己（FE-11）。
-watch(hasActive, restartTimer);
-watch([statusFilter, batchFilter, pageSize], () => {
-  offset.value = 0;
-  loadCommands();
-  restartTimer();
-});
-
-/** 关键字输入防抖：避免每敲一个字就打一次后端 */
-let kwTimer: ReturnType<typeof setTimeout> | null = null;
-watch(keyword, () => {
-  if (kwTimer) clearTimeout(kwTimer);
-  kwTimer = setTimeout(() => {
-    kwTimer = null;
-    offset.value = 0;
-    loadCommands();
-  }, 300);
-});
-// 卸载时清掉待触发的防抖：否则切页后 300ms 内这一个 timer 仍会打一次后端
-// （usePolls 只登记 setInterval，setTimeout 不在它的管辖里）
-onBeforeUnmount(() => {
-  if (kwTimer !== null) clearTimeout(kwTimer);
-  kwTimer = null;
-});
-
-/** 当前批次的状态分布：选中批次时工具栏直接给出「N 台：done X / failed Y」 */
-const batchStat = computed(() => {
-  if (!batchFilter.value) return null;
-  const b = batches.value.find(x => x.batch_id === batchFilter.value);
-  return b || null;
-});
-
-/** 批次分布值是 string|number 联合类型，这里统一成数字再累加 */
-function statNum(v: string | number | undefined): number {
-  return Number(v || 0);
-}
-
-/** 三个筛选任一处生效：空表要说的是「这个条件下没匹配」，不是「从来没下过命令」 */
-const hasFilter = computed(
-  () => !!(statusFilter.value || keyword.value.trim() || batchFilter.value)
-);
-
-/** el-pagination 用 1 起始的页码，后端要的是 offset —— 换算只在这里做一次 */
-const pageNo = computed({
-  get: () => Math.floor(offset.value / pageSize.value) + 1,
-  set: (v: number) => {
-    offset.value = (v - 1) * pageSize.value;
-  }
-});
-
-function onPageChange(p: number) {
-  offset.value = (p - 1) * pageSize.value;
-  loadCommands();
-  restartTimer();
-}
-
-/** 每页条数变化由上面的 watch 统一重置 offset 并重载，这里只赋值 */
-function onSizeChange(s: number) {
-  pageSize.value = s;
-}
-
-function shortBatch(id?: string): string {
-  return id ? id.slice(0, 8) : "-";
-}
-
-/** 父页下发成功后调用：定位到该批次并高亮新命令 */
-function focusBatch(batchId: string, ids: string[] = []) {
-  fresh.value = new Set(ids);
-  batchFilter.value = batchId;
-  offset.value = 0;
-  loadCommands();
-  loadBatches();
-  restartTimer();
-}
-
-async function showOut(row: CommandRow) {
-  const isLatest = beginOut();
-  out.title = `${row.id} · ${row.pod}`;
-  out.id = row.id;
-  out.text = "";
-  out.visible = true;
-  if (row.out_purged) {
-    out.text = "（输出已按保留策略清理，仅保留状态行）";
-    return;
-  }
-  out.loading = true;
-  try {
-    const text = await getCommandOut(row.id);
-    if (!isLatest()) return;
-    out.text = text || "（无输出）";
-  } catch (e: any) {
-    if (!isLatest()) return;
-    out.text = "读取输出失败：" + errText(e);
-  } finally {
-    if (isLatest()) out.loading = false;
-  }
-}
-
-/** 下载单条完整输出：复用导出工具，不新增依赖 */
-async function downloadOut() {
-  try {
-    const text = await getCommandOut(out.id);
-    downloadBlob(
-      new Blob([text], { type: "text/plain;charset=utf-8" }),
-      `${out.id}.txt`
-    );
-  } catch (e: any) {
-    ElMessage.error("下载输出失败：" + errText(e));
-  }
-}
-
-async function onExport() {
-  exporting.value = true;
-  try {
-    const blob = await exportCommands({
-      status: statusFilter.value || undefined,
-      batch: batchFilter.value || undefined,
-      keyword: keyword.value.trim() || undefined,
-      include_tail: 1
-    });
-    downloadBlob(blob, `命令历史_${fileStamp()}.csv`);
-  } catch (e: any) {
-    ElMessage.error("导出失败：" + errText(e));
-  } finally {
-    exporting.value = false;
-  }
-}
-
-function argvPreview(argv: CommandRow["argv"]): string {
-  if (!argv) return "-";
-  // 列表接口不解析 argv：字符串（命令原文或 JSON 文本）直接展示，不再 JSON 化
-  if (typeof argv === "string") return argv;
-  if (Array.isArray(argv)) return argv.join(" ");
-  if (typeof argv === "object") {
-    const o = argv as Record<string, any>;
-    if (o.items) return "items: " + (o.items as string[]).join(", ");
-    return JSON.stringify(argv);
-  }
-  return String(argv);
-}
-
-/** 新下发的行加左侧色条：一眼找到刚才发的那批 */
-function rowClass({ row }: { row: CommandRow }): string {
-  return fresh.value.has(row.id) ? "kk-row-fresh" : "";
-}
-
-onMounted(async () => {
-  await Promise.all([loadCommands(), loadBatches()]);
-  restartTimer();
-});
+const tableRef = ref();
+const {
+  POLL_KEY,
+  rows,
+  columns,
+  read,
+  loading,
+  keyword,
+  statusFilter,
+  batchFilter,
+  autoRefresh,
+  batches,
+  exporting,
+  pollFailed,
+  pagination,
+  out,
+  batchStat,
+  hasFilter,
+  statNum,
+  shortBatch,
+  rowClass,
+  loadCommands,
+  focusBatch,
+  restartTimer,
+  clearPoll,
+  showOut,
+  downloadOut,
+  onExport
+} = useCommandHistory();
 
 defineExpose({ reload: () => loadCommands(), focusBatch });
 </script>
 
 <template>
-  <el-card shadow="never" class="kk-card kk-page__body">
-    <template #header>
-      <div class="kk-toolbar">
-        <span>
-          <b>执行历史</b>
-          <span v-if="batchStat" class="kk-sub kk-ml">
+  <div class="kk-main">
+    <el-form
+      :inline="true"
+      class="kk-search-form bg-bg_color w-full pl-8 pt-3 overflow-auto"
+    >
+      <el-form-item label="关键字：">
+        <el-input
+          v-model="keyword"
+          placeholder="搜索主机 / 命令 / ID"
+          clearable
+          class="w-45!"
+        />
+      </el-form-item>
+      <el-form-item label="状态：">
+        <el-select
+          v-model="statusFilter"
+          clearable
+          placeholder="全部"
+          class="w-32!"
+        >
+          <el-option label="待下发" value="pending" />
+          <el-option label="已下发" value="sent" />
+          <el-option label="执行中" value="running" />
+          <el-option label="已完成" value="done" />
+          <el-option label="失败" value="failed" />
+          <el-option label="超时" value="timeout" />
+          <el-option label="结果丢失" value="lost" />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="批次：">
+        <el-select
+          v-model="batchFilter"
+          clearable
+          placeholder="全部"
+          class="w-36!"
+        >
+          <el-option
+            v-for="b in batches"
+            :key="b.batch_id"
+            :label="shortBatch(b.batch_id) + '（' + b.total + '）'"
+            :value="b.batch_id"
+          />
+        </el-select>
+      </el-form-item>
+      <el-form-item>
+        <!-- 勾掉自动刷新必须真的停表：clearPoll(POLL_KEY) 走的是 usePolls 的作用域句柄，
+             不是把间隔改成 0；重新勾上交给 restartTimer 按 hasActive 重建 3s / 10s 节奏。 -->
+        <el-checkbox
+          v-model="autoRefresh"
+          @change="v => (v ? restartTimer() : clearPoll(POLL_KEY))"
+        >
+          自动刷新
+        </el-checkbox>
+      </el-form-item>
+    </el-form>
+
+    <PureTableBar
+      title="执行历史"
+      :columns="columns"
+      :table-ref="tableRef?.getTableRef()"
+      @refresh="loadCommands()"
+    >
+      <template #title>
+        <div class="flex min-w-0 items-center gap-2">
+          <b class="shrink-0">执行历史</b>
+          <span v-if="batchStat" class="kk-sub truncate">
             该批次 {{ batchStat.total }} 台： 完成 {{ batchStat.done || 0 }} ·
             失败 {{ batchStat.failed || 0 }} · 超时
             {{ batchStat.timeout || 0 }} · 未终态
@@ -293,9 +128,10 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
               statNum(batchStat.running)
             }}
           </span>
+          <!-- 静默轮询失败进这条读数、不弹 toast（W5）：3~10s 一轮的刷屏会把真错误淹掉。 -->
           <span
             v-if="autoRefresh"
-            class="kk-sync kk-ml"
+            class="kk-sync shrink-0"
             :class="{ 'kk-sync--stale': pollFailed }"
           >
             {{
@@ -304,150 +140,91 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
                 : "有未终态命令时 3 秒一轮"
             }}
           </span>
-        </span>
-        <div class="kk-actions">
-          <el-input
-            v-model="keyword"
-            placeholder="搜索主机 / 命令 / ID"
-            clearable
-            style="width: 200px"
-          />
-          <el-select
-            v-model="statusFilter"
-            clearable
-            placeholder="状态"
-            style="width: 130px"
-          >
-            <el-option label="待下发" value="pending" />
-            <el-option label="已下发" value="sent" />
-            <el-option label="执行中" value="running" />
-            <el-option label="已完成" value="done" />
-            <el-option label="失败" value="failed" />
-            <el-option label="超时" value="timeout" />
-            <el-option label="结果丢失" value="lost" />
-          </el-select>
-          <el-select
-            v-model="batchFilter"
-            clearable
-            placeholder="批次"
-            style="width: 150px"
-          >
-            <el-option
-              v-for="b in batches"
-              :key="b.batch_id"
-              :label="shortBatch(b.batch_id) + '（' + b.total + '）'"
-              :value="b.batch_id"
-            />
-          </el-select>
-          <el-checkbox
-            v-model="autoRefresh"
-            @change="v => (v ? restartTimer() : clearPoll(POLL_KEY))"
-          >
-            自动刷新
-          </el-checkbox>
-          <el-button :loading="loading" @click="loadCommands()">刷新</el-button>
-          <el-button type="primary" :loading="exporting" @click="onExport"
-            >导出 CSV</el-button
-          >
         </div>
-      </div>
-    </template>
-
-    <el-table
-      v-loading="loading"
-      :data="rows"
-      :row-class-name="rowClass"
-      size="small"
-      class="kk-fill-table"
-      @row-click="showOut"
-    >
-      <el-table-column prop="id" label="ID" width="120" />
-      <el-table-column prop="pod" label="主机" min-width="150" />
-      <el-table-column label="批次" width="100">
-        <template #default="{ row }">
-          <el-tooltip
-            v-if="row.batch_id"
-            :content="row.batch_id"
-            placement="top"
-          >
-            <el-link type="primary" @click.stop="batchFilter = row.batch_id">
-              {{ shortBatch(row.batch_id) }}
-            </el-link>
-          </el-tooltip>
-          <span v-else class="kk-sub">-</span>
-        </template>
-      </el-table-column>
-      <el-table-column prop="kind" label="类型" width="90" />
-      <el-table-column
-        label="命令 / 采集项"
-        min-width="200"
-        show-overflow-tooltip
-      >
-        <template #default="{ row }">{{ argvPreview(row.argv) }}</template>
-      </el-table-column>
-      <el-table-column label="状态" width="100">
-        <template #default="{ row }">
-          <el-tag :type="statusType(row.status)" size="small" @click.stop>
-            {{ statusLabel(row.status) }}
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="rc" width="70">
-        <template #default="{ row }">{{
-          row.rc === null ? "-" : row.rc
-        }}</template>
-      </el-table-column>
-      <el-table-column label="耗时" width="90">
-        <template #default="{ row }">{{
-          elapsedText(row.elapsed_ms)
-        }}</template>
-      </el-table-column>
-      <el-table-column label="输出" min-width="180" show-overflow-tooltip>
-        <template #default="{ row }">
-          {{ row.out_purged ? "（已清理）" : row.out_tail || "-" }}
-        </template>
-      </el-table-column>
-      <el-table-column label="创建" width="160">
-        <template #default="{ row }">{{ tsText(row.created_at) }}</template>
-      </el-table-column>
-      <el-table-column label="操作" width="90" fixed="right">
-        <template #default="{ row }">
-          <el-button
-            link
-            type="primary"
-            @click.stop="showOut(row as CommandRow)"
-            >查看</el-button
-          >
-        </template>
-      </el-table-column>
-      <template #empty>
-        <el-empty
-          :description="
-            read
-              ? total
-                ? '本页无数据'
-                : hasFilter
-                  ? '该筛选条件下没有匹配命令'
-                  : '还没有命令记录'
-              : '没读到（命令接口不可达）'
-          "
-        />
       </template>
-    </el-table>
-
-    <div class="kk-pager">
-      <el-pagination
-        v-model:current-page="pageNo"
-        :page-size="pageSize"
-        :total="total"
-        :page-sizes="[50, 100, 200]"
-        layout="total, sizes, prev, pager, next, jumper"
-        background
-        small
-        @size-change="onSizeChange"
-        @current-change="onPageChange"
-      />
-    </div>
+      <template #buttons>
+        <el-button
+          :loading="loading"
+          :icon="useRenderIcon(RefreshIcon)"
+          @click="loadCommands()"
+          >刷新</el-button
+        >
+        <el-button
+          type="primary"
+          :icon="useRenderIcon(DownloadIcon)"
+          :loading="exporting"
+          @click="onExport"
+          >导出 CSV</el-button
+        >
+      </template>
+      <template v-slot="{ size, dynamicColumns }">
+        <!-- :adaptive-config 的 offsetBottom=140 是本页实测值，两个数都不许照抄
+             （上游 108 / 审计页 132 都不满足本页的第二条尺子）。本页有两条约束：
+             ① adaptive 定高 = innerHeight - tableWrapper.top - offsetBottom，分页器底边
+                = innerHeight - offsetBottom + 16(上边距) + 32(分页高)，内容区可视高
+                = innerHeight - 81 ⇒ offsetBottom ≥ 129（108 时 1366×768 实测溢出 +21px）；
+             ② 外层 .kk-page 是 calc(100vh - var(--kk-page-h)) 的固定高盒（审计页没有这条），
+                表格越过它整页又开始滚 ⇒ ≥ 119。
+             取 140 = 129 的下界再留 11px 余量。实测（同一份 500 台种子库、pageSize 50）：
+             1920×1080 pager.bottom 988 ≤ client 999、1366×768 pager.bottom 676 ≤ 687、
+             1100×800（媒体查询折叠为上下）pager.bottom 708 ≤ 719，三档 pageScrolls 均 false、
+             表体内部滚动（内容 3190 / 可视 779·467·126）。搜索条或表头读数一改高就复测。 -->
+        <!-- :pagination 上游四页一律写 { ...pagination, size }，这里**必须**直连 reactive：
+             @pureadmin/table 对传入的那个对象就地写 currentPage/pageSize，展开成一次性快照
+             后写入无人读 → 翻页与条数全废。代价：分页器不吃密度 size（纯观感）。
+             同理模板不绑 @page-size-change：条数由 hook 内 watch(pagination.pageSize) 统一
+             发起重载，两处都绑会打两遍后端（FE-8）。 -->
+        <pure-table
+          ref="tableRef"
+          row-key="id"
+          adaptive
+          :adaptive-config="{ offsetBottom: 140 }"
+          align-whole="center"
+          table-layout="auto"
+          :loading="loading"
+          :size="size"
+          :data="rows"
+          :columns="dynamicColumns"
+          :row-class-name="rowClass"
+          :pagination="pagination"
+          :header-cell-style="{
+            background: 'var(--el-fill-color-light)',
+            color: 'var(--el-text-color-primary)'
+          }"
+          @row-click="showOut"
+          @page-current-change="() => loadCommands()"
+        >
+          <template #empty>
+            <el-empty
+              class="min-h-200"
+              :image-size="60"
+              :description="
+                read
+                  ? pagination.total
+                    ? '本页无数据'
+                    : hasFilter
+                      ? '该筛选条件下没有匹配命令'
+                      : '还没有命令记录'
+                  : '没读到（命令接口不可达）'
+              "
+            />
+          </template>
+          <template #operation="{ row }">
+            <!-- reset-margin 按 brief 与上游同构挂着：本页操作列当前只有一个按钮，
+                 EP 的 `.el-button + .el-button` 还没落下那 12px，所以它今天**不生效**
+                 （生效边界见 kk.scss 该规则的注释）；加第二个按钮时它就接手。 -->
+            <el-button
+              class="reset-margin"
+              link
+              type="primary"
+              :size="size"
+              @click.stop="showOut(row as CommandRow)"
+              >查看</el-button
+            >
+          </template>
+        </pure-table>
+      </template>
+    </PureTableBar>
 
     <el-drawer v-model="out.visible" :title="out.title" size="42%">
       <el-scrollbar class="kk-out-scroll">
@@ -462,7 +239,7 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
         </div>
       </template>
     </el-drawer>
-  </el-card>
+  </div>
 </template>
 
 <style scoped>
