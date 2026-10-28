@@ -124,6 +124,12 @@ const COUNTER_META: {
     alert: true
   },
   {
+    key: "bridge_errors",
+    name: "桥接异常",
+    hint: "非 0 = paho 回调路径有缺陷在偷偷丢帧（帧可丢、线程不能死），持续增长必须查日志",
+    alert: true
+  },
+  {
     key: "interval_violation",
     name: "间隔违规",
     hint: "非 0 = 有机器被配成低于服务端下限的上报间隔（500 台规模的唯一信号）",

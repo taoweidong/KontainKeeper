@@ -27,6 +27,8 @@ const route = useRoute();
 const router = useRouter();
 
 const hosts = ref<HostSummary[]>([]);
+/** 主机清单读到过没有：传给 HostPicker 区分「真空机队」与「接口挂了」（QR29-W4） */
+const hostsRead = ref(false);
 const submitting = ref(false);
 const history = ref<InstanceType<typeof CommandHistory>>();
 
@@ -46,26 +48,29 @@ const picked = computed(() =>
 async function loadHosts() {
   try {
     hosts.value = (await listHosts("summary")).items;
+    hostsRead.value = true;
   } catch (e: any) {
     ElMessage.error("加载主机列表失败：" + errText(e));
   }
 }
 
 /** 选择与超时同步到 query（replace 不污染后退栈）：刷新与分享不丢。
- *  命令体 **不落 URL**——地址栏、复制链接、浏览器历史都会留下整条 shell 命令。 */
+ *  命令体 **不落 URL**——地址栏、复制链接、浏览器历史都会留下整条 shell 命令。
+ *  只 watch 真正落 URL 的三个字段（QR29-W9）：旧写法 `{...shellForm} + deep` 让
+ *  命令框每敲一个字符都触发一次 router.replace + 面包屑重算，而 cmdline 并不落
+ *  URL——纯浪费，输入还有卡顿感。 */
 watch(
-  () => ({ ...shellForm }),
-  v => {
+  () => [shellForm.pods, shellForm.mode, shellForm.timeout] as const,
+  ([pods, mode, timeout]) => {
     router.replace({
       query: {
         ...route.query,
-        pods: v.pods.join(",") || undefined,
-        mode: v.mode,
-        timeout: String(v.timeout)
+        pods: pods.join(",") || undefined,
+        mode,
+        timeout: String(timeout)
       }
     });
-  },
-  { deep: true }
+  }
 );
 
 async function submitShell() {
@@ -122,7 +127,11 @@ onMounted(async () => {
     <template #form>
       <el-form label-width="90px">
         <el-form-item label="目标主机">
-          <HostPicker v-model:pods="shellForm.pods" :hosts="hosts" />
+          <HostPicker
+            v-model:pods="shellForm.pods"
+            :hosts="hosts"
+            :hosts-read="hostsRead"
+          />
         </el-form-item>
         <el-form-item label="输入方式">
           <el-radio-group v-model="shellForm.mode">

@@ -44,6 +44,11 @@ import { usePolls, useSeq } from "@/utils/kkPoll";
 /** 与后端 `status` 字段同名的状态词汇表，只用于「未终态」判定 */
 const ACTIVE_STATUS = ["pending", "sent", "running"];
 
+/** 轮询 key 的实例序号（QR29-W8）：本组件被 shell 与 collect 两页共用，keep-alive
+ *  下两个实例共存，硬编码同名 key 会让 setPoll 的「按 key 覆盖」静默掐掉另一页
+ *  正在跑的轮询。对外契约不变（仍导出 POLL_KEY，模板的「自动刷新」勾选用它停表）。 */
+let historySeq = 0;
+
 /**
  * 状态列的严重度判级：**逐档照搬 `@/utils/kk` 的 `statusType` 返回值**（五档 el-tag
  * type 映射到本仓四档圆点），语义一条不许丢——这是 L1-5 评审揪出的那类回归：
@@ -80,7 +85,7 @@ const statusStateClass = (s: string): string => {
 };
 
 export function useCommandHistory() {
-  const POLL_KEY = "command-history";
+  const POLL_KEY = `command-history-${++historySeq}`;
 
   const rows = ref<CommandRow[]>([]);
   /** 读到过真值没有：「还没有命令记录」在接口挂掉时是一句假话（QR-W16）。
@@ -260,6 +265,9 @@ export function useCommandHistory() {
     out.visible = true;
     if (row.out_purged) {
       out.text = "（输出已按保留策略清理，仅保留状态行）";
+      // 必须复位 loading：上一条未清理行的请求还在途时点已清理行，请求迟到后
+      // 的 finally 会因 !isLatest() 跳过复位，抽屉就永久转圈（QR29-W3）
+      out.loading = false;
       return;
     }
     out.loading = true;

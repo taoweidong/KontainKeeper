@@ -49,10 +49,11 @@ export const exportAudit = (params?: AuditExportParams) => {
 /** 主机清单导出：资产盘点场景，一次性导出全量摘要列。
  *
  * 参数与 `/api/containers` 同源（QR-S36）：页面上筛完 2 台却导出 50 台的报表没有
- * 意义，也会让人误以为筛选只影响显示。 */
+ * 意义，也会让人误以为筛选只影响显示。后端恒按 summary 导出（QR29-S16：曾收一个
+ * 从不生效的 view 参数，已删），行数由服务端 MAX_ROWS 兜底。 */
 export const exportHosts = (filters: HostFilters = {}) => {
   return http.request<Blob>("get", "/api/export/hosts", {
-    params: { view: "summary", ...filters },
+    params: { ...filters },
     responseType: "blob",
     timeout: 0
   });

@@ -62,6 +62,15 @@ export const getLogin = (data?: object) => {
 };
 
 /**
+ * 登出：吊销服务端会话（QR29-W1）。后端 POST /api/logout 会删除会话并落一条
+ * logout 审计，此后该 token 立即失效（此前前端只清本地，token 在 12h TTL 内一直可用）。
+ * 失败不阻断本地登出：token 已不可信，本地清理必须完成；网络断开时由服务端
+ * 会话 TTL 兜底，所以这里吞掉一切错误、永不 reject。
+ */
+export const logoutApi = (): Promise<{ ok: boolean } | undefined> =>
+  http.request<{ ok: boolean }>("post", "/api/logout").catch(() => undefined);
+
+/**
  * 刷新 token：后端暂无此接口。
  * 12h 过期后 401 → 这里抛错 → http 拦截器会清 token 并跳登录页。
  *

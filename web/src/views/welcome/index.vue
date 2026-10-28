@@ -14,6 +14,7 @@ import { listCommands, type CommandRow } from "@/api/commands";
 import {
   durText,
   elapsedText,
+  errText,
   nOr,
   statusLabel,
   statusType,
@@ -151,7 +152,7 @@ async function load(silent = false) {
     if (!isLatest()) return;
     // 手动失败同样要让读数变冷：数据确实可能已过期，区别只是多一条 toast
     pollFailed.value = true;
-    if (!silent) ElMessage.error("加载汇总数据失败：" + (e?.message ?? e));
+    if (!silent) ElMessage.error("加载汇总数据失败：" + errText(e));
   } finally {
     if (isLatest()) loading.value = false;
   }

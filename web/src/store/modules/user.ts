@@ -11,6 +11,7 @@ import {
   type UserResult,
   type RefreshTokenResult,
   getLogin,
+  logoutApi,
   refreshTokenApi
 } from "@/api/user";
 import { useMultiTagsStoreHook } from "./multiTags";
@@ -76,8 +77,11 @@ export const useUserStore = defineStore("pure-user", {
           });
       });
     },
-    /** 前端登出（不调用接口） */
+    /** 登出：先尽力吊销服务端会话（QR29-W1），再清理本地状态。
+     *  logoutApi 自吞错误且 fire-and-forget：token 已不可信，本地清理不能被
+     *  网络问题阻塞；服务端会话删不掉时由 12h TTL 兜底。 */
     logOut() {
+      logoutApi();
       this.username = "";
       this.roles = [];
       this.permissions = [];

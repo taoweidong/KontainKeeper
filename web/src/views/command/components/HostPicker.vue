@@ -12,11 +12,18 @@ import { computed, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 
 import { listHosts, type HostSummary } from "@/api/containers";
+import { errText } from "@/utils/kk";
 import { useSeq } from "@/utils/kkPoll";
 
 defineOptions({ name: "HostPicker" });
 
-const props = defineProps<{ pods: string[]; hosts?: HostSummary[] }>();
+const props = defineProps<{
+  pods: string[];
+  hosts?: HostSummary[];
+  /** 父页「主机清单读到过没有」：显式传入时优先采用——空数组与「接口挂了」
+   *  不再同形（QR29-W4：机队真的 0 台时不能谎报「主机清单不可达」）。 */
+  hostsRead?: boolean;
+}>();
 const emit = defineEmits<{ "update:pods": [string[]] }>();
 
 /** 父页没给清单时自己懒加载一份 */
@@ -26,10 +33,16 @@ const fetched = ref<HostSummary[]>([]);
 const options = computed(() =>
   props.hosts?.length ? props.hosts : fetched.value
 );
-/** 清单读到过没有：父页给了清单即算读到，懒加载那路要等自己成功一次。
- *  没读到时空表不能说「没有匹配的主机」——那是把接口故障劝用户改成搜索条件（QR-W16）。 */
+/** 清单读到过没有：父页显式告知（hostsRead）优先；没告知时回落旧启发式——
+ *  父页给了清单即算读到，懒加载那路要等自己成功一次。
+ *  没读到时空表不能说「没有匹配的主机」——那是把接口故障劝用户改成搜索条件
+ *  （QR-W16）；反过来机队真的 0 台也不能谎报「不可达」（QR29-W4）。 */
 const read = ref(false);
-const listRead = computed(() => !!props.hosts?.length || read.value);
+const listRead = computed(() =>
+  props.hostsRead !== undefined
+    ? props.hostsRead
+    : !!props.hosts?.length || read.value
+);
 const loading = ref(false);
 const drawer = ref(false);
 const keyword = ref("");
@@ -80,7 +93,7 @@ async function loadHosts() {
     read.value = true;
   } catch (e: any) {
     if (!isLatest()) return;
-    ElMessage.error("加载主机列表失败：" + (e?.message ?? e));
+    ElMessage.error("加载主机列表失败：" + errText(e));
   } finally {
     if (isLatest()) loading.value = false;
   }

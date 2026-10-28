@@ -21,6 +21,8 @@ defineOptions({ name: "CommandCollect" });
 const route = useRoute();
 
 const hosts = ref<HostSummary[]>([]);
+/** 主机清单读到过没有：传给 HostPicker 区分「真空机队」与「接口挂了」（QR29-W4） */
+const hostsRead = ref(false);
 const items = ref<string[]>([]);
 /** 采集项清单加载失败：界面必须说「加载失败」并给重试，绝不能摆一份硬编码清单
  *  冒充后端白名单——采后端没有的项，下发出去只会换回一批失败命令（FE-30）。 */
@@ -43,8 +45,9 @@ const picked = computed(() =>
 async function loadHosts() {
   try {
     hosts.value = (await listHosts("summary")).items;
+    hostsRead.value = true;
   } catch (e: any) {
-    ElMessage.error("加载主机列表失败：" + (e?.message ?? e));
+    ElMessage.error("加载主机列表失败：" + errText(e));
   }
 }
 
@@ -106,7 +109,11 @@ onMounted(async () => {
     <template #form>
       <el-form label-width="90px">
         <el-form-item label="目标主机">
-          <HostPicker v-model:pods="collectForm.pods" :hosts="hosts" />
+          <HostPicker
+            v-model:pods="collectForm.pods"
+            :hosts="hosts"
+            :hosts-read="hostsRead"
+          />
         </el-form-item>
         <el-form-item label="采集项">
           <el-checkbox-group v-model="collectForm.items">

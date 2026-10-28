@@ -311,7 +311,7 @@ onBeforeUnmount(() => {
           >{{ detail.hb_interval }} 秒</el-descriptions-item
         >
         <el-descriptions-item label="系统">
-          {{ detail.metrics?.sys?.os || detail.metrics?.kernel || "-" }}
+          {{ detail.metrics?.os || detail.metrics?.kernel || "-" }}
         </el-descriptions-item>
         <el-descriptions-item label="CPU">
           {{ numText(detail.metrics?.cpu) }}% ·
@@ -330,8 +330,8 @@ onBeforeUnmount(() => {
         </el-descriptions-item>
         <el-descriptions-item label="运行时长">
           {{
-            detail.metrics?.sys?.uptime_sec
-              ? ageText(detail.metrics.sys.uptime_sec)
+            detail.metrics?.uptime_sec
+              ? ageText(detail.metrics.uptime_sec)
               : "-"
           }}
         </el-descriptions-item>

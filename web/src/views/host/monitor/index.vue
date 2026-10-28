@@ -382,9 +382,12 @@ function stateText(row: HostSummary): string {
   return OFFLINE_REASON_LABEL[row.status_reason || ""] || "离线";
 }
 
-/** 计量条填充：钳到 0–100，坏值不画出越界的条 */
+/** 计量条填充：钳到 0–100，坏值不画出越界的条。
+ *  NaN/Infinity 必须显式挡掉（QR29-W5）：Math.min/max 会透传 NaN，
+ *  界面会渲染出字面 NaN，插件写坏指标即可触发。 */
 function fillPct(v: number | null | undefined): number {
-  return Math.max(0, Math.min(100, Math.round(v ?? 0)));
+  if (v === null || v === undefined || !Number.isFinite(v)) return 0;
+  return Math.max(0, Math.min(100, Math.round(v)));
 }
 
 /** 心跳新鲜度三格，按绝对秒数判级（默认 60s 上报间隔下 ≈ 0.5 / 2 / 10 个周期）。

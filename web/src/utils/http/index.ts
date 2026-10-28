@@ -11,6 +11,7 @@ import type {
 } from "./types.d";
 import { stringify } from "qs";
 import { getToken, formatToken } from "@/utils/auth";
+import { message } from "@/utils/message";
 import { useUserStoreHook } from "@/store/modules/user";
 
 // 相关配置请参考：www.axios-js.com/zh-cn/docs/#axios-request-config-1
@@ -32,8 +33,21 @@ const defaultConfig: AxiosRequestConfig = {
  *  同一个集合也用来判定「这个 401 是不是会话问题」：登录接口的 401 是凭据错误，
  *  语义与「token 过期」相反，两处判断必须同源，不能各写一份。 */
 const NO_TOKEN_URLS = ["/login"];
-const isNoTokenUrl = (url?: string) =>
-  !!url && NO_TOKEN_URLS.some(u => url.endsWith(u));
+/** 401 不触发自动登出的接口（NO_TOKEN_URLS 的超集）：
+ *  - /login 的 401 是凭据错误（见上）；
+ *  - /logout 的 401 说明会话早已失效——此时再走 logOut 会与登出自身携带旧 token
+ *    的 /api/logout 调用互相触发（401 → logOut → 再发 /api/logout → 401），
+ *    造成请求风暴（QR29-W1）。此时本地登出已由触发方完成，无需再做什么。 */
+const NO_AUTO_LOGOUT_URLS = [...NO_TOKEN_URLS, "/logout"];
+const endsWithAny = (url: string | undefined, suffixes: string[]) =>
+  !!url && suffixes.some(u => url.endsWith(u));
+const isNoTokenUrl = (url?: string) => endsWithAny(url, NO_TOKEN_URLS);
+
+/** 401 自动登出的去重窗（QR29-W7）：6 路轮询同时过期会连打 N 次
+ *  logOut/resetRouter，用户被静默弹回登录页且不知原因——窗口内只执行第一次，
+ *  并给一条明确的过期提示。 */
+const AUTO_LOGOUT_DEDUP_MS = 1000;
+let lastAutoLogoutAt = 0;
 
 class PureHttp {
   constructor() {
@@ -104,8 +118,13 @@ class PureHttp {
         // - 403 只由 agent_ip_auth 抛出（controllers/deps.py，Agent 自更新接口的 IP 白名单），
         //   浏览器会话依然有效，把人踢出是误伤。业务接口的鉴权失败一律 401（deps.py current_user）。
         const status = $error?.response?.status;
-        if (status === 401 && !isNoTokenUrl($error?.config?.url)) {
-          useUserStoreHook().logOut();
+        if (status === 401 && !endsWithAny($error?.config?.url, NO_AUTO_LOGOUT_URLS)) {
+          const now = Date.now();
+          if (now - lastAutoLogoutAt > AUTO_LOGOUT_DEDUP_MS) {
+            lastAutoLogoutAt = now;
+            message("登录已过期，请重新登录", { type: "warning" });
+            useUserStoreHook().logOut();
+          }
         }
         // 所有的响应异常 区分来源为取消请求/非取消请求
         return Promise.reject($error);

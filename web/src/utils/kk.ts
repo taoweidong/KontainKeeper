@@ -33,7 +33,9 @@ export const mbText = (mb?: number | null): string => {
 };
 
 export const numText = (v?: number | null, digits = 1): string =>
-  v === null || v === undefined ? "-" : Number(v).toFixed(digits);
+  v === null || v === undefined || !Number.isFinite(Number(v))
+    ? "-"
+    : Number(v).toFixed(digits);
 
 /** 请求失败时数字读数的占位（QR-W16）。0 在这些页面上的意思是「服务端报了 0」，
  *  拿它当「没读到」就是编数据：调用方必须能区分这两种状态，别拿 `?? 0` 代替。 */
@@ -45,9 +47,21 @@ export const elapsedText = (ms?: number | null): string =>
   ms === null || ms === undefined ? "-" : `${numText(ms / 1000, 2)} s`;
 
 /** 统一的后端错误取词：优先取 FastAPI detail（后端文案是中文），其次 message。
- *  各页曾各自内联 `e?.response?.data?.detail ?? e?.message ?? e`，错误文案口径不一。 */
-export const errText = (e: any): string =>
-  e?.response?.data?.detail ?? e?.message ?? String(e);
+ *  各页曾各自内联 `e?.response?.data?.detail ?? e?.message ?? e`，错误文案口径不一。
+ *  detail 是数组时（FastAPI 422 校验错误：`[{loc,msg,type}]`）逐条取 msg 拼接，
+ *  对象型降级 JSON——原样把数组/对象塞给 toast 会显示成 [object Object]（QR29-W11）。 */
+export const errText = (e: any): string => {
+  const detail = e?.response?.data?.detail;
+  if (typeof detail === "string" && detail) return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((d: any) => (typeof d?.msg === "string" ? d.msg : JSON.stringify(d)))
+      .join("；");
+  }
+  if (detail && typeof detail === "object") return JSON.stringify(detail);
+  if (typeof e?.message === "string" && e.message) return e.message;
+  return String(e);
+};
 
 /** 命令状态 → Element Plus 标签类型 */
 export const statusType = (
