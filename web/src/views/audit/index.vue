@@ -45,6 +45,9 @@ function onSelectionChange(rows: any[]) {
         />
       </el-form-item>
       <el-form-item>
+        <!-- 搜索按**当前页**重查，所以绑 onSearch 而不是「归第 1 页再查」：这是原页面的行为，
+             brief 也如此。归位由 hook 内部 reloadFirstPage 在另外三条路径上做（关键字防抖 /
+             改条数 / 重置），它不导出，模板里既不需要也不该自己拼 currentPage = 1。 -->
         <el-button
           type="primary"
           :icon="useRenderIcon(SearchIcon)"
@@ -73,6 +76,15 @@ function onSelectionChange(rows: any[]) {
         >
       </template>
       <template v-slot="{ size, dynamicColumns }">
+        <!-- :adaptive-config 上游与 brief 都写 offsetBottom: 108，本页实测 132：108 时
+             pagerRect.bottom 在 1920/1366 两档各溢出可视高度 +21px。adaptive 按
+             innerHeight - wrapper.top - offsetBottom 定高，抬到 132 后 996<=999、684<=687。
+             搜索条一改高就得复测——别照抄上游 108，也别照抄别的页的数。 -->
+        <!-- :pagination 上游四页一律写 { ...pagination, size }，这里**必须**直连 reactive：
+             @pureadmin/table 对传入的那个对象就地写 currentPage/pageSize，展开成一次性快照
+             后写入无人读 → 翻页与条数全废。代价：分页器不吃密度 size（纯观感）。
+             同理模板不绑 @page-size-change：条数由 hook 内 watch(pageSize) 统一发起重载，
+             两处都绑会打两遍后端（FE-8）。 -->
         <pure-table
           ref="tableRef"
           row-key="id"

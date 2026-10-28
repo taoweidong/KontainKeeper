@@ -327,6 +327,18 @@
   box-shadow: inset 0 0 0 1.5px var(--kk-idle);
 }
 
+/* 审计动作分级（L1-5）：**圆点**才是严重度的载体——`.kk-state` 默认点是绿的（= 在线/健康），
+ * `.kk-bad` 只改文字色、不改点，所以只挂 kk-bad 时 login_locked / ip_rejected / proto_mismatch
+ * 会顶着一枚绿色健康点显示「一切正常」。这两条变体补上点的红/琥珀两档，四档判级才落到状态语言上。
+ * 不许复用下面 `.kk-state--updating`：那是方点、承载 B6「更新中」语义，不是告警色。 */
+.kk-state--bad::before {
+  background: var(--kk-alert);
+}
+
+.kk-state--warn::before {
+  background: var(--kk-stale);
+}
+
 .kk-state--updating::before {
   background: var(--kk-stale);
   border-radius: 1px;

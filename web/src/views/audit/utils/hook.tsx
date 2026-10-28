@@ -7,6 +7,39 @@ import { downloadBlob, errText, fileStamp, tsText } from "@/utils/kk";
 import { useSeq } from "@/utils/kkPoll";
 
 /**
+ * 动作列的严重度判级（原页面的 `actionType` 四档，一处语义不改，只是将返回值从
+ * el-tag 的 type 换成本仓状态语言的类名）。
+ *
+ * 为什么必须保留分级：`.kk-state::before` 的圆点默认是 `var(--kk-live)`（绿 = 在线/健康），
+ * 而 `.kk-bad` 只改**文字**颜色、不动圆点。审计页是追溯凭证，若只按「含不含 fail」上色，
+ * `login_locked` / `ip_rejected` / `proto_mismatch` / `cmd timeout` 这些事件会顶着一枚
+ * 绿色健康点显示「一切正常」——严重度在迁移中丢失（L1-5 评审揪出的真实回归）。
+ *
+ * 四档（顺序即优先级，bad 先判）：
+ * - `fail|blocked|rejected|locked|violation` → 红点 + 红字
+ * - `mismatch|timeout` → 琥珀点
+ * - `ok|create|restore` → 默认实心绿点（返回基类，不加变体）
+ * - 其余（logout/export/agent_upload…）→ 空心点，中性事件不是错误也不是健康
+ *
+ * 不许复用 `.kk-state--updating`：那是方点、承载 B6「更新中」语义，不是告警色。
+ */
+const actionStateClass = (a: string) => {
+  if (
+    a.includes("fail") ||
+    a.includes("blocked") ||
+    a.includes("rejected") ||
+    a.includes("locked") ||
+    a.includes("violation")
+  )
+    return "kk-state kk-state--bad kk-bad";
+  if (a.includes("mismatch") || a.includes("timeout"))
+    return "kk-state kk-state--warn";
+  if (a.includes("ok") || a.includes("create") || a.includes("restore"))
+    return "kk-state";
+  return "kk-state kk-state--idle";
+};
+
+/**
  * 审计日志页的数据流与列定义。
  *
  * 分页只有一个状态源：`pagination`（`pageSize` / `currentPage`）。搜索条里没有条数
@@ -46,9 +79,7 @@ export function useAuditLog() {
       label: "动作",
       width: 180,
       cellRenderer: ({ row }) => (
-        <span class={`kk-state ${row.action.includes("fail") ? "kk-bad" : ""}`}>
-          {row.action}
-        </span>
+        <span class={actionStateClass(row.action)}>{row.action}</span>
       )
     },
     {
