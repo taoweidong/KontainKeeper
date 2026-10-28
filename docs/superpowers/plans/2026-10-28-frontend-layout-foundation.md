@@ -23,6 +23,9 @@
 - **几何口径只用真实浏览器**：内置浏览器是隐藏页，截图与 `getBoundingClientRect` 不可信。驱动 `@playwright/cli`（本机全局装的是 `playwright-cli@0.1.13`），1920×1080 与 1366×768 两档，500 台种子数据。
 - **element-plus 2.14 的插槽类型坑（Task 3 实测，Tasks 6–10 必撞）**：2.14 把 `#default` 作用域插槽的 `row` 收窄成 `DefaultRow`，与本页真实类型（`HostSummary` / `CommandRow`）不再自动相容。**正确做法是在数据边界收窄**（`row as HostSummary`，且该类型必须已在文件里 import 过），**不要**给插槽写类型标注 `#default="{ row }: { row: HostSummary }`——Task 3 试过，错误从 7 条涨到 12 条，已回退。`as any` / `@ts-ignore` / `@ts-expect-error` / `eslint-disable` 全部禁止。另：vue 3.5.44 收紧了 props 推断，组件 `props` 里需要 `type: [...] as PropType<X>`（上游 `iconifyIconOffline.ts` 就是这么改的）。
 - **`el-pagination` 的 `small` 已弃用**（3.0 前移除），会在浏览器控制台打警告：现存三处 `audit/index.vue:196`、`command/components/CommandHistory.vue:446`、`host/monitor/index.vue:689`，正是 Task 6/7/9 各自要重写的文件——**迁移时顺手换成 `size`**，别让它留到 Task 11 被判成新增回归。
+- **每一列都必须有唯一、非空的 `label`（Task 4 实测，Tasks 6–10 硬约束）**：`PureTableBar` 的列显隐/固定/拖拽**全部按 `label` 匹配**，而 `getKeyList` 的行为是实测出来的、不是猜的——它**不去重**，并且**静默丢弃没有 `label` 键的列**。后果两条：① 两列同名（例如两个「操作」）时，弹层里出现两行无法区分的条目、共用同一个开关值，且三处 `.find`/`filter[0]` 匹配器只命中**第一列**，第二列永远隐不掉也固定不了；② 没有 `label` 的列（最典型就是裸 `{ type: "selection" }`）会让 `checkColumnList.length < dynamicColumns.length`，而 `rowDrop.onEnd` 是**按下标位置**去对 `dynamicColumns` 的，拖拽排序会移动错列。这两条 typecheck/eslint/build **全都测不出来**，只在运行时出现。
+  所以：写 `columns` 时每列给一个页内唯一的 `label`；**勾选列必须显式写 `label`**（开源的做法是 `{ label: "勾选列", type: "selection", fixed: "left", reserveSelection: true }`，照它写），不要留裸 `{ type: "selection" }`。
+- **本仓对上游的一处有意偏离**：`bar.tsx` 里 `fixed: true` 归到**左**固定（与 element-plus 一致；上游 `main` 把它当右固定是 bug，依据见 `element-plus/es/components/table/src/store/watcher.mjs` 的 `updateColumns` 与 `@pureadmin/table` 的 `TableColumnFixed` 注释）。**将来任何人重新对齐上游 bar.tsx 时必须保留这条偏离**，改代码前先读 `bar.tsx:237-241` 的注释。
 - **测量环境事实（Task 2 实测校正，后续任务的命令里若与此不符以此处为准）**：dev server 实际端口 **8849**（8848 被本机另一个 vite 占用，别去动它）；后端 8443；playwright 会话名 `-s=layout`，认证态存 `%TEMP%\kk-layout-state.json`，**重开会话会掉回 1280×720，必须重新 `resize`**；种子库里主机名是 `vscode-0000` 这种格式，**没有 `Web-01`**——详情类路由一律用 `#/hosts/detail/vscode-0000`；探针 `scripts/fe_layout_probe.js` 的内容区滚动容器判据是「包着 `.main-content` 的那个 `.el-scrollbar__wrap`」（裸 `.el-scrollbar__wrap` 会命中侧边栏，把整页滚读成菜单滚）。
 - **门禁三件套每任务收尾必跑**：`pnpm typecheck`、`pnpm lint:eslint`（`--max-warnings 0`，零豁免）、`pnpm build`。
 - **提交**：中文信息 + `feat/fix/perf/refactor/chore/docs` 前缀 + 按模块分批；编号沿用 `FE-x`（10-07 方案）、`QR-x`（质量账本），本计划新增 `L1-x`（布局一期）。
@@ -886,7 +889,7 @@ div.kk-main
 
 - [ ] **Step 3: 批量栏**
 
-`el-table` 的 selection 列进 `columns`（`{ type:"selection", fixed:"left", reserveSelection:true }`——`reserveSelection` 保证翻页不丢勾选，这是 FE-7「显示 10 台实发 1 台」的同类风险）。选中横幅用 `.kk-select-banner`，批量下发/批量采集按钮放里面；横幅位置在 `PureTableBar` 默认插槽内、`pure-table` 之上（与开源选中横幅同位）。
+`el-table` 的 selection 列进 `columns`（**必须写 `label`**：`{ label: "勾选列", type: "selection", fixed: "left", reserveSelection: true }`——裸 `{ type: "selection" }` 会被 `getKeyList` 静默丢弃，导致弹层条目与列下标错位、拖拽排序移错列，这是 Global Constraints 里点名的一条）。`reserveSelection` 保证翻页不丢勾选（FE-7「显示 10 台实发 1 台」的同类风险）。选中横幅用 `.kk-select-banner`，批量下发/批量采集按钮放里面；横幅位置在 `PureTableBar` 默认插槽内、`pure-table` 之上（与开源选中横幅同位）。
 
 - [ ] **Step 4: 迁移列**
 
