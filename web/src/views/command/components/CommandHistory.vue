@@ -412,7 +412,10 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
       </el-table-column>
       <el-table-column label="操作" width="90" fixed="right">
         <template #default="{ row }">
-          <el-button link type="primary" @click.stop="showOut(row)"
+          <el-button
+            link
+            type="primary"
+            @click.stop="showOut(row as CommandRow)"
             >查看</el-button
           >
         </template>

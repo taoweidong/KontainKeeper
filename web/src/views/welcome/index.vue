@@ -335,7 +335,9 @@ onMounted(() => {
               <template #default="{ row }">{{ kindLabel(row.kind) }}</template>
             </el-table-column>
             <el-table-column label="内容" min-width="180" show-overflow-tooltip>
-              <template #default="{ row }">{{ argvText(row) }}</template>
+              <template #default="{ row }">{{
+                argvText(row as CommandRow)
+              }}</template>
             </el-table-column>
             <el-table-column prop="status" label="状态" width="90">
               <template #default="{ row }">

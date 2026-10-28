@@ -558,8 +558,8 @@ onMounted(async () => {
         </el-table-column>
         <el-table-column label="状态" width="92">
           <template #default="{ row }">
-            <span class="kk-state" :class="stateClass(row)">{{
-              stateText(row)
+            <span class="kk-state" :class="stateClass(row as HostSummary)">{{
+              stateText(row as HostSummary)
             }}</span>
           </template>
         </el-table-column>
@@ -648,13 +648,13 @@ onMounted(async () => {
           <template #default="{ row }">
             <span
               class="kk-ticks"
-              :class="tickState(row).cls"
+              :class="tickState(row as HostSummary).cls"
               aria-hidden="true"
             >
               <i
                 v-for="n in 3"
                 :key="n"
-                :class="{ on: n <= tickState(row).n }"
+                :class="{ on: n <= tickState(row as HostSummary).n }"
               />
             </span>
             <span class="kk-num kk-ml">{{ ageText(row.age_sec) }}</span>
@@ -665,7 +665,10 @@ onMounted(async () => {
             <el-button link type="primary" @click.stop="gotoDetail(row.pod)"
               >详情</el-button
             >
-            <el-button link type="primary" @click.stop="collectOne(row)"
+            <el-button
+              link
+              type="primary"
+              @click.stop="collectOne(row as HostSummary)"
               >采集</el-button
             >
           </template>
