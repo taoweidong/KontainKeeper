@@ -8,6 +8,7 @@
  * 拿不到 Content-Disposition。
  */
 import { http } from "@/utils/http";
+import type { HostFilters } from "./containers";
 
 export type CommandExportParams = {
   pod?: string;
@@ -45,10 +46,13 @@ export const exportAudit = (params?: AuditExportParams) => {
   });
 };
 
-/** 主机清单导出：资产盘点场景，一次性导出全量摘要列。 */
-export const exportHosts = () => {
+/** 主机清单导出：资产盘点场景，一次性导出全量摘要列。
+ *
+ * 参数与 `/api/containers` 同源（QR-S36）：页面上筛完 2 台却导出 50 台的报表没有
+ * 意义，也会让人误以为筛选只影响显示。 */
+export const exportHosts = (filters: HostFilters = {}) => {
   return http.request<Blob>("get", "/api/export/hosts", {
-    params: { view: "summary" },
+    params: { view: "summary", ...filters },
     responseType: "blob",
     timeout: 0
   });

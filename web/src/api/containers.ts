@@ -3,11 +3,30 @@
 字段与后端 `server/src/kk_server/controllers/containers.py` 一一对应：
 - `?view=summary` 只回标量（列表页 10s 轮询走这条）
 - 详情走全量视图，带完整 metrics 与最近命令
+- 筛选与排序走 `HostFilters`，列表与导出共用（QR-S36：页面看到什么就导出什么）
 */
 import { http } from "@/utils/http";
 
+/** v4 机队元信息：服务端 `_host_meta()` 一份字段，列表与详情同形。
+ *
+ * `caps` 后端给的是结构而不是 JSON 文本——让每个页面各自 parse 等于把
+ * 「解析失败怎么办」分发出去各写一遍。 */
+export type HostMeta = {
+  /** metal / vm / container（Agent 自报的虚拟化形态） */
+  host_type: string;
+  os_name: string;
+  ip: string;
+  group_name: string;
+  /** 该主机上报帧的协议版本；3 = 仍在兼容窗口内，服务端重启后 proto_v3_received 归零才可关窗 */
+  proto_ver: number | null;
+  docker_total: number;
+  docker_running: number;
+  docker_unhealthy: number;
+  caps: Record<string, any>;
+};
+
 /** 列表摘要行：不含完整指标，避免 500 台 × 4KB 的 JSON 解析 */
-export type HostSummary = {
+export type HostSummary = HostMeta & {
   pod: string;
   image: string;
   agent_ver: string;
@@ -35,7 +54,7 @@ export type HostListResult = {
 };
 
 /** 详情视图：metrics 是最近一帧完整指标（含 disks / procs_top / users） */
-export type HostDetail = {
+export type HostDetail = HostMeta & {
   pod: string;
   image: string;
   agent_ver: string;
@@ -49,6 +68,8 @@ export type HostDetail = {
   metrics: Record<string, any>;
   custom: Record<string, any>;
   disk_alert: boolean;
+  /** 自定义标签：`{k: v}`，超限时后端整对丢弃并留 `_truncated: true` */
+  labels: Record<string, any>;
   commands: Array<Record<string, any>>;
 };
 
@@ -66,9 +87,33 @@ export type MetricsResult = {
   series: MetricPoint[];
 };
 
-export const listHosts = (view: "full" | "summary" = "summary") => {
+/** v4 机队筛选 / 排序参数，与后端 `deps.host_filter_params` 一一对应。
+ *
+ * 一律用字符串而不是 boolean：布尔位走三态（空 = 不筛），把 JS 真值直接塞进
+ * query 会造出 `?online=false` 这种「看着在筛、其实筛的是反的」的请求——
+ * 后端 `_tri()` 认 1/true/yes/on 与 0/false/no/off，其余一律当不筛。
+ *
+ * `docker_unhealthy` 暂无页面入口：内置 Agent 的 status 帧不带 docker 摘要
+ * （协议 §3.1.1 里它是预留字段），筛出来恒为空表（QR-S38）。
+ */
+export type HostFilters = {
+  group?: string;
+  host_type?: string;
+  docker_unhealthy?: string;
+  online?: string;
+  proto_ver?: string;
+  keyword?: string;
+  alert?: string;
+  sort?: string;
+  order?: string;
+};
+
+export const listHosts = (
+  view: "full" | "summary" = "summary",
+  filters: HostFilters = {}
+) => {
   return http.request<HostListResult>("get", "/api/containers", {
-    params: { view }
+    params: { view, ...filters }
   });
 };
 

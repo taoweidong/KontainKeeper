@@ -1,9 +1,20 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import {
+  computed,
+  onBeforeUnmount,
+  onMounted,
+  reactive,
+  ref,
+  watch
+} from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 
-import { listHosts, type HostSummary } from "@/api/containers";
+import {
+  listHosts,
+  type HostFilters,
+  type HostSummary
+} from "@/api/containers";
 import { createCommand, listCollectItems } from "@/api/commands";
 import { exportHosts } from "@/api/exporting";
 import {
@@ -24,12 +35,19 @@ const router = useRouter();
 
 const loading = ref(false);
 const rows = ref<HostSummary[]>([]);
+/** 服务端按同一套条件算出的台数：分页控件读它，不读当前页的行数 */
+const total = ref(0);
 const online = ref(0);
 const alerts = ref(0);
 const outdated = ref(0);
 const keyword = ref("");
 const onlyOnline = ref(false);
 const onlyAlert = ref(false);
+const hostType = ref("");
+const protoVer = ref("");
+/** 表头排序状态下推到服务端（`order` 空 = 用该列默认方向） */
+const sortKey = ref("last_seen");
+const sortDir = ref("");
 /** 最近一次加载成功的时间（秒级时间戳），0 = 尚未加载 */
 const lastLoadedAt = ref(0);
 /** 静默轮询失败：不刷 toast，改由表头的同步读数如实说明（W5） */
@@ -57,31 +75,48 @@ const { setPoll } = usePolls();
  *  手动刷新撞上轮询时迟到的回包会把刚才的数据盖回去，还会提前熄灭 loading（QR-W4）。 */
 const beginLoad = useSeq();
 
-const filtered = computed(() => {
-  const kw = keyword.value.trim().toLowerCase();
-  return rows.value.filter(r => {
-    if (onlyOnline.value && !r.online) return false;
-    if (onlyAlert.value && !r.disk_alert) return false;
-    if (
-      kw &&
-      !r.pod.toLowerCase().includes(kw) &&
-      !(r.image || "").toLowerCase().includes(kw)
-    )
-      return false;
-    return true;
-  });
-});
+/** 与服务端同源的一份筛选条件：仪表带读数、分页与「导出清单」都读它（QR-S36）。
+ *  布尔位显式转字符串——直接传 boolean 会造出 `?online=false` 这种「看着在筛、
+ *  其实筛的是反的」的请求，服务端 `_tri()` 只认明确写法。
+ *
+ *  `docker_unhealthy` 有参数但页面不开放：内置 Agent 目前只声明 shell 能力，
+ *  status 帧里没有 docker 摘要（见 QR-S38），勾上它永远得到空表——
+ *  「查不出」被读成「没有问题」，比没有这个筛选项更糟。 */
+function queryParams(): HostFilters {
+  return {
+    keyword: keyword.value.trim(),
+    host_type: hostType.value || "",
+    proto_ver: protoVer.value || "",
+    online: onlyOnline.value ? "true" : "",
+    alert: onlyAlert.value ? "true" : "",
+    sort: sortKey.value,
+    order: sortDir.value
+  };
+}
+
+/** 筛选生效时仪表带只统计筛后的子集，标签必须说实话：
+ *  「8 台主机」被当成机队规模读，就会做出「机队空了」的下一步动作（QR-W16 同族）。
+ *  用真值判断而不是 `!== ""`：el-select 清空时给的是 undefined，两种都算「没筛」。 */
+const isFiltered = computed(
+  () =>
+    keyword.value.trim() !== "" ||
+    !!hostType.value ||
+    !!protoVer.value ||
+    onlyOnline.value ||
+    onlyAlert.value
+);
 
 /** 500 台规模（QR-W7）：一次全量渲染会把 500 行 × 富单元格（仪表条 / 心跳刻度 / 链接）
  *  铺进 DOM，还要每 10s 随轮询整体重渲染——分页把渲染规模压到一页。
  *  这里刻意做**前端**分页而不是后端分页：summary 视图是标量行，500 台的 JSON 不是瓶颈，
- *  瓶颈在节点数；后端分页要改 store 的查询（与其他在途改动同区），代价换不到额外收益。
+ *  瓶颈在节点数。筛选与排序下推服务端后（QR-S36）拉回的行集已经与页面所见一致，
+ *  改后端分页只是换一种取法，代价换不到额外收益。
  *  跨页勾选由 row-key + reserve-selection 保住，「分几页勾完再批量下发」的老路径不断。 */
 const pageSize = ref(100);
 const offset = ref(0);
 
 const paged = computed(() =>
-  filtered.value.slice(offset.value, offset.value + pageSize.value)
+  rows.value.slice(offset.value, offset.value + pageSize.value)
 );
 
 /** el-pagination 用 1 起始页码，切片要的是 offset —— 换算只在这里做一次 */
@@ -92,9 +127,28 @@ const pageNo = computed({
   }
 });
 
-/** 换筛选条件回到第一页，否则会停在筛选后不存在的页上显示空表 */
-watch([keyword, onlyOnline, onlyAlert], () => {
+/** 换筛选条件回到第一页，否则会停在筛选后不存在的页上显示空表。
+ *  条件即请求：勾选与下拉一改就查服务端（关键字另有防抖）。 */
+watch([onlyOnline, onlyAlert, hostType, protoVer], () => {
   offset.value = 0;
+  load();
+});
+
+/** 关键字防抖：边打字边打服务端等于自己 DoS 自己，静默 300ms 后发一枪。
+ *  这是**交互**计时器不是轮询，所以不走 usePolls；但卸载一定要清——
+ *  否则切走页面还会补发一次请求。 */
+let kwTimer: ReturnType<typeof setTimeout> | null = null;
+watch(keyword, () => {
+  offset.value = 0;
+  if (kwTimer !== null) clearTimeout(kwTimer);
+  kwTimer = setTimeout(() => {
+    kwTimer = null;
+    load(true);
+  }, 300);
+});
+
+onBeforeUnmount(() => {
+  if (kwTimer !== null) clearTimeout(kwTimer);
 });
 
 watch(pageSize, () => {
@@ -103,21 +157,61 @@ watch(pageSize, () => {
 
 /** 轮询让行数变少时夹住 offset，避免出现一张空的尾页 */
 watch(
-  () => filtered.value.length,
+  () => rows.value.length,
   n => {
     const max = Math.max(0, Math.ceil(n / pageSize.value - 1) * pageSize.value);
     if (offset.value > max) offset.value = max;
   }
 );
 
+/** 表头排序下推服务端；取消排序回到服务端默认（最近心跳降序）。
+ *  可排序的列只有服务端 `_SORTS` 白名单里那五个，排不动的列不要挂 sortable。 */
+function onSortChange({
+  prop,
+  order
+}: {
+  prop?: string;
+  order?: string | null;
+}) {
+  sortKey.value = prop || "last_seen";
+  sortDir.value =
+    order === "ascending" ? "asc" : order === "descending" ? "desc" : "";
+  offset.value = 0;
+  load();
+}
+
+/** host_type 是 Agent 自报的虚拟化形态；空值 = v3 老 Agent 没上报这一项 */
+const HOST_TYPE_LABEL: Record<string, string> = {
+  metal: "物理机",
+  vm: "虚拟机",
+  container: "容器"
+};
+
+function clearFilters() {
+  keyword.value = "";
+  hostType.value = "";
+  protoVer.value = "";
+  onlyOnline.value = false;
+  onlyAlert.value = false;
+}
+
+/** 空表有两种成因，混为一谈会把人引向错误的下一步：筛选过严 vs 根本没主机上报 */
+const emptyText = computed(() => {
+  if (rows.value.length) return "本页没有行，换一页看看";
+  return isFiltered.value
+    ? "没有符合当前筛选条件的主机，放宽条件试试"
+    : "还没有主机上报，确认 Agent 与 Broker 已连通";
+});
+
 /** silent=true 供轮询复用：表格数据原位更新，不闪整页 loading，失败也不刷 toast */
 async function load(silent = false) {
   const isLatest = beginLoad();
   if (!silent) loading.value = true;
   try {
-    const data = await listHosts("summary");
+    const data = await listHosts("summary", queryParams());
     if (!isLatest()) return;
     rows.value = data.items;
+    total.value = data.total;
     online.value = data.online;
     alerts.value = data.alerts;
     outdated.value = data.outdated;
@@ -147,11 +241,15 @@ function onSelectionChange(val: HostSummary[]) {
 
 const exporting = ref(false);
 
-/** 导出全量主机清单（资产盘点场景），与「仅在线/仅告警」的前端过滤无关。 */
+/** 导出主机清单（资产盘点场景）：条件与页面同源（QR-S36）——页面上筛完 2 台、
+ *  导出 50 台的报表没有意义，还会让人以为筛选只影响显示。 */
 async function onExport() {
   exporting.value = true;
   try {
-    downloadBlob(await exportHosts(), `主机清单_${fileStamp()}.csv`);
+    downloadBlob(
+      await exportHosts(queryParams()),
+      `主机清单${isFiltered.value ? "_筛选后" : ""}_${fileStamp()}.csv`
+    );
   } catch (e: any) {
     ElMessage.error("导出失败：" + errText(e));
   } finally {
@@ -318,18 +416,25 @@ onMounted(async () => {
               v-if="read"
               class="kk-band__strip"
               role="img"
-              :aria-label="`在线 ${online} 台，离线 ${Math.max(0, rows.length - online)} 台`"
+              :aria-label="`在线 ${online} 台，离线 ${Math.max(0, total - online)} 台`"
             >
               <i class="kk-band__seg" :style="{ flex: String(online) }" />
               <i
                 class="kk-band__seg kk-band__seg--offline"
-                :style="{ flex: String(Math.max(0, rows.length - online)) }"
+                :style="{ flex: String(Math.max(0, total - online)) }"
               />
             </span>
             <span class="kk-band__readout"
-              ><b>{{ nOr(read, rows.length) }}</b
+              ><b>{{ nOr(read, total) }}</b
               >台主机</span
             >
+            <el-tooltip
+              v-if="isFiltered"
+              content="筛选条件生效中：以上读数只统计筛后的子集，「导出清单」与之一致"
+              placement="bottom"
+            >
+              <el-tag size="small" type="info">已筛选</el-tag>
+            </el-tooltip>
             <span class="kk-band__readout"
               ><b>{{ nOr(read, online) }}</b
               >在线</span
@@ -358,14 +463,6 @@ onMounted(async () => {
             </el-tooltip>
           </div>
           <div class="kk-actions">
-            <el-input
-              v-model="keyword"
-              placeholder="按主机名 / 镜像过滤"
-              clearable
-              style="width: 200px"
-            />
-            <el-checkbox v-model="onlyOnline">仅在线</el-checkbox>
-            <el-checkbox v-model="onlyAlert">仅告警</el-checkbox>
             <el-select
               v-model="interval"
               style="width: 120px"
@@ -382,20 +479,72 @@ onMounted(async () => {
             </el-button>
           </div>
         </div>
+        <!-- 筛选条：条件全部下推服务端（QR-S36），列表与「导出清单」读同一份参数。
+             类型 / 协议 来自 v4 元信息，只有服务端能筛——
+             关键字同时匹配主机名、镜像、系统与分组。 -->
+        <div class="kk-actions kk-mt">
+          <el-input
+            v-model="keyword"
+            placeholder="主机名 / 镜像 / 系统 / 分组"
+            clearable
+            style="width: 210px"
+          />
+          <el-select
+            v-model="hostType"
+            placeholder="类型"
+            clearable
+            style="width: 110px"
+          >
+            <el-option label="物理机" value="metal" />
+            <el-option label="虚拟机" value="vm" />
+            <el-option label="容器" value="container" />
+          </el-select>
+          <el-tooltip
+            content="按上报协议筛：筛 v3 是关兼容窗口（KK_DROP_PROTO_V3）前的例行检查"
+            placement="bottom"
+          >
+            <el-select
+              v-model="protoVer"
+              placeholder="协议"
+              clearable
+              style="width: 104px"
+            >
+              <el-option label="v4" value="4" />
+              <el-option label="v3" value="3" />
+            </el-select>
+          </el-tooltip>
+          <el-checkbox v-model="onlyOnline">仅在线</el-checkbox>
+          <el-checkbox v-model="onlyAlert">仅告警</el-checkbox>
+          <el-button
+            v-if="isFiltered"
+            link
+            type="primary"
+            @click="clearFilters"
+          >
+            清空筛选
+          </el-button>
+        </div>
       </template>
 
       <el-table
         v-loading="loading"
         :data="paged"
         :row-class-name="rowClass"
+        :default-sort="{ prop: 'last_seen', order: 'descending' }"
         row-key="pod"
         size="small"
         class="kk-fill-table"
         @selection-change="onSelectionChange"
         @row-click="onRowClick"
+        @sort-change="onSortChange"
       >
         <el-table-column type="selection" width="46" reserve-selection />
-        <el-table-column label="主机" min-width="200">
+        <el-table-column
+          label="主机"
+          prop="pod"
+          sortable="custom"
+          min-width="180"
+        >
           <template #default="{ row }">
             <el-link
               type="primary"
@@ -414,7 +563,24 @@ onMounted(async () => {
             }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="CPU" width="132">
+        <!-- v4 元信息两列：类型带分组、系统带地址。
+             容器列没上——内置 Agent 不发 docker 摘要，恒为 0 的一列只会教运维
+             「这一列没数据就是没问题」（QR-S38）。 -->
+        <el-table-column label="类型" width="108">
+          <template #default="{ row }">
+            <span>{{ HOST_TYPE_LABEL[row.host_type] || "-" }}</span>
+            <div v-if="row.group_name" class="kk-sub">
+              {{ row.group_name }}
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="系统 / 地址" min-width="132">
+          <template #default="{ row }">
+            <div>{{ row.os_name || "-" }}</div>
+            <div class="kk-sub kk-num">{{ row.ip || "-" }}</div>
+          </template>
+        </el-table-column>
+        <el-table-column label="CPU" prop="cpu" sortable="custom" width="132">
           <template #default="{ row }">
             <span class="kk-meter">
               <span class="kk-meter__bar">
@@ -424,12 +590,23 @@ onMounted(async () => {
             </span>
           </template>
         </el-table-column>
-        <el-table-column label="内存" width="110" align="right">
+        <el-table-column
+          label="内存"
+          prop="mem_mb"
+          sortable="custom"
+          width="110"
+          align="right"
+        >
           <template #default="{ row }">
             <span class="kk-num">{{ mbText(row.mem_mb) }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="磁盘" width="132">
+        <el-table-column
+          label="磁盘"
+          prop="disk_pct"
+          sortable="custom"
+          width="132"
+        >
           <template #default="{ row }">
             <!-- 告警态由条本身变红承担，不再套一层 tag：一列只有一种强调方式 -->
             <span
@@ -443,15 +620,23 @@ onMounted(async () => {
             </span>
           </template>
         </el-table-column>
-        <el-table-column label="Agent" width="120">
+        <el-table-column label="Agent" width="150">
           <template #default="{ row }">
             <!-- 落后于待分发版本时用「待升级」同色——一眼看出哪些要升（D2.4） -->
             <span class="kk-num" :class="{ 'kk-warn': row.agent_outdated }">
               {{ row.agent_ver || "-" }}
             </span>
+            <!-- 只标 v3：兼容窗口是要关掉的，剩下的旧协议主机就是拦路的那几台 -->
+            <el-tooltip
+              v-if="row.proto_ver === 3"
+              content="这台仍以 v3 上报：设 KK_DROP_PROTO_V3 关掉兼容窗口前，先把它升上来"
+              placement="bottom"
+            >
+              <el-tag class="kk-ml" size="small" type="warning">v3</el-tag>
+            </el-tooltip>
           </template>
         </el-table-column>
-        <el-table-column width="158">
+        <el-table-column prop="last_seen" sortable="custom" width="158">
           <template #header>
             <el-tooltip
               content="心跳新鲜度分级：满格 ≤30s，两格 ≤2 分钟，一格 ≤10 分钟，空格更久"
@@ -486,21 +671,15 @@ onMounted(async () => {
           </template>
         </el-table-column>
         <template #empty>
-          <el-empty
-            :description="
-              filtered.length
-                ? '本页没有行，换一页看看'
-                : '还没有主机上报，确认 Agent 与 Broker 已连通'
-            "
-          />
+          <el-empty :description="emptyText" />
         </template>
       </el-table>
 
-      <div v-if="filtered.length > pageSize" class="kk-pager">
+      <div v-if="total > pageSize" class="kk-pager">
         <el-pagination
           v-model:current-page="pageNo"
           v-model:page-size="pageSize"
-          :total="filtered.length"
+          :total="total"
           :page-sizes="[100, 200, 500]"
           layout="total, sizes, prev, pager, next, jumper"
           background
@@ -533,13 +712,9 @@ onMounted(async () => {
         >
           批量升级
         </el-button>
-        <el-button
-          :disabled="!selection.length"
-          :loading="exporting"
-          @click="onExport"
-        >
-          导出选中清单
-        </el-button>
+        <!-- 原来这里还有一个「导出选中清单」：它调的是全量导出，跟勾选无关。
+             按勾选导出需要服务端的 pods 契约（500 台放不进 query），登记在 QR-S38；
+             名义不符的入口先摘掉，导出走页头的「导出清单」。 -->
       </div>
     </el-card>
 
