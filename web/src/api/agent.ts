@@ -1,6 +1,8 @@
-/** Agent 自升级：当前版本、落后台数、批量升级、升级台账。
+/** Agent 自升级：当前版本、落后台数、批量升级、升级台账、待分发版本的上传与回滚。
 
 对应后端 `server/src/kk_server/controllers/agent_update.py`：
+- POST /api/system/agent           管理员上传新版本二进制（multipart: file + version）
+- POST /api/system/agent/rollback  待分发二进制回滚到上一版（当前 ↔ 上一版互换）
 - GET  /api/system/agent/current   管理员视图：当前版本 + 落后台数
 - POST /api/system/agent/upgrade   管理员动作：选机升级（500 台不留 N+1）
 - GET  /api/system/updates         升级台账 + 状态汇总（500 台的升级结果能逐台核验）
@@ -62,6 +64,35 @@ export type UpdatesResult = {
   /** 各状态计数（不区分主机）；前端按数字大小排序展示 */
   summary: Record<string, number>;
   limit: number;
+};
+
+/** 上传/回滚接口的回执：与后端 agent_update.py 的返回体一致（清单字段原样回显）。 */
+export type AgentVersionInfo = {
+  ok: boolean;
+  version: string;
+  sha256: string;
+  size: number;
+  uploaded_at: number;
+  /** 配了 HMAC 密钥时清单带 sig；未配则缺省 */
+  sig?: string;
+};
+
+/** 上传新版本二进制（multipart: file + version）。
+ *  版本号首字符必须是数字——后端只校验 `version[0].isdigit()`，前端 rules 逐字镜像这条契约，
+ *  不另发明更严或更松的规则（`v1.2.3` 这类前缀后端会 400）。 */
+export const uploadAgent = (file: File, version: string) => {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("version", version);
+  return http.request<AgentVersionInfo>("post", "/api/system/agent", {
+    data: form
+  });
+};
+
+/** 待分发版本回滚到上一版（当前 ↔ 上一版**互换**，再调一次即撤销）。
+ *  语义边界：只影响新上线/重启的 Agent，已在跑的不会因此降级（只升不降）。 */
+export const rollbackAgent = () => {
+  return http.request<AgentVersionInfo>("post", "/api/system/agent/rollback");
 };
 
 export const getAgentCurrent = () => {
