@@ -81,7 +81,9 @@
  * flex-direction 必须显式声明：本元素同时挂 .kk-side 与 .kk-page__body（后者是
  * column），两条规则特异度相同（0,1,0），方向由本文件的**源序**裁决——.kk-side
  * 必须在 .kk-page__body 之后（minify 后仍在其后，已核 dist 产物），挪动顺序就会
- * 把 P0-1 请回来：.kk-side 不写方向时计算值恒为 column，双栏自落地从未横向排列过。 */
+ * 把 P0-1 请回来：.kk-side 不写方向时计算值恒为 column，双栏自落地从未横向排列过。
+ * (Task 7 摘掉 .kk-page__body 后可删) —— 该元素同时挂两个类才有这场源序裁决，
+ * Task 7 把列表页迁到 .kk-main、从此处摘掉 .kk-page__body 后，本注释与对序的依赖一起消失。 */
 .kk-side {
   display: flex;
   flex-direction: row;
@@ -101,6 +103,12 @@
  * 所以 el-card 的 overflow:hidden 与 block body 从来不是它们的问题——本仓 10-15
  * 实测的 P0-2/P1-1/P2-1 三条同源缺陷在这套结构里不存在。表格填高交给 @pureadmin/table
  * 的 adaptive（视口绝对测量），不要再挂 .kk-fill-table。
+ *
+ * 适用面（Task 6–10 照此挂根）：.kk-main 是**列表页根**，与 .kk-page / .kk-page__body
+ * **互斥**——二选一，绝不同挂一个元素。列表页不要把 .kk-page 那套
+ * calc(100vh - var(--kk-page-h)) 固定高套在由 adaptive 按视口测量的表格外面：固定高 +
+ * 视口测量是两套尺子，套上去 adaptive 的 offsetBottom 反推就失真（审计页 1920 实测
+ * table 恒 743 / pager.bottom 恒 996 / 页不滚，前提是只挂 .kk-main、不挂 .kk-page）。
  */
 .kk-main {
   display: flex;
@@ -116,12 +124,20 @@
 }
 
 /* 选中横幅：取代 .kk-sticky-bar（sticky 的 scrollport 是 el-card，而它自己不滚，
-   10-15 §3.2 实验 2 已证明放开 overflow 才能吸住、而 overflow 承担圆角裁剪） */
+   10-15 §3.2 实验 2 已证明放开 overflow 才能吸住、而 overflow 承担圆角裁剪）。
+   与 .kk-batch 的边距配对（切页时别让两条 margin 打平/叠加）：
+   - 本条 .kk-select-banner：自带 margin-bottom:8px、顶部无外边距，靠上一条自身的
+     margin-bottom 与之相接（搜索条 .kk-search-form 已给 el-form-item 12px）。
+   - 文件下方 .kk-batch：表底批量条，自带 margin-top:12px、无 margin-bottom。
+   - monitor/index.vue:693、update/index.vue:373 现同挂 "kk-batch kk-sticky-bar"，迁到
+     本横幅时须**摘掉 .kk-batch**：两条同挂会把 12px(顶)+8px(底) 叠在一个元素上、间距翻倍。
+   height 用 min-height 不用 height：≤1200px 右栏变窄、选中 chip 换行时固定 46px 会裁标签；
+   单行渲染高度仍是 46px，换 min-height 安全（1100×800 多 chip 实测不裁剪、单行仍 46px）。 */
 .kk-select-banner {
   display: flex;
   gap: 12px;
   align-items: center;
-  height: 46px;
+  min-height: 46px;
   padding-left: 16px;
   margin-bottom: 8px;
   background: var(--el-fill-color-light);
@@ -133,7 +149,11 @@
    裸 `.reset-margin`（0,1,0）在这条链上是**安慰剂**：EP 的
    `.el-button + .el-button { margin-left: 12px }`（0,2,0）恒压过它——1920 实测
    「加类前 12px / 加类后 12px」。故补 `.el-button + .el-button.reset-margin`（0,3,0），
-   赢在特异度而非源序，不依赖 vite dev/build 的 CSS 注入顺序。 */
+   赢在特异度而非源序，不依赖 vite dev/build 的 CSS 注入顺序。
+   生效边界（两种形态下本类**静默无效**，别当兜底乱挂）：① 仅当按钮**紧跟另一个 .el-button**
+   时 EP 才落下那 12px，本类才有 margin 可清——单个孤立按钮挂它无效果；② **不得用在 el-space
+   里**：el-space 给子项写的是 inline style margin，任何非 `!important` 选择器都压不过内联，
+   挂上也白挂。这两种形状要用间距就改 el-space 的 :size，不要指望本类。 */
 .reset-margin,
 .el-button + .el-button.reset-margin {
   margin-left: 0;
