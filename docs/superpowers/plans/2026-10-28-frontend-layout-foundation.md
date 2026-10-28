@@ -21,6 +21,8 @@
 - **轮询一律走 `usePolls()`**（`src/utils/kkPoll.ts`），禁止裸 `setInterval`；交互计时器（长按）不套。
 - **功能不变量**（P1 只改布局，数据流一行不许动）：`useSeq()` 防迟到回包盖新值、`pollFailed` 页头读数不刷 toast、QR-W16「没读到 ≠ 空」的 `read` 位、批量勾选（FE-7）、`upgradeSkipText`、QR-S36 筛选/排序下推、导出带当前筛选范围、`el-select`/`el-checkbox` 不挂重复 `@change`（FE-8）。任一退化即本计划不通过。
 - **几何口径只用真实浏览器**：内置浏览器是隐藏页，截图与 `getBoundingClientRect` 不可信。驱动 `@playwright/cli`（本机全局装的是 `playwright-cli@0.1.13`），1920×1080 与 1366×768 两档，500 台种子数据。
+- **element-plus 2.14 的插槽类型坑（Task 3 实测，Tasks 6–10 必撞）**：2.14 把 `#default` 作用域插槽的 `row` 收窄成 `DefaultRow`，与本页真实类型（`HostSummary` / `CommandRow`）不再自动相容。**正确做法是在数据边界收窄**（`row as HostSummary`，且该类型必须已在文件里 import 过），**不要**给插槽写类型标注 `#default="{ row }: { row: HostSummary }`——Task 3 试过，错误从 7 条涨到 12 条，已回退。`as any` / `@ts-ignore` / `@ts-expect-error` / `eslint-disable` 全部禁止。另：vue 3.5.44 收紧了 props 推断，组件 `props` 里需要 `type: [...] as PropType<X>`（上游 `iconifyIconOffline.ts` 就是这么改的）。
+- **`el-pagination` 的 `small` 已弃用**（3.0 前移除），会在浏览器控制台打警告：现存三处 `audit/index.vue:196`、`command/components/CommandHistory.vue:446`、`host/monitor/index.vue:689`，正是 Task 6/7/9 各自要重写的文件——**迁移时顺手换成 `size`**，别让它留到 Task 11 被判成新增回归。
 - **测量环境事实（Task 2 实测校正，后续任务的命令里若与此不符以此处为准）**：dev server 实际端口 **8849**（8848 被本机另一个 vite 占用，别去动它）；后端 8443；playwright 会话名 `-s=layout`，认证态存 `%TEMP%\kk-layout-state.json`，**重开会话会掉回 1280×720，必须重新 `resize`**；种子库里主机名是 `vscode-0000` 这种格式，**没有 `Web-01`**——详情类路由一律用 `#/hosts/detail/vscode-0000`；探针 `scripts/fe_layout_probe.js` 的内容区滚动容器判据是「包着 `.main-content` 的那个 `.el-scrollbar__wrap`」（裸 `.el-scrollbar__wrap` 会命中侧边栏，把整页滚读成菜单滚）。
 - **门禁三件套每任务收尾必跑**：`pnpm typecheck`、`pnpm lint:eslint`（`--max-warnings 0`，零豁免）、`pnpm build`。
 - **提交**：中文信息 + `feat/fix/perf/refactor/chore/docs` 前缀 + 按模块分批；编号沿用 `FE-x`（10-07 方案）、`QR-x`（质量账本），本计划新增 `L1-x`（布局一期）。
@@ -833,6 +835,10 @@ elementFromPoint(960,1500)=null——分页器与表格下半从未能点到。
 - [ ] **Step 2: 迁移**
 
 按 Task 6 范式改主表；`kk-fill-table` 两处全部去掉；`.kk-sticky-bar` 改 `.kk-select-banner`。上传/回滚/推送按钮进 `PureTableBar` 的 `#buttons`；「跳过原因」继续用 `upgradeSkipText`（不许在前端重抄枚举——QR-W11 判例：抄一份枚举就让 HEAD 红了一轮）。
+
+- [ ] **Step 2b: 首次真实调用 addDialog 的验证责任**
+
+**这是 `addDialog` 在本仓的第一次真实调用**（Task 3 查明此前零消费者，`beforeSure`/焦点归还从未被浏览器验证过，且 v7 移植净增的 12 个 `DialogProps` 只是类型可见、从未渲染）。本任务的弹窗必须**至少实际用到其中一个新增 prop** 并在几何复测时确认渲染行为与类型声明一致——不要把类型面当成已验证。同时这也是 `el-dialog` 在 element-plus 2.14 下的首次真开真关：确认能开能关、`beforeSure` 校验生效、关闭后焦点归还表格，并把这几项写进报告，补上 Task 3 留下的验证缺口。
 
 - [ ] **Step 3: 门禁 + R7 + 功能**
 
