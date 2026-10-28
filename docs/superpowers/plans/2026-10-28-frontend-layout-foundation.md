@@ -21,6 +21,7 @@
 - **轮询一律走 `usePolls()`**（`src/utils/kkPoll.ts`），禁止裸 `setInterval`；交互计时器（长按）不套。
 - **功能不变量**（P1 只改布局，数据流一行不许动）：`useSeq()` 防迟到回包盖新值、`pollFailed` 页头读数不刷 toast、QR-W16「没读到 ≠ 空」的 `read` 位、批量勾选（FE-7）、`upgradeSkipText`、QR-S36 筛选/排序下推、导出带当前筛选范围、`el-select`/`el-checkbox` 不挂重复 `@change`（FE-8）。任一退化即本计划不通过。
 - **几何口径只用真实浏览器**：内置浏览器是隐藏页，截图与 `getBoundingClientRect` 不可信。驱动 `@playwright/cli`（本机全局装的是 `playwright-cli@0.1.13`），1920×1080 与 1366×768 两档，500 台种子数据。
+- **测量环境事实（Task 2 实测校正，后续任务的命令里若与此不符以此处为准）**：dev server 实际端口 **8849**（8848 被本机另一个 vite 占用，别去动它）；后端 8443；playwright 会话名 `-s=layout`，认证态存 `%TEMP%\kk-layout-state.json`，**重开会话会掉回 1280×720，必须重新 `resize`**；种子库里主机名是 `vscode-0000` 这种格式，**没有 `Web-01`**——详情类路由一律用 `#/hosts/detail/vscode-0000`；探针 `scripts/fe_layout_probe.js` 的内容区滚动容器判据是「包着 `.main-content` 的那个 `.el-scrollbar__wrap`」（裸 `.el-scrollbar__wrap` 会命中侧边栏，把整页滚读成菜单滚）。
 - **门禁三件套每任务收尾必跑**：`pnpm typecheck`、`pnpm lint:eslint`（`--max-warnings 0`，零豁免）、`pnpm build`。
 - **提交**：中文信息 + `feat/fix/perf/refactor/chore/docs` 前缀 + 按模块分批；编号沿用 `FE-x`（10-07 方案）、`QR-x`（质量账本），本计划新增 `L1-x`（布局一期）。
 - **工作目录**：前端命令一律在 `E:\GitHub\KontainKeeper\web`，git 命令在仓库根。
@@ -109,9 +110,15 @@ git status --porcelain   # 预期：空
 (() => {
   const q = s => document.querySelector(s);
   const rect = el => (el ? el.getBoundingClientRect() : null);
-  // 滚动容器：底座是 el-scrollbar 的 wrap，不是 window
-  const wrap = q(".el-scrollbar__wrap");
-  const view = q(".el-scrollbar__view");
+  // 滚动容器：底座是**内容区** el-scrollbar 的 wrap，不是 window。
+  // 裸 `.el-scrollbar__wrap` 会命中侧边栏（DOM 序第一，scrollHeight 恒为菜单高），
+  // 把「整页滚不滚」读成侧边栏读数；表格体、设置面板也各有 wrap。
+  // 内容区 wrap 的唯一特征：它包着路由页面根 .main-content。
+  const wrap =
+    [...document.querySelectorAll(".el-scrollbar__wrap")].find(w =>
+      w.querySelector(".main-content")
+    ) || null;
+  const view = wrap ? wrap.querySelector(":scope > .el-scrollbar__view") : null;
   const card = q(".el-card");
   const table = q(".el-table");
   const pager = q(".el-pagination");
@@ -153,6 +160,10 @@ git status --porcelain   # 预期：空
 })();
 ```
 
+- [ ] **Step 1b: 探针必须能响亮失败**
+
+会话过期或被重定向到登录页时，`wrap` 会是 `null`。此时探针**不许**返回一栈 `null` 字段配上 `path:"#/login"` 以外的默认值——`reachableAt` 在登录页仍是 `[true,true,true]`，后续任务用 `!pageScrolls` 这类真值判断就会把「根本没在目标路由」读成绿灯。要求：`wrap` 为 null 时早退，返回 `{"error":"no content wrap — session dead or layout changed","path":…}`。这**不动那 11 个字段的定义**，只加一条失败路径，因此不违反「勿改口径」。
+
 - [ ] **Step 2: 收编种子脚本**（`data/` 被 gitignore，500 台数据必须能从版本库重建，否则 R 系列口径下个会话无法复现）
 
 ```bash
@@ -187,12 +198,16 @@ playwright-cli -s=layout snapshot   # 取 ref 后 fill 用户名 admin / 口令 
 
 依次 `goto` 六个页面并 eval：
 ```bash
-for h in "#/hosts/monitor" "#/hosts/update" "#/audit/index" "#/command/shell" "#/command/collect" "#/hosts/detail/Web-01"; do
-  playwright-cli -s=layout goto "http://127.0.0.1:8848/$h" >/dev/null
+for h in "#/hosts/monitor" "#/hosts/update" "#/audit/index" "#/command/shell" "#/command/collect" "#/hosts/detail/vscode-0000"; do
+  playwright-cli -s=layout goto "http://127.0.0.1:8849/$h" >/dev/null
   printf '%s ' "$h"; playwright-cli -s=layout eval "$(cat scripts/fe_layout_probe.js)"
 done
 ```
-预期红灯基线（与 10-15 文档一致）：`pageScrolls:true`、`canScroll` 在命令中心为 `false`、`reachableAt` 第三位 `false`、`sideCols` 两项 `left` 相同、`stickyTop` 远大于 1080。把这批 JSON 原样贴进提交信息正文——**没有红基线就没有「修好了」的证据**（verification-before-completion）。
+预期红灯基线（Task 2 实测校正后的判据）：`pageScrolls:true`；命令中心 `canScroll:false` 且 `pagerRect.bottom` 远超 `scrollHeights.client`；`sideCols` 两项 `left` 相同（实测 210/1710）；`stickyTop` 远大于视口（实测 5447）；`cardOverflow:"hidden"` 各处可见。
+
+**`reachableAt` 不是 R2 的判据**——三个采样点 (960, 700/900/1050) 在 1920×1080 下恒在视口内，坏页面也读 `[true,true,true]`；而 10-15 文档 R2 原文的 `elementFromPoint(960,1500)` 在 1080 高的视口里**物理上不可能非 null**（超出视口的坐标一律返回 null），那条绿标准永远无法达成。R2 的实际红判据是 `canScroll:false` + `pagerRect.bottom` 落在 `scrollHeights.client` 之外，两者已在同一份 JSON 里。**不许为了让 `reachableAt` 有意义而改它的采样点**——改语义会让 Tasks 6–11 的复测失去可比性；改成从表格底边推导坐标等于换了一道尺子。
+
+把这批 JSON 原样贴进提交信息正文——**没有红基线就没有「修好了」的证据**（verification-before-completion）。
 
 - [ ] **Step 5: 提交**
 
