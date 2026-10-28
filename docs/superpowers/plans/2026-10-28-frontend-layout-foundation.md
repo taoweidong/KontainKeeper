@@ -98,11 +98,11 @@ git status --porcelain   # 预期：空
 
 **Interfaces:**
 - Produces: `playwright-cli eval "$(cat scripts/fe_layout_probe.js)"` → 单行 JSON（字段见 Step 1），Task 6–11 全部用它判绿；`python scripts/seed_layout_data.py` → 500 台主机 + 185 命令 + 300 审计 + 40 台账的分析库
-- Consumes: 运行中的 dev server（默认 `http://127.0.0.1:8848`）与已登录会话
+- Consumes: 运行中的 dev server（默认 `http://127.0.0.1:8849`）与已登录会话
 
 - [ ] **Step 1: 写探针**
 
-`scripts/fe_layout_probe.js`（整文件，勿改口径——这五个字段就是 R1–R9 的测量定义）：
+`scripts/fe_layout_probe.js`（整文件，勿改口径——这 11 个顶层字段就是 R1–R9 的测量定义，Tasks 6–11 全部按字段名断言）。**下面这段是已提交版本的形态**：内容区滚动容器的判据在 Step 1b 里补了「会话死掉就返回 `error`」的早退分支，抄这段时必须一起带上，否则静默绿灯的 bug 会被重新引入。测量端用它自己的消费规则：**先判 `.error`，再用 `===` 严格比较取值——`!pageScrolls` 这类真值判断一律禁止**（`undefined` 和 `null` 同样为假，早期版本正是靠这个漏洞把登录页读成绿灯的）。
 
 ```js
 // 布局几何探针：对当前页跑一遍 R1–R9 口径，返回单行 JSON。
@@ -188,7 +188,7 @@ KK_DB_PATH=service/kk-analysis.db .venv/Scripts/python.exe -m kk_server
 # 终端 B：前端
 cd web && pnpm dev
 # 浏览器会话由 playwright-cli 持有，人工登录一次即可（session 名 layout）
-playwright-cli -s=layout open http://127.0.0.1:8848
+playwright-cli -s=layout open http://127.0.0.1:8849
 playwright-cli -s=layout resize 1920 1080
 playwright-cli -s=layout snapshot   # 取 ref 后 fill 用户名 admin / 口令 admin123 并点击登录
 ```
@@ -734,7 +734,7 @@ cd web && pnpm typecheck && pnpm lint:eslint && pnpm build
 - [ ] **Step 5: 几何复测（此页应转绿）**
 
 ```bash
-playwright-cli -s=layout goto http://127.0.0.1:8848/#/audit/index
+playwright-cli -s=layout goto http://127.0.0.1:8849/#/audit/index
 playwright-cli -s=layout eval "$(cat scripts/fe_layout_probe.js)"
 ```
 预期：`pageScrolls:false`、`pagerRect.bottom <= 1080`、`reachableAt` 全 `true`、`tableRect.height` 在 600~900 之间。然后 **1366×768 复测**（`resize 1366 768`）：分页器仍须在视口内——这是 `offsetBottom: 108` 的取值依据，若被裁就调大该值并在提交信息里写下实测数值与调整原因（不许照抄开源的 108）。
@@ -796,7 +796,7 @@ git commit -m "refactor(web): 审计页改开源列表页范式，表格填高�
 
 ```bash
 cd web && pnpm typecheck && pnpm lint:eslint && pnpm build
-playwright-cli -s=layout goto http://127.0.0.1:8848/#/command/shell
+playwright-cli -s=layout goto http://127.0.0.1:8849/#/command/shell
 playwright-cli -s=layout eval "$(cat scripts/fe_layout_probe.js)"
 ```
 预期：`sideCols` 两项 **left 不同**、宽比≈34%:66%（R1）；`pagerRect` 在视口内、`reachableAt` 全 `true`（R2）；`canScroll:false` 且 `pageScrolls:false`——滚动交给表内（R3）。
@@ -838,7 +838,7 @@ elementFromPoint(960,1500)=null——分页器与表格下半从未能点到。
 
 ```bash
 cd web && pnpm typecheck && pnpm lint:eslint && pnpm build && cd ..
-playwright-cli -s=layout goto http://127.0.0.1:8848/#/hosts/update
+playwright-cli -s=layout goto http://127.0.0.1:8849/#/hosts/update
 playwright-cli -s=layout eval "$(cat scripts/fe_layout_probe.js)"
 ```
 预期 `pageScrolls:false`（R7）。功能必测：上传新版本、跳过原因可见、回滚二次确认、推送后轮询状态推进、±20% 抖动轮询的 `pollFailed` 页头读数。
@@ -890,7 +890,7 @@ div.kk-main
 
 ```bash
 cd web && pnpm typecheck && pnpm lint:eslint && pnpm build && cd ..
-playwright-cli -s=layout goto http://127.0.0.1:8848/#/hosts/monitor
+playwright-cli -s=layout goto http://127.0.0.1:8849/#/hosts/monitor
 playwright-cli -s=layout eval "$(cat scripts/fe_layout_probe.js)"
 ```
 预期：`pageScrolls:false`（R4）、`bandTop≈0`（R5）、`stickyTop:null` 且横幅在视口内（R6）。
@@ -944,7 +944,7 @@ cd web && grep -rn "kk-fill-table\|kk-sticky-bar" src/
 ```bash
 cd web && pnpm typecheck && pnpm lint:eslint && pnpm build
 playwright-cli -s=layout resize 1366 768
-playwright-cli -s=layout goto http://127.0.0.1:8848/#/hosts/detail/Web-01
+playwright-cli -s=layout goto http://127.0.0.1:8849/#/hosts/detail/vscode-0000
 playwright-cli -s=layout eval "$(cat scripts/fe_layout_probe.js)"
 ```
 预期 R8：detail 在 768 高视口下五表无截断、无横向滚动。
@@ -975,8 +975,8 @@ git commit -m "refactor(web): 首页/详情/统计页收进统一锚点，退役
 ```bash
 for res in "1920 1080" "1366 768"; do
   set -- $res; playwright-cli -s=layout resize $1 $2
-  for h in "#/hosts/monitor" "#/hosts/update" "#/audit/index" "#/command/shell" "#/command/collect" "#/welcome" "#/hosts/detail/Web-01"; do
-    playwright-cli -s=layout goto "http://127.0.0.1:8848/$h" >/dev/null
+  for h in "#/hosts/monitor" "#/hosts/update" "#/audit/index" "#/command/shell" "#/command/collect" "#/welcome" "#/hosts/detail/vscode-0000"; do
+    playwright-cli -s=layout goto "http://127.0.0.1:8849/$h" >/dev/null
     printf '%s %sx%s ' "$h" "$1" "$2"
     playwright-cli -s=layout eval "$(cat scripts/fe_layout_probe.js)"
   done
