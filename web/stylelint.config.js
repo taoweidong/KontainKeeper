@@ -80,7 +80,11 @@ export default {
         },
         "rules"
       ],
-      { severity: "warning" }
+      // disableFix: 保留告警，但禁止 --fix 自动搬动节点。本仓的 order 表把泛型
+      // "at-rules" 排在 "rules" 之前，一旦允许自动修，stylelint --fix 会把覆盖基础规则的
+      // @media 块（如 CommandWorkbench.vue 的窄屏折叠）整体上提到基础规则之前——两条特异度
+      // 相同、源序一反，覆盖就静默失效。这正是本程序要终结的「安慰剂 CSS」，只不过凶手是 linter。
+      { severity: "warning", disableFix: true }
     ]
   },
   ignoreFiles: ["**/*.js", "**/*.ts", "**/*.jsx", "**/*.tsx", "report.html"]
