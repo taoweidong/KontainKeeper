@@ -26,7 +26,8 @@
 - **每一列都必须有唯一、非空的 `label`（Task 4 实测，Tasks 6–10 硬约束）**：`PureTableBar` 的列显隐/固定/拖拽**全部按 `label` 匹配**，而 `getKeyList` 的行为是实测出来的、不是猜的——它**不去重**，并且**静默丢弃没有 `label` 键的列**。后果两条：① 两列同名（例如两个「操作」）时，弹层里出现两行无法区分的条目、共用同一个开关值，且三处 `.find`/`filter[0]` 匹配器只命中**第一列**，第二列永远隐不掉也固定不了；② 没有 `label` 的列（最典型就是裸 `{ type: "selection" }`）会让 `checkColumnList.length < dynamicColumns.length`，而 `rowDrop.onEnd` 是**按下标位置**去对 `dynamicColumns` 的，拖拽排序会移动错列。这两条 typecheck/eslint/build **全都测不出来**，只在运行时出现。
   所以：写 `columns` 时每列给一个页内唯一的 `label`；**勾选列必须显式写 `label`**（开源的做法是 `{ label: "勾选列", type: "selection", fixed: "left", reserveSelection: true }`，照它写），不要留裸 `{ type: "selection" }`。
 - **本仓对上游的一处有意偏离**：`bar.tsx` 里 `fixed: true` 归到**左**固定（与 element-plus 一致；上游 `main` 把它当右固定是 bug，依据见 `element-plus/es/components/table/src/store/watcher.mjs` 的 `updateColumns` 与 `@pureadmin/table` 的 `TableColumnFixed` 注释）。**将来任何人重新对齐上游 bar.tsx 时必须保留这条偏离**，改代码前先读 `bar.tsx:237-241` 的注释。
-- **`pnpm lint:stylelint` 在本仓是 repo 级 `--fix`，且会静默改坏 CSS——Tasks 6–10 禁止裸跑。** `web/stylelint.config.js:67` 的 `order/order` 把泛型 `"at-rules"` 排在 `"rules"` **之前**，于是 `--fix` 会把 `@media (max-width:1200px){…}` 整块**提到它要覆盖的基础规则上面**——同特异性下后来者胜，媒体查询从此失效。Task 5 实测抓到它把 `CommandWorkbench.vue` 的窄屏折叠改没了（已回退）。要求：**只用 `npx stylelint <自己改过的文件>` 限定范围跑，且必须逐行看它对别人文件做了什么**；绝不允许把 stylelint 顺带重排出的无关 diff 提交进去。这条属仓级既有缺陷（任何人跑 `pnpm lint` 都会中招），本程序内先按规避处理，是否修配置留给收口时向用户提出。
+- **`pnpm lint:stylelint` 在本仓是 repo 级 `--fix`，且会静默改坏 CSS。** `web/stylelint.config.js:67` 的 `order/order` 把泛型 `"at-rules"` 排在 `"rules"` **之前**，于是 `--fix` 会把 `@media (max-width:1200px){…}` 整块**提到它要覆盖的基础规则上面**——同特异性下后来者胜，媒体查询从此失效。Task 5 实测抓到它把 `CommandWorkbench.vue` 的窄屏折叠改没（已回退），评审又在副本上端到端复现。**触发条件危险**：`.vue` 的 style 块「首节点是注释 + 后面有 `@media` 跟随规则」才告警，plain `.scss` 不告警，删掉头注释告警也会消失——所以「我的文件没告警」不是安全信号。
+  **Task 5 评审后的处置（已裁决）**：① `order/order` 加 `disableFix: true`（保留告警、禁止自动重排）；② `lint:stylelint` 拆成不 `--fix` 的默认档 + 显式 `lint:stylelint:fix`；③ Tasks 6–10 的 stylelint 证据固定为 **`pnpm exec stylelint --no-cache <自己改过的文件>` 零告警 ＋ `git status --short` 除本任务申报文件外干净**，看到 `@media` 被搬位置立即回退。此外 `--cache` 会在热跑时把 8 个 scss 的 1680 条 prettier/CRLF 噪声全藏起来，`lint:stylelint` EXIT 0 近乎无意义，别拿它当证据。
 - **几何测量前必须让页面 settle ~2s**（Task 5 实测）：`goto` 之后立刻 eval 会读到过渡中的坐标（整页偏 −30px，`left:180` 而非 210）。读完先核对 `sideCols`/`bandTop` 是否落在稳定值上，再判定。
 - **测量环境事实（Task 2 实测校正，后续任务的命令里若与此不符以此处为准）**：dev server 实际端口 **8849**（8848 被本机另一个 vite 占用，别去动它）；后端 8443；playwright 会话名 `-s=layout`，认证态存 `%TEMP%\kk-layout-state.json`，**重开会话会掉回 1280×720，必须重新 `resize`**；种子库里主机名是 `vscode-0000` 这种格式，**没有 `Web-01`**——详情类路由一律用 `#/hosts/detail/vscode-0000`；探针 `scripts/fe_layout_probe.js` 的内容区滚动容器判据是「包着 `.main-content` 的那个 `.el-scrollbar__wrap`」（裸 `.el-scrollbar__wrap` 会命中侧边栏，把整页滚读成菜单滚）。
 - **门禁三件套每任务收尾必跑**：`pnpm typecheck`、`pnpm lint:eslint`（`--max-warnings 0`，零豁免）、`pnpm build`。
@@ -371,10 +372,14 @@ git commit -m "feat(web): 移植 v7 的 PureTableBar（列固定 + 剥 i18n）�
  * 实测的 P0-2/P1-1/P2-1 三条同源缺陷在这套结构里不存在。表格填高交给 @pureadmin/table
  * 的 adaptive（视口绝对测量），不要再挂 .kk-fill-table。
  */
+/* 页面根：只声明 flex 容器。
+   **不要加 `min-height: 100%`**——百分比 min-height 相对「由内容撑开」的包含块
+   （.el-scrollbar__view）按 CSS 2.1 §10.5 回落为 auto，即惰性；而
+   getComputedStyle().minHeight 会照样回显 "100%"，构成假证据。
+   要撑满请用能证明 used value 的手段：开/关这个类、读 offsetHeight。 */
 .kk-main {
   display: flex;
   flex-direction: column;
-  min-height: 100%;
 }
 
 /* 搜索条：与开源逐字同构（bg-bg_color 是它的卡片替身）。
@@ -396,11 +401,18 @@ git commit -m "feat(web): 移植 v7 的 PureTableBar（列固定 + 剥 i18n）�
   background: var(--el-fill-color-light);
 }
 
-/* 行内按钮组去左边距（Element Plus 相邻按钮默认 12px，列宽会撑爆） */
+/* 行内按钮组去左边距。element-plus 的 `.el-button+.el-button{margin-left:12px}`
+   是 (0,2,0)，裸 `.reset-margin{margin-left:0}` 只有 (0,1,0)、**必输**（实测 12px→12px，
+   是一条安慰剂规则）。故必须用复合选择器压到 (0,3,0)。
+   生效前提：只在「紧邻前一个 .el-button」时起作用，且**不能用在 el-space 内**
+   （行内 style 的 margin 胜过任何非 !important 选择器）。 */
+.el-button + .el-button.reset-margin,
 .reset-margin {
   margin-left: 0;
 }
 ```
+
+**这四条边界必须写在 CSS 注释里而不是报告里**（Tasks 6–10 读的是 `kk.scss`，不是 `task-5-report.md`）：① `.kk-main` 是**列表页根**，与 `.kk-page`/`.kk-page__body` **互斥**——别把 `calc(100vh - var(--kk-page-h))` 的定高套在 `adaptive` 测量的表格外；② `.kk-select-banner` 与 `.kk-batch` 会在 `monitor:693`/`update:373` 共挂，两者的 margin 搭配要明确（否则 `margin-top:12px` 与 `margin-bottom:8px` 未定义行为）；③ 上面 `.reset-margin` 的生效前提；④ `.kk-side` 那条层叠注释在 Task 7 摘掉 `kk-page__body` 之后就应删除，标上「Task 7 后可删」免得日后读起来像迷信。
 **不要**写 `.main-content { margin: 24px 24px 0 !important }` 这类每页覆盖（Task 6 原样板里有，已删）。理由：`.main-content` 是 `lay-content` 渲染的**页面组件的祖先**元素，子组件的 scoped 样式和 `:deep()` 都只作用于自身渲染的后代，够不到祖先——这行在全仓会**静默不生效**，正是要避免的安慰剂 CSS。开源那条能生效是因为它的写法与本仓不同，照搬前先验证。页底留白差异由 `adaptive` 的 `offsetBottom` 实测吸收（验收口径是「分页器在视口内」，不是「margin 等于 24px 0」）。
 
 - [ ] **Step 4: 门禁 + 单页目视**
