@@ -94,6 +94,10 @@ class FakeClient:
     def tls_insecure_set(self, flag):
         self.tls_calls.append({"insecure": flag})
 
+    def username_pw_set(self, username, password=None):
+        self.username = username
+        self.password = password
+
     def will_set(self, topic, payload, qos=0, retain=False):
         self.will = {"topic": topic, "payload": payload, "qos": qos, "retain": retain}
 
@@ -455,3 +459,82 @@ def test_hb_frame_always_carries_agent_ver(monkeypatch):
     tr.publish_status(True, "online")
     st = json.loads(fake.published[-1]["payload"])
     assert st["agent_ver"] == AGENT_VER, "status 与 hb 必须同源同值"
+
+
+# ---- 鉴权与 TLS 分支（QR29-A3：部署文档列的可选加固路径，此前零覆盖）----
+
+def test_mqtt_username_branch_sets_credentials(monkeypatch):
+    """KK_MQTT_USERNAME 配置了才启用鉴权：username_pw_set 被调且口令原样传递。"""
+    tr, fake = make_transport(monkeypatch,
+                              cfg={"mqtt_username": "kk-agent",
+                                   "mqtt_password": "s3cret"})
+    assert fake.username == "kk-agent"
+    assert fake.password == "s3cret"
+
+
+def test_mqtt_anonymous_branch_never_sets_credentials(monkeypatch):
+    """默认匿名部署零改动：不配用户名就不能碰 username_pw_set。"""
+    tr, fake = make_transport(monkeypatch)
+    assert not hasattr(fake, "username")
+
+
+def test_mqtts_without_ca_is_encrypt_only(monkeypatch):
+    """mqtts:// 未配 KK_TLS_CA：仅加密不校验对端（CERT_NONE + insecure），
+    并留 warning 提醒中间人风险。"""
+    import ssl
+    log = _RecLog()
+    tr, fake = make_transport(monkeypatch,
+                              cfg={"server": "mqtts://broker.test:8883"}, log=log)
+    assert {"cert_reqs": ssl.CERT_NONE} in fake.tls_calls
+    assert {"insecure": True} in fake.tls_calls
+    assert any("KK_TLS_CA" in w for w in log.warnings)
+
+
+def test_mqtts_with_ca_never_disables_verification(monkeypatch):
+    """配了 CA 就必须 CERT_REQUIRED，且 KK_TLS_INSECURE 被显式忽略并告警——
+    这是代码审查 P1-3 的回归锁：tls_insecure_set(True) 会连带把 verify_mode
+    置成 CERT_NONE，让 KK_TLS_CA 完全失效。"""
+    import ssl
+    log = _RecLog()
+    tr, fake = make_transport(
+        monkeypatch,
+        cfg={"server": "mqtts://broker.test:8883", "tls_ca": "/etc/kk/ca.pem",
+             "tls_insecure": True},
+        log=log)
+    assert {"ca_certs": "/etc/kk/ca.pem", "cert_reqs": ssl.CERT_REQUIRED} in fake.tls_calls
+    assert {"insecure": True} not in fake.tls_calls
+    assert any("KK_TLS_INSECURE" in w for w in log.warnings)
+
+
+# ---- _on_message 的畸形帧分支（QR29-A3）----
+
+def _frame(payload):
+    import types
+    return types.SimpleNamespace(payload=payload)
+
+
+def test_on_message_ignores_non_json_garbage(monkeypatch):
+    """非 JSON / 非 dict 的 cmd 帧直接忽略：不外溢、不派发。"""
+    received = []
+    tr, _fake = make_transport(monkeypatch)
+    tr.on_cmd = received.append
+
+    # 字节内容用运行时构造，源码里不放转义序列
+    tr._on_message(None, None, _frame(bytes([0x00, 0xFF]) + b" not json"))
+    tr._on_message(None, None, _frame(b"[1, 2, 3]"))          # JSON 但不是对象
+    tr._on_message(None, None, _frame(bytes([0x22, 0x81, 0x8C, 0x22])))  # 坏 utf-8
+    assert received == []
+
+
+def test_on_message_dispatches_valid_dict_and_swallows_handler_errors(monkeypatch):
+    received = []
+    tr, _fake = make_transport(monkeypatch)
+    tr.on_cmd = received.append
+    tr._on_message(None, None, _frame(b'{"id": "c-1", "kind": "shell"}'))
+    assert received == [{"id": "c-1", "kind": "shell"}]
+
+    def boom(_payload):
+        raise RuntimeError("dispatcher blew up")
+
+    tr.on_cmd = boom
+    tr._on_message(None, None, _frame(b'{"id": "c-2"}'))  # 处理器异常不外溢到网络线程

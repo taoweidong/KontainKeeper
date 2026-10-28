@@ -429,3 +429,100 @@ def test_dispatcher_dedups_redelivered_command():
     threading.Event().wait(0.3)   # 给「去重失效时的第二跑」留完成窗口
     done_frames = [f for f in tr.frames if f.get("done")]
     assert len(done_frames) == 1, "同一命令 id 只允许一条终态帧"
+
+
+# ---- 信号与退出路径（QR29-A2：优雅退出帧是 B6 离线语义的一环，此前零覆盖）----
+
+RUN_CFG = dict(CFG, server="mqtt://broker.test:1883", log_path="", log_level="WARNING",
+               interval=1, update_disabled=True, update_interval=3600,
+               max_out_mb=1, max_workers=2, topic_prefix="kk/v1")
+
+
+class _RunTransport:
+    """run() 全流程替身：记录 start/wait_ready/stop 的调用与实参。
+
+    wait_ready 立即返回 True，让主循环真的转起来；stop 由旁路线程经信号
+    处理器置位，覆盖 finally 收尾路径。
+    """
+
+    instances = []
+
+    def __init__(self, cfg, log):
+        self.cfg = cfg
+        self.on_cmd = None
+        self.started = False
+        self.stop_reason = None
+        self.waited = None
+        _RunTransport.instances.append(self)
+
+    def start(self):
+        self.started = True
+
+    def wait_ready(self, timeout=10, stop=None):
+        self.waited = timeout
+        return True
+
+    def stop(self, reason=""):
+        self.stop_reason = reason
+
+
+def test_signal_handler_sets_stop_and_run_exits_gracefully(monkeypatch):
+    """SIGTERM/SIGINT 注册的处理器只做 stop.set()，主循环随即走 finally 的
+    tr.stop(reason="stopping")——优雅退出帧（publish_status wait=True）依赖
+    这条链路，改坏了就是「静默失联、无红灯」。
+
+    处理器只能在主线程注册（main.py 的守卫），所以 run() 必须在测试主线程跑、
+    由旁路线程模拟「信号送达」；旁路线程带 5s 兜底置位，注册失败也不许挂死进程。
+    """
+    import time
+
+    made = []
+    monkeypatch.setattr(m.signal, "signal",
+                        lambda signum, handler: made.append((signum, handler)))
+    monkeypatch.setattr(m, "Transport", _RunTransport)
+    monkeypatch.setattr(m, "submit_heartbeat", lambda *a, **k: None)
+    _RunTransport.instances = []
+
+    stop = threading.Event()
+
+    def deliver_signal():
+        deadline = time.monotonic() + 5
+        while len(made) < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        for signum, handler in made:
+            handler(signum, None)
+        stop.set()   # 兜底：处理器没注册成也要让 run 退出
+
+    threading.Thread(target=deliver_signal, daemon=True).start()
+    m.run(stop=stop, cfg=dict(RUN_CFG))
+
+    assert stop.is_set()
+    assert {s for s, _ in made} == {m.signal.SIGTERM, m.signal.SIGINT},         "SIGTERM/SIGINT 处理器未注册"
+    assert len(_RunTransport.instances) == 1
+    tr = _RunTransport.instances[0]
+    assert tr.started and tr.waited == 10
+    assert tr.stop_reason == "stopping", "退出必须走 finally 的优雅停机"
+
+
+def test_run_without_server_config_returns_before_transport(monkeypatch):
+    """KK_SERVER 未配置：报错返回，不构造 Transport、不进主循环。"""
+    made = []
+    monkeypatch.setattr(m, "Transport",
+                        lambda *a, **k: made.append("constructed") or None)
+    stop = threading.Event()
+    stop.set()
+    m.run(stop=stop, cfg=dict(RUN_CFG, server=""))
+    assert made == []
+
+
+def test_run_transport_construction_error_is_fatal_but_quiet(monkeypatch):
+    """TransportError（坏 KK_SERVER 格式）→ 报错返回，不把异常抛给入口。"""
+    from kk_agent.transport import TransportError
+
+    def boom(cfg, log):
+        raise TransportError("KK_SERVER 必须是 mqtt:// 或 mqtts:// 地址")
+
+    monkeypatch.setattr(m, "Transport", boom)
+    stop = threading.Event()
+    stop.set()
+    m.run(stop=stop, cfg=dict(RUN_CFG))   # 不抛即通过
