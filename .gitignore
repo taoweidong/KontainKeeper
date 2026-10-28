@@ -46,3 +46,5 @@ docker/offline/images/SHA256SUMS
 
 # 本地三端运行时产物（pid/log，由会话托管，严禁入库）
 service/
+# playwright-cli 会话快照（每次 snapshot/goto 往仓库根落 yml+console log，已数 MB，严禁入库）
+.playwright-cli/

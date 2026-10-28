@@ -12,6 +12,16 @@
     [...document.querySelectorAll(".el-scrollbar__wrap")].find(w =>
       w.querySelector(".main-content")
     ) || null;
+  // 响亮失败（计划 Step 1b）：登录态失效被踢回 #/login、或内容区结构变更时 wrap 为 null。
+  // 这时不许返回一栈 null 字段——登录页上 reachableAt 照样是 [true,true,true]，
+  // 后续任务用 `!pageScrolls` 这类真值判断就会把「根本没在目标路由」读成绿灯。
+  // 只加失败路径，不改那 11 个字段的定义，口径可比性不变。
+  if (!wrap) {
+    return JSON.stringify({
+      error: "no content wrap — session dead or layout changed",
+      path: location.hash || location.pathname
+    });
+  }
   const view = wrap ? wrap.querySelector(":scope > .el-scrollbar__view") : null;
   const card = q(".el-card");
   const table = q(".el-table");
