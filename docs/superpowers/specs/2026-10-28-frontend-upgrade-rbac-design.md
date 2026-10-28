@@ -273,7 +273,7 @@ web/src/views/system/stats/index.vue      ← 现有「系统统计」从 views/
 
 | 层 | 口径 |
 |---|---|
-| 后端回归 | WSL 内 rsync 后 `KK_IT_MQTT_URL=KK_MQTT_URL=mqtt://127.0.0.1:1883 uv run --no-sync python -m pytest agent/tests server/tests`；基线 **357 passed / 0 skip 不许掉**。排除项必须根锚定（`--exclude /.venv --exclude /web/node_modules …`），判例：`--exclude tests` 曾把两轮新用例全排掉，绿色来自旧文件 |
+| 后端回归 | WSL 内 rsync 后 `KK_IT_MQTT_URL=mqtt://127.0.0.1:1883 KK_MQTT_URL=mqtt://127.0.0.1:1883 uv run --no-sync python -m pytest agent/tests server/tests`（两个变量**分开各自赋值**——写成 `A=B=v` 会让 `KK_IT_MQTT_URL` 的值变成字符串 `KK_MQTT_URL=mqtt://…`，集成用例静默 skip 而汇总仍是绿的）；基线 **397 passed / 0 skip 不许掉**（2026-10-28 Task 1 实测重定；此前记的 357 是 QR-S38/协议窗口用例入库前的旧数。0 skip 只在 WSL 真 Broker 路径成立，Windows 无 Broker 是 4 skip，报告须写明走的哪条）。排除项必须根锚定（`--exclude /.venv --exclude /web/node_modules …`），判例：`--exclude tests` 曾把两轮新用例全排掉，绿色来自旧文件 |
 | 三库 | SQLite 实测；**真实 PG16（wslc，宿主 5433）跑一遍 RBAC 建表/补列/CRUD/授权**；MySQL 仍只做方言编译级静态校验，并**在结论里如实写「未连过真 MySQL」** |
 | RBAC 强制 | 逐接口 403/200 两侧用例；`*:*:*` 短路；空菜单超管兜底；四条删除保护；seed↔views 存在性 |
 | 前端门禁 | `pnpm typecheck`、`eslint --max-warnings 0 "{src,mock,build}/**"` 零豁免、`pnpm build`、产物整目录同步 `server/src/kk_server/web/` 并逐文件 sha256 核对、`git status --porcelain` 为空 |

@@ -76,7 +76,7 @@ WSL 内（`~/kk`，rsync 排除项必须根锚定）：
 ```bash
 KK_IT_MQTT_URL=KK_MQTT_URL=mqtt://127.0.0.1:1883 uv run --no-sync python -m pytest agent/tests server/tests -q --junitxml=/tmp/j.xml
 ```
-预期：357 passed / 0 skip。**别用 `| tail -3` 看汇总**（失败行在进度条之前会被截掉，本仓因此漏看过两轮红灯）——解析 junit 的 `tests/failures/errors/skipped`。
+预期：**397 passed / 0 skip**（Task 1 实测重新定基线。原写 357 是 QR-S38/协议窗口那批用例入库前的旧数，本仓此后只许涨不许掉）。**别用 `| tail -3` 看汇总**（失败行在进度条之前会被截掉，本仓因此漏看过两轮红灯）——解析 junit 的 `tests/failures/errors/skipped`。注意 **0 skip 只在 WSL 有真 Broker 的跑法下成立**；Windows 侧无 Broker 会显示 4 skip，报告时必须写明走的是哪条路径，不能把 4 skip 说成全绿。
 
 - [ ] **Step 4: 提交**
 
@@ -881,6 +881,8 @@ playwright-cli -s=layout eval "$(cat scripts/fe_layout_probe.js)"
 预期：`pageScrolls:false`（R4）、`bandTop≈0`（R5）、`stickyTop:null` 且横幅在视口内（R6）。
 功能必测：500 台分页正确、筛选/排序下推生效（Network 里能看到 query）、勾选跨页保留、批量下发与单行采集互不污染（FE-7）、仅告警/仅 Docker 异常三态布尔不被当成真值（QR-S36 点名的雷：`"false"` 在 Python 里是真值）。
 
+**Task 1 评审带出的隐性红线（必须在本任务处理）**：`0238b9b` 之后，`online`/`alerts`/`outdated` 三个读数是在**返回的 `items` 上求和**（`server/src/kk_server/controllers/containers.py:135-138`），而 `total` 是服务端**按筛选集全量** count（`:124`）。当前不传 `limit/offset`，两者一致，读数诚实。**本任务一旦启用真后端分页，这三个数会静默退化成「本页读数」，却仍与全集 `total` 并排显示**——aria-label 与离线比例条跟着一起说谎。所以本任务的验收必须二选一：把三个读数改为 filtered-set 聚合（要动后端，属 P1 之外的新增），或明确把它们标成「本页」。**若走后者，文案与 `kk-band` 的标签必须同时改**，不许留一个看起来像全集的数字。
+
 - [ ] **Step 6: 提交**
 
 ```bash
@@ -972,7 +974,7 @@ done
 ```bash
 cd /e/GitHub/KontainKeeper && .venv/Scripts/python.exe -m pytest agent/tests server/tests -q --junitxml=/tmp/j.xml
 ```
-预期：357 passed / 0 skip（Broker 不可达时允许 4 skip，需在结论里如实写明是哪种情况）。
+预期：**397 passed / 0 skip**（Task 1 重新定的基线；Broker 不可达时允许 4 skip，但必须在结论里如实写明是哪种情况——0 skip 只在 WSL 真 Broker 路径下成立）。
 
 - [ ] **Step 3: 产物整目录同步入库**
 
