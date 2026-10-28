@@ -97,7 +97,10 @@ commands = Table(
     Column("id", String(32), primary_key=True),
     Column("pod", String(120), nullable=False),
     Column("kind", String(20), nullable=False, server_default="shell"),
-    Column("argv", Text, nullable=False),
+    # LONGTEXT 而非 TEXT（QR29-S13）：argv 是整条用户输入（shell 模式存完整命令串），
+    # MySQL TEXT 只有 64KB，超长在 INSERT 上炸 1406；新库直接建大列，老库 TEXT 对
+    # 常规命令也够用（配合审计侧 add_audit 的入库截断双保险）
+    Column("argv", _long_text(), nullable=False),
     Column("timeout", Integer, nullable=False, server_default="30"),
     Column("status", String(12), nullable=False, server_default="pending"),
     Column("created_by", String(64), nullable=False, server_default=""),
@@ -153,7 +156,9 @@ audit = Table(
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("actor", String(64), nullable=False),
     Column("action", String(40), nullable=False),
-    Column("detail", Text, nullable=False),
+    # LONGTEXT 而非 TEXT（QR29-S13）：detail 由 add_audit 入库前截到 8KB，
+    # 这里跟着升级是让新库与截断上限之间不再有第二套列宽语义
+    Column("detail", _long_text(), nullable=False),
     Column("ts", BigInteger, nullable=False),
 )
 

@@ -3,8 +3,8 @@
 KK_DB_URL 选库，缺省回落 KK_DB_PATH 的 SQLite。表定义见 tables.py，工具函数见 helpers.py。
 阶段 B 的异步化在这里一并完成——Store 全协程，事件循环不再被数据库拖住。
 """
+import asyncio
 import base64
-import hashlib
 import json
 import secrets
 import time
@@ -33,6 +33,11 @@ _UPDATING_REASON_GRACE = 120
 
 # verify_admin 时序拉平用的假盐（QR-S8）：值无意义，只为让不存在用户也吃满一次 PBKDF2
 _DUMMY_SALT = "0" * 32
+
+# 审计 detail 的入库封顶（字符，QR29-S13）：批量下发的审计会塞下完整 pods/ids/argv，
+# 老库的 TEXT 列只有 64KB——超限在「命令已发布之后」炸出 1406，形成部分写入
+# （前端看不到台账但命令已经出去了）。8KB 足够容纳任何有溯源价值的载荷。
+_AUDIT_DETAIL_MAX = 8192
 
 
 def _clip(value, n):
@@ -97,7 +102,14 @@ def _host_filters(group=None, host_type=None, docker_unhealthy=None,
     if alert:
         conds.append(containers.c.disk_pct >= DISK_ALERT_PCT)
     if online is not None:
-        conds.append(containers.c.online == (1 if online else 0))
+        # 在线筛选必须与渲染同口径（QR29-S15）：裸 online 列只反映 retained/LWT
+        # 的最后一帧，宽限兜底（online_set / is_online）要在 SQL 里用同一 CASE
+        # 再现，否则 ?online=true 会返回渲染为离线的行，导出与「所见」不一致。
+        span = case((3 * containers.c.hb_interval > ONLINE_GRACE,
+                     3 * containers.c.hb_interval), else_=ONLINE_GRACE)
+        live = (containers.c.online == 1) & (containers.c.status_ts
+                                             >= int(time.time()) - span)
+        conds.append(live if online else ~live)
     if proto_ver is not None:
         try:
             conds.append(containers.c.proto_ver == int(proto_ver))
@@ -313,7 +325,16 @@ class Store:
         全部**只在上线路径落库**：离线帧可能是 LWT（Broker 在断连后补发，字段可能缺失
         或来自旧版本 Agent），拿旧数据覆盖新元信息只会把机队视图改脏。
         """
-        now = int(ts or time.time())
+        now = int(time.time())
+        try:
+            ts_n = int(ts) if ts else now
+        except (TypeError, ValueError):
+            ts_n = now
+        # 主机时钟不可信：status 帧的 ts 与 record_hb 同款钳制，越界回落服务器
+        # 时间（QR29-S5）。时钟超前的主机若把 status_ts 写进未来，is_online 与
+        # mark_stale_offline 的判定式在负差值上恒为「在线」——死机显示在线，
+        # 且 retained 状态与 LWT 都被这个值影响，离线兜底永不生效。
+        now = ts_n if now - 86400 <= ts_n <= now + 300 else now
         # v4 元信息归一：env 里挑列表/详情要用的标量，坏值一律回落空串
         env = env if isinstance(env, dict) else {}
         meta = {
@@ -355,10 +376,6 @@ class Store:
              "status_reason": str(reason or "online"), **meta},
             ["pod"], ["online", "status_ts", "last_seen", "image", "agent_ver",
                       "status_reason"] + list(meta.keys()))
-
-    async def touch(self, pod):
-        return await self._run(update(containers).where(containers.c.pod == pod)
-                               .values(last_seen=int(time.time())))
 
     async def record_hb(self, pod, msg):
         """指标点用帧内 ts（缺失才回落服务器时间）；last_seen 用服务器时间——
@@ -609,10 +626,13 @@ class Store:
         if until:
             conds.append(commands.c.created_at <= int(until))
         if keyword:
-            # 关键字必须下推到后端：前端过滤会让「导出」与「所见」不一致
-            like = "%" + str(keyword) + "%"
-            conds.append(or_(commands.c.pod.like(like), commands.c.id.like(like),
-                             commands.c.argv.like(like)))
+            # 关键字必须下推到后端：前端过滤会让「导出」与「所见」不一致。
+            # autoescape 对齐 _host_filters 的既有写法：用户搜 "100%" 时 %
+            # 是字面量而不是通配符，也不再吃 "_" 通配与尾随 % 的慢扫描（QR29-S18）
+            kw = str(keyword)[:64]
+            conds.append(or_(commands.c.pod.contains(kw, autoescape=True),
+                             commands.c.id.contains(kw, autoescape=True),
+                             commands.c.argv.contains(kw, autoescape=True)))
         return conds
 
     async def list_commands(self, pod=None, limit=100, offset=None, batch=None,
@@ -880,10 +900,14 @@ class Store:
 
     # ---- 审计 ----
     async def add_audit(self, actor, action, detail=None):
+        text = json.dumps(detail, ensure_ascii=False) if detail else ""
+        if len(text) > _AUDIT_DETAIL_MAX:
+            # 截断而不是让 INSERT 在严格模式 1406 上炸掉：审计的价值在
+            # 「发生过什么」，前 8KB 加标记足以定位（QR29-S13）
+            text = text[:_AUDIT_DETAIL_MAX - 11] + "(truncated)"
         await self._run(insert(audit).values(
             actor=str(actor)[:64], action=str(action)[:40],
-            detail=json.dumps(detail, ensure_ascii=False) if detail else "",
-            ts=int(time.time())))
+            detail=text, ts=int(time.time())))
 
     @staticmethod
     def _audit_filters(actor=None, action=None, keyword=None):
@@ -898,9 +922,11 @@ class Store:
         if action:
             conds.append(audit.c.action == action)
         if keyword:
-            like = "%" + str(keyword) + "%"
-            conds.append(or_(audit.c.detail.like(like), audit.c.actor.like(like),
-                             audit.c.action.like(like)))
+            # autoescape 对齐 _host_filters / _command_filters（QR29-S18）
+            kw = str(keyword)[:64]
+            conds.append(or_(audit.c.detail.contains(kw, autoescape=True),
+                             audit.c.actor.contains(kw, autoescape=True),
+                             audit.c.action.contains(kw, autoescape=True)))
         return conds
 
     async def list_audit(self, limit=200, offset=None, actor=None, action=None,
@@ -942,13 +968,18 @@ class Store:
         if not row:
             # 时序侧信道（QR-S8）：用户不存在也跑一次同代价 PBKDF2，让「存在/不存在」
             # 的响应时间不可分辨；登录限流挡枚举，这里抹掉剩余的时间差。
-            _pwdf(_DUMMY_SALT, password)
+            await asyncio.to_thread(_pwdf, _DUMMY_SALT, password)
             return False
-        cand = _pwdf(row["salt"], password)
+        # PBKDF2（310k 迭代）是同步 CPU 活，必须挪进线程池：本方法跑在事件循环上，
+        # 而 MQTT 桥接的协程处理器在同一条循环里——同步哈希一次 login 就能让心跳
+        # 落库与命令下发停摆数十毫秒（QR29-S1）。三路返回值与旧实现逐字一致。
+        cand = await asyncio.to_thread(_pwdf, row["salt"], password)
         if secrets.compare_digest(row["pw_hash"], cand):
             return True
         # 兼容旧迭代数的存量哈希：首次成功登录时原地升级到新迭代数
-        if secrets.compare_digest(row["pw_hash"], _pwdf(row["salt"], password, _PWDF_ITERS_LEGACY)):
+        legacy = await asyncio.to_thread(_pwdf, row["salt"], password,
+                                         _PWDF_ITERS_LEGACY)
+        if secrets.compare_digest(row["pw_hash"], legacy):
             await self._run(update(admins).where(admins.c.username == username)
                             .values(salt=row["salt"], pw_hash=cand))
             return True
@@ -1014,7 +1045,11 @@ class Store:
         变成可达）。超出保留期的小时反正会被 cleanup 删掉，不值得聚合。
         """
         now_hour = now // 3600
-        floor_hour = (now - (raw_days + 1) * 3600) // 3600
+        # 追赶窗口与 cleanup 的 raw_days*86400 同一口径（QR29-S9）：此前把「天」
+        # 当「小时」用（(raw_days+1)*3600），服务端宕机超过 raw_days+1 小时后，
+        # 水位直接跳进 now-3h，中间小时永久缺段、历史曲线不可回补。窗口上限
+        # 仍是保留期——超出 raw_days 天的小时反正会被 cleanup 删掉，不值得聚合。
+        floor_hour = (now - raw_days * 86400) // 3600
         last = int(await self.kv_get("agg_hour", "0") or 0)
         start = max(last, floor_hour)
         if start >= now_hour:

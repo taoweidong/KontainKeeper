@@ -169,9 +169,12 @@ def test_live_counter_has_frontend_reading_slot():
     设 `KK_DROP_PROTO_V3`，那是一次全网闪断。
     """
     src = inspect.getsource(MqttBridge)
-    # 会被累加的就是计数器；纯赋值的 epoch（last_msg_ts / started_at）不算
+    # 会被累加的就是计数器；纯赋值的 epoch（last_msg_ts / started_at）不算。
+    # 累加写法有两代：早期的 `stats["k"] += 1` 与 QR29-S3 收敛后的 `_bump("k")`——
+    # 改写入口时两套正则都要保留，否则这条锁会「假通过」
     live = set(re.findall(r'stats\["([a-z0-9_]+)"\][^\n]*\+=', src))
     live |= set(re.findall(r'stats\.get\("([a-z0-9_]+)", 0\) \+', src))
+    live |= set(re.findall(r'_bump\("([a-z0-9_]+)"', src))
     assert live, "静态扫描没扫到任何计数器：正则先失效了，别让这条锁假通过"
     assert "proto_v3_received" in live, "累加点写法变了，这条锁要看的是被累加的键"
 

@@ -110,8 +110,13 @@ async def list_containers(request: Request, filters: HostFilters,
     if view not in ("full", "summary"):
         raise HTTPException(status_code=400, detail="view 需为 full 或 summary")
     store = request.app.state.store
-    # 分页上限：full 视图拉完整指标，500 台一次性取回过量，默认不限制但可被前端约束
-    cap = min(limit, 5000) if limit and limit > 0 else None
+    # 分页上限：full 视图拉完整指标（每行 2~4KB LONGTEXT），无 LIMIT 时全机队
+    # 一次性进内存是现成的自伤面（QR29-S12）——缺省也封顶 5000；summary 行小，
+    # 维持不限（导出走 /api/export/hosts 的 MAX_ROWS=20000 上限，不经这里）
+    if limit and limit > 0:
+        cap = min(limit, 5000)
+    else:
+        cap = 5000 if view == "full" else None
     off = offset if offset and offset > 0 else None
     # 一次查回在线集合与最新版本再逐行拼装：500 台只有几次往返，不在循环里打 500 次查询
     # （D1.3 明确要求 KV 只读一次——每行查一次就是与 P1-1 同型的 N+1）

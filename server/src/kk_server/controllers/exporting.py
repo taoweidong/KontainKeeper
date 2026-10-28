@@ -148,14 +148,13 @@ async def export_audit(request: Request, user: CurrentUser, actor: str = "",
 
 
 @router.get("/hosts")
-async def export_hosts(request: Request, user: CurrentUser, filters: HostFilters,
-                       view: str = "summary"):
+async def export_hosts(request: Request, user: CurrentUser, filters: HostFilters):
     store = request.app.state.store
-    if view not in ("full", "summary"):
-        raise HTTPException(status_code=400, detail="view 需为 full 或 summary")
     # 资产盘点场景：不分页，一次性导出全量摘要列
     # 筛选与排序跟 /api/containers 同一套参数（QR-S36）：页面上筛完 2 台、导出 50 台
-    # 的报表没有意义，而且会让人以为筛选只影响显示
+    # 的报表没有意义，而且会让人以为筛选只影响显示。
+    # 此前收过一个从不生效的 `view` 查询参数（QR29-S16）：收下并校验却恒用 summary
+    # 导出——暗示了一个不存在的 full 形态，直接删掉；行数由 MAX_ROWS 兜底。
     rows = await store.list_containers("summary", limit=MAX_ROWS, **filters)
     online = await store.online_set()
     await store.add_audit(user, "export", {"kind": "hosts", "rows": len(rows)})

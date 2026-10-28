@@ -15,15 +15,13 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
 from ..config import COLLECT_ITEMS, COMMAND_KINDS
+from ..models.helpers import _b64_tail
 from ..services.security import is_blacklisted
 from .deps import CurrentUser, current_user
 
 # 会话鉴权在 router 级收口（QR-S2）：新增端点默认受保护，需要主体身份的
 # 端点再用 CurrentUser 别名取值
 router = APIRouter(prefix="/api", dependencies=[Depends(current_user)])
-
-# collect 的 argv 列存这个结构；items 上限防误传
-MAX_ITEMS = len(COLLECT_ITEMS)
 
 
 class CommandBody(BaseModel):
@@ -175,7 +173,6 @@ async def get_command(cid: str, request: Request):
     except ValueError:
         pass
     # 全量 out_b64 不进响应体：4MB 输出会撑出 5MB JSON。完整输出走 /out
-    from ..models.store import _b64_tail
     row["out_tail"] = _b64_tail(row.pop("out_b64", "") or "")
     return row
 

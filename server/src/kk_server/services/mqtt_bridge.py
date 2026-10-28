@@ -71,6 +71,10 @@ class MqttBridge:
         self.connected = threading.Event()
         self._stopping = threading.Event()
         self._sched = None          # 事件循环里跑，用于 to_thread 派发
+        # stats 的读改写发生在两条线程上（paho 网络线程 + 事件循环），dict 的
+        # += 不是原子——安全计数（rejected）偏低就不可追溯（QR29-S3），全部
+        # 写入收敛到 _bump() 一处加锁
+        self._stats_lock = threading.Lock()
         # 同一命令 result 分块的串行锁：create_task 并发处理时，各帧的
         # get_command/append_result 完成顺序与到达顺序不一致，会让
         # append_result 的「严格递增水位」把后处理的中间块静默丢弃
@@ -91,6 +95,9 @@ class MqttBridge:
                       # v4 兼容窗口内收到的 v3 旧协议帧数：窗口关闭前据此确认存量
                       # Agent 是否已全部升级（否则关窗口就是全网闪断）
                       "proto_v3_received": 0,
+                      # paho 网络线程回调里的异常计数（QR29-S2）：正常时恒 0，
+                      # 持续增长说明帧解析/分发路径有缺陷在偷偷丢帧
+                      "bridge_errors": 0,
                       "last_msg_ts": 0, "started_at": int(time.time())}
         # _result_locks 的最近使用时间（cid -> ts）：sweep 周期回收永不到终态的条目
         self._result_lock_ts = {}
@@ -153,6 +160,11 @@ class MqttBridge:
         return [(p + "/+/status", QOS_STATUS), (p + "/+/hb", QOS_HB), (p + "/+/result", QOS_RESULT)]
 
     # ---- paho 回调（网络线程）----
+    def _bump(self, key, n=1):
+        """stats 计数的唯一写入口：paho 网络线程与事件循环线程都会到这里（QR29-S3）。"""
+        with self._stats_lock:
+            self.stats[key] = self.stats.get(key, 0) + n
+
     def _on_connect(self, client, userdata, flags, reason_code, properties=None):
         if reason_code != 0:
             log.warning("broker connect failed: %s", reason_code)
@@ -168,6 +180,17 @@ class MqttBridge:
             log.warning("broker disconnected (rc=%s), paho 将退避重连", reason_code)
 
     def _on_message(self, client, userdata, msg):
+        """paho 网络线程回调的**兜底壳**（QR29-S2）：paho 不吞用户回调的异常，
+        这里抛出去的任何错误都会把网络线程打死——表现是 HTTP 一切正常、Agent
+        全部离线且永不恢复，最难排查的一类故障。帧可以丢，线程不能死；
+        每次兜底计入 stats["bridge_errors"] 供面板观测。"""
+        try:
+            self._route_message(client, userdata, msg)
+        except Exception:
+            self._bump("bridge_errors")
+            log.exception("桥接回调异常 topic=%s", msg.topic)
+
+    def _route_message(self, client, userdata, msg):
         parts = msg.topic.split("/")
         depth = len(self.prefix.split("/"))
         try:
@@ -185,9 +208,21 @@ class MqttBridge:
         # v3 接入管控：所有上行帧统一按自报 ip 校验白名单，一处入口管三类帧，
         # 无状态、服务端重启安全。白名单为空（未配置）时不设限。
         if not ip_in_whitelist(self.agent_ips, body.get("ip")):
-            self.stats["rejected"] += 1
+            self._bump("rejected")
             log.bind(host=host).warning("拒绝白名单外上报：ip=%r", body.get("ip"))
             self._dispatch(self._on_ip_rejected, host, body)
+            return
+        # 帧归属校验（QR29-S4）：协议 v3/v4 的 status/hb 帧都带自报 host 字段，
+        # 白名单内的主机不能替他机覆写在线状态与指标（K8S 里多个 vscode-server
+        # 容器各跑一个 Agent 时是真越权）。字段缺失放行——LWT 补发与存量 Agent
+        # 可能不带；不一致按白名单外同型拒收 + 节流审计。result 帧的归属在
+        # _on_result 里按 DB 归属另校（topic 主机 ≠ 命令归属主机）。
+        reported = body.get("host")
+        if reported is not None and str(reported) != host:
+            self._bump("rejected")
+            log.bind(host=host).warning("帧归属不一致 topic_host=%s frame_host=%r",
+                                        host, reported)
+            self._dispatch(self._on_host_mismatch, host, body)
             return
         self.stats["last_msg_ts"] = int(time.time())
         self._dispatch(fn, host, body)
@@ -197,7 +232,7 @@ class MqttBridge:
         所以必须调度回那个循环，不能在这条线程里直接 await。"""
         if self.loop is None:
             # 没有循环说明装配漏了 lifespan：宁可显式拒帧，也不要静默丢数据
-            self.stats["rejected"] += 1
+            self._bump("rejected")
             log.bind(host=host).error("桥接未绑定事件循环，丢弃 %s 帧",
                                       body.get("id") or "status")
             return
@@ -234,6 +269,14 @@ class MqttBridge:
                              {"host": host, "ip": str(body.get("ip") or ""),
                               "kind": "status" if "online" in body else "hb"})
 
+    async def _on_host_mismatch(self, host, body):
+        """帧归属不一致的审计落库（QR29-S4）：topic 主机与 body.host 对不上。"""
+        if self._audit_throttled(("host_mismatch", host)):
+            return
+        await self.store.add_audit("mqtt", "host_mismatch",
+                             {"topic_host": host,
+                              "frame_host": str(body.get("host") or "")})
+
     async def _on_status(self, host, body):
         # v4 兼容窗口：proto_ver ∈ accept_proto_vers 才受理。窗口外的（更老的
         # v1/v2 或更新但未开放的版本）一律拒收并审计——协议不匹配的帧按新语义
@@ -243,7 +286,7 @@ class MqttBridge:
         except (TypeError, ValueError):
             proto = 0
         if proto not in self.accept_proto_vers:
-            self.stats["rejected"] += 1
+            self._bump("rejected")
             if not self._audit_throttled(("proto_mismatch", host)):
                 await self.store.add_audit("mqtt", "proto_mismatch",
                                      {"host": host, "proto_ver": body.get("proto_ver")})
@@ -254,7 +297,7 @@ class MqttBridge:
         # QR-S31：受理下来的旧协议帧必须计数，这是「能否关闭兼容窗口」的唯一依据。
         # 恒 0 会让运维在存量 Agent 还没升完时关窗口 —— 那是一次全网闪断。
         if proto < PROTO_VER:
-            self.stats["proto_v3_received"] += 1
+            self._bump("proto_v3_received")
         online = bool(body.get("online"))
         agent_ver = str(body.get("agent_ver") or "")
         # v4 主机元信息：env/group/labels/caps/proto_ver/docker 摘要。
@@ -271,7 +314,7 @@ class MqttBridge:
             caps=body.get("caps") if isinstance(body.get("caps"), dict) else {},
             proto_ver=proto,
             docker=body.get("docker") if isinstance(body.get("docker"), dict) else {})
-        self.stats["status"] += 1
+        self._bump("status")
         if online:
             # 状态帧是升级成功与否的**权威佐证**：execv 前的回执帧可能来不及发出，
             # 主机重启后上报的新 agent_ver 才作数（A6.2 时序约定）
@@ -283,12 +326,12 @@ class MqttBridge:
     async def _on_hb(self, host, body):
         if not await self.store.get_container(host):
             # 没上线过的主机直接发心跳：多半是伪造或 status 帧丢了，不入库
-            self.stats["rejected"] += 1
+            self._bump("rejected")
             if not self._audit_throttled(("hb_unknown_host", host)):
                 await self.store.add_audit("mqtt", "hb_unknown_host", {"host": host})
             return
         await self.store.record_hb(host, body)
-        self.stats["hb"] += 1
+        self._bump("hb")
         await self._check_interval(host, body)
 
     async def _check_interval(self, host, body):
@@ -305,7 +348,7 @@ class MqttBridge:
         except (TypeError, ValueError):
             return
         if interval and interval < floor:
-            self.stats["interval_violation"] += 1
+            self._bump("interval_violation")
             # 误配 1s 上报时这里是每秒一条审计：不限速就与 ip_rejected 同型的灌库路径
             if not self._audit_throttled(("interval_violation", host)):
                 await self.store.add_audit("mqtt", "interval_violation",
@@ -333,14 +376,14 @@ class MqttBridge:
         async with lock:
             cmd = await self.store.get_command(cid)
             if cmd is None:
-                self.stats["rejected"] += 1
+                self._bump("rejected")
                 if not self._audit_throttled(("result_unknown_cmd", host)):
                     await self.store.add_audit("mqtt", "result_unknown_cmd",
                                                {"host": host, "id": cid})
                 return
             if cmd["pod"] != host:
                 # 归属校验：A 主机不能替 B 主机回传结果（评审 P0-3）
-                self.stats["rejected"] += 1
+                self._bump("rejected")
                 if not self._audit_throttled(("result_mismatch", host)):
                     await self.store.add_audit("mqtt", "result_mismatch",
                                                {"expect": cmd["pod"], "got": host, "id": cid})
@@ -348,7 +391,7 @@ class MqttBridge:
                     "丢弃跨主机结果 expect=%s", cmd["pod"])
                 return
             await self.store.append_result(body, host=host)
-            self.stats["result"] += 1
+            self._bump("result")
             # 终态帧处理完即可回收锁；迟到重投的旧帧重建锁后会被
             # 水位去重挡掉，单帧处理也不再有并发交错
             if body.get("done"):
@@ -366,7 +409,7 @@ class MqttBridge:
         if not row:
             return
         if row["pod"] != host:
-            self.stats["rejected"] += 1
+            self._bump("rejected")
             await self.store.add_audit("mqtt", "update_result_mismatch",
                                        {"expect": row["pod"], "got": host, "id": cid})
             return
@@ -377,13 +420,13 @@ class MqttBridge:
         rc = body.get("rc")
         if rc in (None, 0):
             await self.store.finish_update(cid, "done")
-            self.stats["upgrade_done"] = self.stats.get("upgrade_done", 0) + 1
+            self._bump("upgrade_done", 1)
             log.bind(host=host, cmd=cid).info(
                 "agent upgrade done -> %s", row["to_version"])
             return
         reason = _b64_text(body.get("out_b64"))[:40] or "agent_reported_failure"
         await self.store.finish_update(cid, "failed", reason)
-        self.stats["upgrade_failed"] = self.stats.get("upgrade_failed", 0) + 1
+        self._bump("upgrade_failed", 1)
         await self.store.add_audit("mqtt", "agent_update_failed",
                                    {"host": host, "id": cid,
                                     "to_version": row["to_version"], "reason": reason,
@@ -418,15 +461,15 @@ class MqttBridge:
             info = self.cli.publish(self._cmd_topic(row["pod"]),
                                     json.dumps(payload, ensure_ascii=False), qos=QOS_CMD)
         except Exception:
-            self.stats["cmd_failed"] += 1
+            self._bump("cmd_failed")
             log.bind(host=row["pod"], cmd=row["id"]).exception("发布命令失败")
             return False
         ok = info.rc in (mqtt.MQTT_ERR_SUCCESS, mqtt.MQTT_ERR_NO_CONN)
         # 入队失败（out-queue 满）也要看得见：静默丢命令与丢结果同型，都是石沉大海
         if ok:
-            self.stats["cmd_published"] += 1
+            self._bump("cmd_published")
         else:
-            self.stats["cmd_failed"] += 1
+            self._bump("cmd_failed")
             log.bind(host=row["pod"], cmd=row["id"]).warning(
                 "命令入队失败 rc=%s（Broker 未连接或队列已满）", info.rc)
         return ok
@@ -482,16 +525,27 @@ class MqttBridge:
             # 上传时按二进制本体算好的 HMAC（QR-P0-1）：Agent 推送路径强制验签
             payload["sig"] = latest["sig"]
         try:
-            self.cli.publish(self._cmd_topic(host), json.dumps(payload), qos=QOS_CMD)
-            self.stats["upgrade_pushed"] += 1
-            log.bind(host=host, cmd=uid).info("pushed upgrade -> %s",
-                                              latest.get("version", ""))
-            return True
+            info = self.cli.publish(self._cmd_topic(host),
+                                    json.dumps(payload), qos=QOS_CMD)
         except Exception:
             # 推失败意味着该主机停在旧版本；静默吞掉就再也发现不了
             await self.store.finish_update(uid, "failed", "publish_failed")
             log.bind(host=host, cmd=uid).warning("push upgrade failed", exc_info=True)
             return False
+        # 返回码要单独看（QR29-S14）：paho 的 publish 只有硬异常才抛，队列满/
+        # 未连接时返回 rc——不看它升级帧就静默丢、台账卡 pending 30 分钟，
+        # upgrade_pushed 虚高。判据与 dispatch_command 同一套（MQTT_ERR_NO_CONN
+        # 表示 QoS1 帧已入队等连接，算投出）
+        if info.rc not in (mqtt.MQTT_ERR_SUCCESS, mqtt.MQTT_ERR_NO_CONN):
+            await self.store.finish_update(uid, "failed", "publish_failed")
+            self._bump("cmd_failed")
+            log.bind(host=host, cmd=uid).warning(
+                "升级帧入队失败 rc=%s（Broker 未连接或队列已满）", info.rc)
+            return False
+        self._bump("upgrade_pushed")
+        log.bind(host=host, cmd=uid).info("pushed upgrade -> %s",
+                                          latest.get("version", ""))
+        return True
 
     async def flush_queued_upgrades(self, host, agent_ver):
         """重连补投（D2.3）：主机上线时把它 `queued` 的行补投一次。
@@ -516,7 +570,7 @@ class MqttBridge:
             await self.publish_update(host, row["id"], latest)
             n += 1
         if n:
-            self.stats["upgrade_flushed"] = self.stats.get("upgrade_flushed", 0) + n
+            self._bump("upgrade_flushed", n)
             log.bind(host=host).info("补投 %d 条离线升级", n)
         return n
 
@@ -537,10 +591,10 @@ class MqttBridge:
         for c in stale_cids:
             self._result_locks.pop(c, None)
             self._result_lock_ts.pop(c, None)
-        self.stats["sweeps"] += 1
-        self.stats["swept_timeouts"] += n
-        self.stats["swept_offline"] += stale
-        self.stats["swept_updates"] = self.stats.get("swept_updates", 0) + upd
+        self._bump("sweeps")
+        self._bump("swept_timeouts", n)
+        self._bump("swept_offline", stale)
+        self._bump("swept_updates", upd)
         if n or stale or upd:
             log.info("sweep: %d 条命令置 timeout, %d 台判离线, %d 条升级收敛", n, stale, upd)
         return n, stale
