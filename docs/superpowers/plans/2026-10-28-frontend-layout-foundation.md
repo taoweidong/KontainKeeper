@@ -406,7 +406,7 @@ git commit -m "feat(web): 移植 v7 的 PureTableBar（列固定 + 剥 i18n）�
 ```bash
 cd web && pnpm lint:stylelint && pnpm typecheck && pnpm build
 ```
-预期全 0。此时六页布局未变（新类无调用方），Task 2 的红基线应当**仍然复现**——若某条指标意外变绿，说明基线取错了，回 Task 2 重测。
+预期全 0。新类此时仍无调用方，所以**除 R1 外**的基线应当原样复现——`sideCols` 是**唯一会合理转绿的指标**（Step 1 就是修它的：两栏 `left` 从相同变为不同、宽比≈34%:66%）。其余任何一条在 Task 5 就变绿都说明测错了对象，回 Task 2 复核探针，别往下走。把 Task 5 之后的 `sideCols` 读数记进提交信息，作为 P0-1 的第一个证据。
 
 - [ ] **Step 5: 提交**
 
