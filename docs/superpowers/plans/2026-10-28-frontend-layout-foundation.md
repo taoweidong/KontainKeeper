@@ -29,6 +29,9 @@
 - **`pnpm lint:stylelint` 在本仓是 repo 级 `--fix`，且会静默改坏 CSS。** `web/stylelint.config.js:67` 的 `order/order` 把泛型 `"at-rules"` 排在 `"rules"` **之前**，于是 `--fix` 会把 `@media (max-width:1200px){…}` 整块**提到它要覆盖的基础规则上面**——同特异性下后来者胜，媒体查询从此失效。Task 5 实测抓到它把 `CommandWorkbench.vue` 的窄屏折叠改没（已回退），评审又在副本上端到端复现。**触发条件危险**：`.vue` 的 style 块「首节点是注释 + 后面有 `@media` 跟随规则」才告警，plain `.scss` 不告警，删掉头注释告警也会消失——所以「我的文件没告警」不是安全信号。
   **Task 5 评审后的处置（已裁决）**：① `order/order` 加 `disableFix: true`（保留告警、禁止自动重排）；② `lint:stylelint` 拆成不 `--fix` 的默认档 + 显式 `lint:stylelint:fix`；③ Tasks 6–10 的 stylelint 证据固定为 **`pnpm exec stylelint --no-cache <自己改过的文件>` 零告警 ＋ `git status --short` 除本任务申报文件外干净**，看到 `@media` 被搬位置立即回退。此外 `--cache` 会在热跑时把 8 个 scss 的 1680 条 prettier/CRLF 噪声全藏起来，`lint:stylelint` EXIT 0 近乎无意义，别拿它当证据。
 - **几何测量前必须让页面 settle ~2s**（Task 5 实测）：`goto` 之后立刻 eval 会读到过渡中的坐标（整页偏 −30px，`left:180` 而非 210）。读完先核对 `sideCols`/`bandTop` 是否落在稳定值上，再判定。
+- **图标只能用 `~icons/*` 导入形式，禁止 `useRenderIcon('ep/xxx')` 字符串**（Task 6 查证并在 bundle 里复核）：本仓 `components/ReIcon/src/offlineIcon.ts` 只注册了 **3 个**字符串（`ep/home-filled`、`ri/search-line`、`ri/information-line`），`hooks.ts:47-61` 会把不含冒号的字符串路由给 `IconifyIconOffline`——于是 `useRenderIcon('ep/refresh')` **静默渲染成空白**，typecheck 全绿。计划样板代码里那两处字符串写法是错的，抄作业时别再抄。仓内主流写法是 `import refresh from "~icons/ep/refresh"` 后 `:icon="refresh"`。
+- **`pure-table` 的 `:pagination` 必须直接绑响应式对象**，不能写开源那种 `:pagination="{ ...pagination, size }"`（Task 6 实测、评审在 `@pureadmin/table/dist/index.es.js:137-140` 复核）：组件会对**作为 prop 传入的那个对象**就地写 `currentPage`/`pageSize`，展开写法把写入落在一次性快照上，页码/条数读数立刻变陈旧——**翻页直接失效**。代价是分页器不跟随密度 `size`（纯观感），属机制差异不是样式不对齐。**两个位置都必须在模板里留 HTML 注释**，否则后人会「照上游改回去」。
+- **severity 判级不许在迁移中丢失**（Task 6 评审揪出的真实回归）：`.kk-bad` 只改**文字**颜色，`.kk-state::before` 的圆点默认是 `var(--kk-live)`（绿，kk.scss 注为「实心 = 在线」且从不被覆盖）——所以 `login_locked`/`ip_mismatch`/`cmd timeout`/`agent_upgrade_rejected` 一度全部渲染成**绿色健康点**。约束是「不跟 `el-tag`、用 kk-* 词汇」，**不是**丢掉分级。做法：把原来的四档判级函数改名成**返回类名**的映射，配 `.kk-state--bad::before{background:var(--kk-alert)}`、`.kk-state--warn::before{background:var(--kk-stale)}` 两枚圆点变体；**不许复用 `kk-state--updating`**（那是方点、承载 B6「更新中」语义，不是告警色）。
 - **测量环境事实（Task 2 实测校正，后续任务的命令里若与此不符以此处为准）**：dev server 实际端口 **8849**（8848 被本机另一个 vite 占用，别去动它）；后端 8443；playwright 会话名 `-s=layout`，认证态存 `%TEMP%\kk-layout-state.json`，**重开会话会掉回 1280×720，必须重新 `resize`**；种子库里主机名是 `vscode-0000` 这种格式，**没有 `Web-01`**——详情类路由一律用 `#/hosts/detail/vscode-0000`；探针 `scripts/fe_layout_probe.js` 的内容区滚动容器判据是「包着 `.main-content` 的那个 `.el-scrollbar__wrap`」（裸 `.el-scrollbar__wrap` 会命中侧边栏，把整页滚读成菜单滚）。
 - **门禁三件套每任务收尾必跑**：`pnpm typecheck`、`pnpm lint:eslint`（`--max-warnings 0`，零豁免）、`pnpm build`。
 - **提交**：中文信息 + `feat/fix/perf/refactor/chore/docs` 前缀 + 按模块分批；编号沿用 `FE-x`（10-07 方案）、`QR-x`（质量账本），本计划新增 `L1-x`（布局一期）。
@@ -742,6 +745,14 @@ function onSelectionChange(rows: any[]) {
 3. `#empty` 若 pure-table 不透传（3.3.0 支持转发，但以实测为准），退路是 `:pagination="false"` 外加 el-table 的 `empty-text`；**不许**为了绕过而把「没读到」断言弱化成默认「暂无数据」——那是 QR-W16 的回归。
 
 **本任务不需要 `<style>` 块**：`.el-form-item` 的 12px 下边距由 Task 5 的全局 `.kk-search-form` 提供；`.main-content` 的 margin 覆盖已按 Task 5 的裁决删除（子组件够不到祖先，写了也静默无效）。若模板里确实出现本页独有的样式，才加 `scoped` 块。
+
+- [ ] **Step 3b: 本节样板代码的三处实测修正（Task 6 落地后确认，抄作业以 shipped 代码为准）**
+
+上面 Step 2/3 的代码是**动页面前**写的，三处已被实测推翻，实现时按这条改，别照抄：
+1. `useRenderIcon('ri/search-line' | 'ep/refresh' | 'ep/download')` → 改 `~icons/*` 导入（见 Global Constraints，字符串形式会静默空白）。
+2. `:pagination="{ ...pagination, size }"` → 改 `:pagination="pagination"`，并在 `:adaptive-config` 与 `:pagination` 两个属性上各留一条 HTML 注释说明为何偏离上游。
+3. `offsetBottom` **实测 132**（108 在 1920 与 1366 两档都稳定溢出 +21px）。后续页各自实测，不许抄 132 也不许抄 108。
+另：`resetFields(formEl?)` 的入参形式在模板里被当事件处理器调用会收到 MouseEvent → 运行时报错；`hook` 的实际返回集合是 `{ form, columns, dataList, loading, read, exporting, pagination, onSearch, onExport, resetFields }`（无 `formRef`、无 `handleSelectionChange`），Tasks 7–10 以这个形状为准。
 
 - [ ] **Step 4: 跑门禁**
 
