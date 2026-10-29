@@ -24,7 +24,11 @@ import { useMultiTagsStoreHook } from "@/store/modules/multiTags";
 import { usePermissionStoreHook } from "@/store/modules/permission";
 const IFrame = () => import("@/layout/frame.vue");
 // https://cn.vitejs.dev/guide/features.html#glob-import
-const modulesRoutes = import.meta.glob("/src/views/**/*.{vue,tsx}");
+// *.spec.tsx 是 vitest 用例，不路由也**不该进产物**：globs 把它们扫进模块图后，
+// rollup 会把 spec 连同 vue-test-utils / magic-string 一起打成线上 chunk
+// （实测 dist 里多出 hook.spec-*.js 三件）。负向字符类排除，views 下的
+// 组件与下沉 hook（含 .tsx）不受影响。
+const modulesRoutes = import.meta.glob("/src/views/**/!(*.spec).{vue,tsx}");
 
 // 动态路由
 import { getAsyncRoutes } from "@/api/routes";
