@@ -3,11 +3,7 @@
  *  锁两类语义：① 「没读到」与「读到 0」必须是两个样子（QR-W16 红线）；
  *  ② 坏值（NaN/Infinity、422 数组 detail）不允许把垃圾透传给界面（QR29-W5/W11）。
  */
-import {
-  describe,
-  expect,
-  it
-} from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
   ageText,
@@ -62,7 +58,7 @@ describe("mbText / numText / elapsedText：数值读数", () => {
 
   it("numText：非有限数（NaN/Infinity）按「没读到」显示 -，不许渲染 NaN（QR29-W5）", () => {
     expect(numText(3.14159)).toBe("3.1");
-    expect(numText(0)).toBe("0.0");          // 读到 0 是真值，不是「没读到」
+    expect(numText(0)).toBe("0.0"); // 读到 0 是真值，不是「没读到」
     expect(numText(NaN)).toBe("-");
     expect(numText(Infinity)).toBe("-");
     expect(numText(null)).toBe("-");
@@ -96,8 +92,16 @@ describe("errText：后端错误取词（QR29-W11）", () => {
       response: {
         data: {
           detail: [
-            { loc: ["body", "pods"], msg: "field required", type: "value_error" },
-            { loc: ["body", "timeout"], msg: "ensure value >= 1", type: "value_error" }
+            {
+              loc: ["body", "pods"],
+              msg: "field required",
+              type: "value_error"
+            },
+            {
+              loc: ["body", "timeout"],
+              msg: "ensure value >= 1",
+              type: "value_error"
+            }
           ]
         }
       }
@@ -124,7 +128,7 @@ describe("statusType / statusLabel / upgradeSkipText：状态词汇", () => {
     expect(statusType("timeout")).toBe("danger");
     expect(statusType("running")).toBe("primary");
     expect(statusType("sent")).toBe("warning");
-    expect(statusType("queued")).toBe("info");     // 未知值兜底
+    expect(statusType("queued")).toBe("info"); // 未知值兜底
   });
 
   it("状态中文标签覆盖终态与非终态，未知原样回显", () => {

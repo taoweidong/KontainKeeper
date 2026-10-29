@@ -34,7 +34,9 @@ vi.mock("@/api/commands", () => ({
   listBatches: (...a: any[]) => h.listBatches(...a),
   getCommandOut: (...a: any[]) => h.getCommandOut(...a)
 }));
-vi.mock("@/api/exporting", () => ({ exportCommands: (...a: any[]) => h.exportCommands(...a) }));
+vi.mock("@/api/exporting", () => ({
+  exportCommands: (...a: any[]) => h.exportCommands(...a)
+}));
 vi.mock("@/utils/kk", async () => {
   const actual = await vi.importActual<any>("@/utils/kk");
   return { ...actual, downloadBlob: h.downloadBlob };
@@ -92,7 +94,9 @@ beforeEach(() => {
   h.message.mockReset();
   h.downloadBlob.mockReset();
   h.listCommands.mockResolvedValue(listOf());
-  h.listBatches.mockResolvedValue({ items: [{ batch_id: "ug-1-2", total: 2, done: 2 }] });
+  h.listBatches.mockResolvedValue({
+    items: [{ batch_id: "ug-1-2", total: 2, done: 2 }]
+  });
   h.getCommandOut.mockResolvedValue("full output");
 });
 
@@ -137,16 +141,23 @@ describe("挂载读数与分页状态源", () => {
 
     api.pagination.currentPage = 3;
     await api.loadCommands();
-    expect(h.listCommands.mock.calls.at(-1)[0]).toMatchObject({ limit: 100, offset: 200 });
+    expect(h.listCommands.mock.calls.at(-1)[0]).toMatchObject({
+      limit: 100,
+      offset: 200
+    });
   });
 
   it("手动加载失败：给可读错误、loading 复位、read 保持 false，pollFailed 不置位", async () => {
-    h.listCommands.mockRejectedValue({ response: { data: { detail: "库连接失败" } } });
+    h.listCommands.mockRejectedValue({
+      response: { data: { detail: "库连接失败" } }
+    });
     withHook();
     await settle();
 
-    expect(h.message).toHaveBeenCalledWith("加载命令历史失败：库连接失败", { type: "error" });
-    expect(api.pollFailed.value).toBe(false);   // 那是静默轮询专用的读数
+    expect(h.message).toHaveBeenCalledWith("加载命令历史失败：库连接失败", {
+      type: "error"
+    });
+    expect(api.pollFailed.value).toBe(false); // 那是静默轮询专用的读数
     expect(api.loading.value).toBe(false);
     expect(api.read.value).toBe(false);
   });
@@ -161,7 +172,7 @@ describe("自适应轮询（QR29-W8 / W5）", () => {
     await settle();
     const key2 = api.POLL_KEY;
 
-    expect(key2).not.toBe(key1);              // 同 key 会被 setPoll 覆盖 → 另一页静默停摆
+    expect(key2).not.toBe(key1); // 同 key 会被 setPoll 覆盖 → 另一页静默停摆
     expect(pollKeys().sort()).toEqual([key1, key2].sort());
 
     second.unmount();
@@ -181,14 +192,14 @@ describe("自适应轮询（QR29-W8 / W5）", () => {
 
     vi.advanceTimersByTime(1000);
     await settle();
-    expect(h.listCommands).toHaveBeenCalledTimes(1);   // 10s 档
+    expect(h.listCommands).toHaveBeenCalledTimes(1); // 10s 档
 
-    api.rows.value = [row({ status: "running" })];     // 未终态翻转
+    api.rows.value = [row({ status: "running" })]; // 未终态翻转
     await settle();
     h.listCommands.mockClear();
     vi.advanceTimersByTime(3000);
     await settle();
-    expect(h.listCommands).toHaveBeenCalledTimes(1);   // 3s 档
+    expect(h.listCommands).toHaveBeenCalledTimes(1); // 3s 档
   });
 
   it("autoRefresh=false → restartTimer 停表，一个 tick 都不打", async () => {
@@ -215,7 +226,7 @@ describe("自适应轮询（QR29-W8 / W5）", () => {
 
     expect(api.pollFailed.value).toBe(true);
     expect(h.message).not.toHaveBeenCalled();
-    expect(api.rows.value).toHaveLength(1);   // 谎报「没有记录」才是事故
+    expect(api.rows.value).toHaveLength(1); // 谎报「没有记录」才是事故
 
     h.listCommands.mockResolvedValue(listOf([], 0));
     await api.loadCommands(true);
@@ -231,7 +242,10 @@ describe("筛选下推与表头读数", () => {
     api.statusFilter.value = "failed";
     await settle();
 
-    expect(h.listCommands.mock.calls.at(-1)[0]).toMatchObject({ status: "failed", offset: 0 });
+    expect(h.listCommands.mock.calls.at(-1)[0]).toMatchObject({
+      status: "failed",
+      offset: 0
+    });
     expect(api.pagination.currentPage).toBe(1);
   });
 
@@ -308,7 +322,10 @@ describe("筛选下推与表头读数", () => {
     expect(api.rowClass({ row: row({ id: "zz" }) })).toBe("");
     expect(api.batchFilter.value).toBe("ug-9-2");
     expect(api.pagination.currentPage).toBe(1);
-    expect(h.listCommands.mock.calls.at(-1)[0]).toMatchObject({ batch: "ug-9-2", offset: 0 });
+    expect(h.listCommands.mock.calls.at(-1)[0]).toMatchObject({
+      batch: "ug-9-2",
+      offset: 0
+    });
     // 现状登记（不改生产码、不锁条数）：focusBatch 自己调 loadCommands()，而它刚改过的
     // batchFilter 又触发 watch([statusFilter, batchFilter]) → reloadFirstPage()，
     // 实测同参数连打两发（hook.tsx:251-258 与 194-197）。数据不会错（useSeq 让前一路失去
@@ -326,7 +343,7 @@ describe("输出抽屉（QR-W4 / QR29-W3）", () => {
     expect(h.getCommandOut).not.toHaveBeenCalled();
     expect(api.out.visible).toBe(true);
     expect(api.out.text).toContain("输出已按保留策略清理");
-    expect(api.out.loading).toBe(false);   // 上一条在途时点已清理行，不许永久转圈
+    expect(api.out.loading).toBe(false); // 上一条在途时点已清理行，不许永久转圈
   });
 
   it("正常行回填标题与正文；空正文显示占位而不是空白抽屉", async () => {
@@ -368,12 +385,14 @@ describe("输出抽屉（QR-W4 / QR29-W3）", () => {
 
     resolveA("A 的输出");
     await settle();
-    expect(api.out.text).toBe("B 的输出");   // 迟到包丢弃
+    expect(api.out.text).toBe("B 的输出"); // 迟到包丢弃
     expect(api.out.loading).toBe(false);
   });
 
   it("读取失败：正文给可读错误且 loading 复位（不许卡在转圈）", async () => {
-    h.getCommandOut.mockRejectedValue({ response: { data: { detail: "输出不存在" } } });
+    h.getCommandOut.mockRejectedValue({
+      response: { data: { detail: "输出不存在" } }
+    });
     withHook();
     await settle();
 
@@ -419,10 +438,14 @@ describe("导出与列渲染", () => {
       keyword: "df",
       include_tail: 1
     });
-    expect(h.downloadBlob.mock.calls[0][1]).toMatch(/^命令历史_\d{8}-\d{6}\.csv$/);
+    expect(h.downloadBlob.mock.calls[0][1]).toMatch(
+      /^命令历史_\d{8}-\d{6}\.csv$/
+    );
     expect(api.exporting.value).toBe(false);
 
-    h.exportCommands.mockRejectedValue({ response: { data: { detail: "导出超限" } } });
+    h.exportCommands.mockRejectedValue({
+      response: { data: { detail: "导出超限" } }
+    });
     await api.onExport();
     expect(api.exporting.value).toBe(false);
     expect(h.message.mock.calls.at(-1)[0]).toBe("导出失败：导出超限");
@@ -431,12 +454,18 @@ describe("导出与列渲染", () => {
   it("argv 预览：语义收进 utils/kk 的 argvText（QR29-E.2）—— 字符串原样、数组空格连接、items 结构以「采集项:」点名（与产品术语统一）、其余 JSON", async () => {
     withHook();
     await settle();
-    const render = (api.columns.find((c: any) => c.label === "命令 / 采集项") as any).cellRenderer;
+    const render = (
+      api.columns.find((c: any) => c.label === "命令 / 采集项") as any
+    ).cellRenderer;
 
     expect(render({ row: { argv: null } })).toBe("-");
     expect(render({ row: { argv: "df -h | sort" } })).toBe("df -h | sort");
-    expect(render({ row: { argv: ["/bin/ls", "-l", "a b"] } })).toBe("/bin/ls -l a b");
-    expect(render({ row: { argv: { items: ["cpu", "disk"] } } })).toBe("采集项: cpu, disk");
+    expect(render({ row: { argv: ["/bin/ls", "-l", "a b"] } })).toBe(
+      "/bin/ls -l a b"
+    );
+    expect(render({ row: { argv: { items: ["cpu", "disk"] } } })).toBe(
+      "采集项: cpu, disk"
+    );
     expect(render({ row: { argv: { other: 1 } } })).toBe('{"other":1}');
   });
 
@@ -444,14 +473,15 @@ describe("导出与列渲染", () => {
     withHook();
     await settle();
     const statusCol = api.columns.find((c: any) => c.label === "状态") as any;
-    const cls = (status: string) => statusCol.cellRenderer({ row: { status } }).props.class;
+    const cls = (status: string) =>
+      statusCol.cellRenderer({ row: { status } }).props.class;
     const rcCol = api.columns.find((c: any) => c.label === "rc") as any;
 
     expect(cls("failed")).toBe("kk-state kk-state--bad kk-bad");
     expect(cls("timeout")).toBe("kk-state kk-state--bad kk-bad");
     expect(cls("lost")).toBe("kk-state kk-state--bad kk-bad");
     expect(cls("sent")).toBe("kk-state kk-state--warn");
-    expect(cls("running")).toBe("kk-state kk-state--warn");   // 与 sent 同档：都是「等结果」
+    expect(cls("running")).toBe("kk-state kk-state--warn"); // 与 sent 同档：都是「等结果」
     expect(cls("done")).toBe("kk-state");
     expect(cls("pending")).toBe("kk-state kk-state--idle");
     expect(rcCol.cellRenderer({ row: { rc: null } }).children[0]).toBe("-");

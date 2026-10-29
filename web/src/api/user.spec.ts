@@ -36,18 +36,18 @@ describe("getLogin：后端 {token, username} → pure-admin {success, data}", (
 
     expect(httpMock.request).toHaveBeenCalledWith("post", "/api/login", {
       data: { username: "root", password: "x" }
-    });   // 凭据走 body，口令不许进 URL
+    }); // 凭据走 body，口令不许进 URL
 
     const res = await getLogin({ username: "root", password: "x" });
     expect(res.success).toBe(true);
     expect(res.data).toEqual({
       avatar: "",
       username: "root",
-      nickname: "root",          // 后端无昵称，用用户名占位
+      nickname: "root", // 后端无昵称，用用户名占位
       roles: ["admin"],
-      permissions: ["*:*:*"],    // hasPerms 的全权限短路依赖这个字面量
+      permissions: ["*:*:*"], // hasPerms 的全权限短路依赖这个字面量
       accessToken: "tk-9",
-      refreshToken: "tk-9",      // 后端只有一种 token
+      refreshToken: "tk-9", // 后端只有一种 token
       expires: new Date(NOW.getTime() + 12 * 3600 * 1000)
     });
     expect(res.data.expires).toBeInstanceOf(Date);
@@ -55,20 +55,25 @@ describe("getLogin：后端 {token, username} → pure-admin {success, data}", (
     // 每次调用重算过期时刻（不共享上一个 Date 实例）
     vi.setSystemTime(new Date(NOW.getTime() + 60_000));
     const again = await getLogin({ username: "root", password: "x" });
-    expect(again.data.expires.getTime() - res.data.expires.getTime()).toBe(60_000);
+    expect(again.data.expires.getTime() - res.data.expires.getTime()).toBe(
+      60_000
+    );
   });
 
   it("后端回空对象时不编造用户名与 token（缺字段原样缺着）", async () => {
     httpMock.request.mockResolvedValue({});
     const res = await getLogin({});
 
-    expect(res.success).toBe(true);       // 适配层不做成功判定，HTTP 2xx 就是成功
+    expect(res.success).toBe(true); // 适配层不做成功判定，HTTP 2xx 就是成功
     expect(res.data.username).toBeUndefined();
     expect(res.data.accessToken).toBeUndefined();
   });
 
   it("HTTP 层的错误原样抛出（登录页要靠 errText 透出「用户名或密码错误」）", async () => {
-    const err = { response: { data: { detail: "用户名或密码错误" } }, message: "Request failed" };
+    const err = {
+      response: { data: { detail: "用户名或密码错误" } },
+      message: "Request failed"
+    };
     httpMock.request.mockRejectedValue(err);
 
     await expect(getLogin({ username: "a", password: "b" })).rejects.toBe(err);
@@ -81,9 +86,13 @@ describe("logoutApi：永不 reject", () => {
     await expect(logoutApi()).resolves.toEqual({ ok: true });
     expect(httpMock.request).toHaveBeenCalledWith("post", "/api/logout");
 
-    for (const bad of [{ response: { status: 401 }, message: "401" }, new Error("Network Error"), "不是 Error 的拒绝值"]) {
+    for (const bad of [
+      { response: { status: 401 }, message: "401" },
+      new Error("Network Error"),
+      "不是 Error 的拒绝值"
+    ]) {
       httpMock.request.mockRejectedValue(bad);
-      await expect(logoutApi()).resolves.toBeUndefined();   // 登出是 fire-and-forget
+      await expect(logoutApi()).resolves.toBeUndefined(); // 登出是 fire-and-forget
     }
   });
 });

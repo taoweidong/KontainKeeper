@@ -60,7 +60,13 @@ beforeEach(() => {
   removeToken();
   storageLocal().clear();
   Object.assign(h.store, { isRemembered: false, loginDay: 7, permissions: [] });
-  for (const k of ["SET_AVATAR", "SET_USERNAME", "SET_NICKNAME", "SET_ROLES", "SET_PERMS"] as const)
+  for (const k of [
+    "SET_AVATAR",
+    "SET_USERNAME",
+    "SET_NICKNAME",
+    "SET_ROLES",
+    "SET_PERMS"
+  ] as const)
     h.store[k].mockClear();
 });
 
@@ -71,7 +77,7 @@ afterEach(() => {
 describe("formatToken", () => {
   it("Bearer 前缀逐字（后端按这个拆 Authorization）", () => {
     expect(formatToken("abc.def.ghi")).toBe("Bearer abc.def.ghi");
-    expect(formatToken("")).toBe("Bearer ");   // 现状：空串也拼前缀，非空判定在调用方
+    expect(formatToken("")).toBe("Bearer "); // 现状：空串也拼前缀，非空判定在调用方
   });
 });
 
@@ -105,10 +111,14 @@ describe("setToken：双写与过期", () => {
     setToken(FULL);
     h.store.SET_USERNAME.mockClear();
 
-    setToken({ accessToken: "at-2", refreshToken: "rt-2", expires: new Date(NOW.getTime() + 1000) });
+    setToken({
+      accessToken: "at-2",
+      refreshToken: "rt-2",
+      expires: new Date(NOW.getTime() + 1000)
+    });
 
-    expect(h.store.SET_USERNAME).toHaveBeenCalledWith("admin");   // 沿用旧画像
-    expect(JSON.parse(Cookies.get(TokenKey)!).accessToken).toBe("at-2");   // token 仍是新写入的
+    expect(h.store.SET_USERNAME).toHaveBeenCalledWith("admin"); // 沿用旧画像
+    expect(JSON.parse(Cookies.get(TokenKey)!).accessToken).toBe("at-2"); // token 仍是新写入的
   });
 
   it("multiple-tabs 随 isRemembered 落盘；勾选时带 loginDay，未勾选走会话 cookie", () => {
@@ -124,7 +134,7 @@ describe("setToken：双写与过期", () => {
   it("expires 不可解析（Invalid Date → NaN）时降级为会话 cookie，体内 expires 被序列化成 null", () => {
     setToken({ ...FULL, expires: new Date("not-a-date") as any });
 
-    expect(Cookies.get(TokenKey)).toContain("at-1");   // 仍然是写了的
+    expect(Cookies.get(TokenKey)).toContain("at-1"); // 仍然是写了的
     // JSON.stringify 把 NaN 写成 null：读回后「过期时间不可解析」与「永不过期」难以区分（已登记缺陷）
     expect(JSON.parse(Cookies.get(TokenKey)!).expires).toBeNull();
   });
@@ -134,16 +144,23 @@ describe("setToken：双写与过期", () => {
 
     expect(Cookies.get(TokenKey)).toBeUndefined();
     const back = getToken();
-    expect(back?.accessToken).toBeUndefined();   // 请求会裸奔到 401 → 统一登出
-    expect(back?.username).toBe("admin");        // 画像还在：「看着像登录着，其实没 token」
+    expect(back?.accessToken).toBeUndefined(); // 请求会裸奔到 401 → 统一登出
+    expect(back?.username).toBe("admin"); // 画像还在：「看着像登录着，其实没 token」
   });
 });
 
 describe("getToken：读回的三态", () => {
   it("两侧都空 → null；有 cookie 时优先 cookie，忽略 localStorage 的旧画像", () => {
-    expect(getToken()).toBeNull();   // storageLocal 的缺键语义，调用方只能靠可选链
+    expect(getToken()).toBeNull(); // storageLocal 的缺键语义，调用方只能靠可选链
 
-    Cookies.set(TokenKey, JSON.stringify({ accessToken: "from-cookie", expires: 1, refreshToken: "r" }));
+    Cookies.set(
+      TokenKey,
+      JSON.stringify({
+        accessToken: "from-cookie",
+        expires: 1,
+        refreshToken: "r"
+      })
+    );
     storageLocal().setItem(userKey, { accessToken: "from-local", roles: [] });
     expect(getToken().accessToken).toBe("from-cookie");
   });
@@ -175,7 +192,7 @@ describe("removeToken：清得干净且幂等", () => {
     expect(storageLocal().getItem(userKey)).toBeNull();
     expect(getToken()).toBeNull();
 
-    removeToken();   // 登出被两条路径同时触达
+    removeToken(); // 登出被两条路径同时触达
     expect(getToken()).toBeNull();
   });
 });

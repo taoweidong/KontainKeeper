@@ -32,7 +32,8 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock("../utils", async () => {
-  const { createPinia } = await vi.importActual<typeof import("pinia")>("pinia");
+  const { createPinia } =
+    await vi.importActual<typeof import("pinia")>("pinia");
   return {
     store: createPinia(),
     routerArrays: h.routerArrays,
@@ -100,8 +101,8 @@ beforeEach(() => {
   h.order.length = 0;
   h.mem = {};
   setActivePinia(store);
-  useUserStoreHook().$reset();   // store 实例在本文件内共享，逐条复位免相互依赖
-  h.logoutApi.mockResolvedValue(undefined);   // 真实实现自吞错误
+  useUserStoreHook().$reset(); // store 实例在本文件内共享，逐条复位免相互依赖
+  h.logoutApi.mockResolvedValue(undefined); // 真实实现自吞错误
 });
 
 describe("logOut：次序与副作用", () => {
@@ -113,7 +114,13 @@ describe("logOut：次序与副作用", () => {
 
     s.logOut();
 
-    expect(h.order).toEqual(["logoutApi", "removeToken", "handleTags", "resetRouter", "router.push"]);
+    expect(h.order).toEqual([
+      "logoutApi",
+      "removeToken",
+      "handleTags",
+      "resetRouter",
+      "router.push"
+    ]);
     expect(h.routerPush).toHaveBeenCalledWith("/login");
     expect(h.handleTags).toHaveBeenCalledWith("equal", h.routerArrays);
     expect(s.username).toBe("");
@@ -132,7 +139,13 @@ describe("logOut：次序与副作用", () => {
     useUserStoreHook().logOut();
 
     // 同步就把本地清完并跳走：网络再慢也不把人卡在旧会话里
-    expect(h.order).toEqual(["logoutApi", "removeToken", "handleTags", "resetRouter", "router.push"]);
+    expect(h.order).toEqual([
+      "logoutApi",
+      "removeToken",
+      "handleTags",
+      "resetRouter",
+      "router.push"
+    ]);
     resolveLogout();
   });
 
@@ -162,9 +175,15 @@ describe("loginByUsername", () => {
   it("成功：setToken 收到 data.data（会话写入的唯一入口），原样回传结果且不碰登出副作用", async () => {
     h.getLogin.mockResolvedValue(okResult);
 
-    const res = await useUserStoreHook().loginByUsername({ username: "admin", password: "x" } as any);
+    const res = await useUserStoreHook().loginByUsername({
+      username: "admin",
+      password: "x"
+    } as any);
 
-    expect(h.getLogin).toHaveBeenCalledWith({ username: "admin", password: "x" });
+    expect(h.getLogin).toHaveBeenCalledWith({
+      username: "admin",
+      password: "x"
+    });
     expect(h.setToken).toHaveBeenCalledTimes(1);
     expect(h.setToken.mock.calls[0][0]).toBe(okResult.data);
     expect(res).toBe(okResult);
@@ -173,7 +192,10 @@ describe("loginByUsername", () => {
   });
 
   it("success 为假时不写 token，但仍 resolve（形状异常由调用方判定，store 不擅自失败）", async () => {
-    h.getLogin.mockResolvedValue({ success: false, data: { accessToken: "x" } });
+    h.getLogin.mockResolvedValue({
+      success: false,
+      data: { accessToken: "x" }
+    });
 
     const res = await useUserStoreHook().loginByUsername({} as any);
 
@@ -185,29 +207,39 @@ describe("loginByUsername", () => {
     const err = { response: { data: { detail: "用户名或密码错误" } } };
     h.getLogin.mockRejectedValue(err);
 
-    await expect(useUserStoreHook().loginByUsername({} as any)).rejects.toBe(err);
+    await expect(useUserStoreHook().loginByUsername({} as any)).rejects.toBe(
+      err
+    );
     expect(h.setToken).not.toHaveBeenCalled();
   });
 });
 
 describe("handRefreshToken：后端无刷新接口", () => {
   it("恒 reject 且不写 token", async () => {
-    h.refreshTokenApi.mockRejectedValue(new Error("refresh-token not supported"));
-
-    await expect(useUserStoreHook().handRefreshToken({ refreshToken: "rt" } as any)).rejects.toThrow(
-      "refresh-token not supported"
+    h.refreshTokenApi.mockRejectedValue(
+      new Error("refresh-token not supported")
     );
+
+    await expect(
+      useUserStoreHook().handRefreshToken({ refreshToken: "rt" } as any)
+    ).rejects.toThrow("refresh-token not supported");
     expect(h.setToken).not.toHaveBeenCalled();
   });
 
   it("后端补上刷新接口时的成功分支：setToken 收到 data.data 并回传结果（形状契约先锁住）", async () => {
     const refreshed = {
       success: true,
-      data: { accessToken: "new", refreshToken: "new2", expires: new Date("2026-04-30T22:00:00Z") }
+      data: {
+        accessToken: "new",
+        refreshToken: "new2",
+        expires: new Date("2026-04-30T22:00:00Z")
+      }
     };
     h.refreshTokenApi.mockResolvedValue(refreshed);
 
-    const res = await useUserStoreHook().handRefreshToken({ refreshToken: "rt" } as any);
+    const res = await useUserStoreHook().handRefreshToken({
+      refreshToken: "rt"
+    } as any);
 
     expect(res).toBe(refreshed);
     expect(h.setToken.mock.calls[0][0]).toBe(refreshed.data);
@@ -225,13 +257,18 @@ describe("状态与 setter", () => {
     s.SET_ISREMEMBERED(true);
     s.SET_LOGINDAY("5" as any);
 
-    expect([s.avatar, s.username, s.nickname, s.roles, s.permissions, s.isRemembered]).toEqual([
-      "a.png", "bob", "鲍勃", ["r1", "r2"], ["host:read"], true
-    ]);
+    expect([
+      s.avatar,
+      s.username,
+      s.nickname,
+      s.roles,
+      s.permissions,
+      s.isRemembered
+    ]).toEqual(["a.png", "bob", "鲍勃", ["r1", "r2"], ["host:read"], true]);
     expect(s.loginDay).toBe(5);
 
     s.SET_LOGINDAY(0);
-    expect(s.loginDay).toBe(0);   // 0 是真值「永不过期」，不能被兜成 7
+    expect(s.loginDay).toBe(0); // 0 是真值「永不过期」，不能被兜成 7
   });
 
   it("未登录时是空数组而不是 undefined；有 user-info 时水合画像（hasPerms 与菜单依赖）", () => {
@@ -249,7 +286,7 @@ describe("状态与 setter", () => {
       roles: ["admin"],
       permissions: ["*:*:*"]
     };
-    s.$reset();   // state() 每次重建 store 时重新求值 → 复现「刷新后从 localStorage 复原」
+    s.$reset(); // state() 每次重建 store 时重新求值 → 复现「刷新后从 localStorage 复原」
 
     expect(s.username).toBe("admin");
     expect(s.roles).toEqual(["admin"]);

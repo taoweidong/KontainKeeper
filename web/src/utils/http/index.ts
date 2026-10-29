@@ -118,7 +118,10 @@ class PureHttp {
         // - 403 只由 agent_ip_auth 抛出（controllers/deps.py，Agent 自更新接口的 IP 白名单），
         //   浏览器会话依然有效，把人踢出是误伤。业务接口的鉴权失败一律 401（deps.py current_user）。
         const status = $error?.response?.status;
-        if (status === 401 && !endsWithAny($error?.config?.url, NO_AUTO_LOGOUT_URLS)) {
+        if (
+          status === 401 &&
+          !endsWithAny($error?.config?.url, NO_AUTO_LOGOUT_URLS)
+        ) {
           const now = Date.now();
           if (now - lastAutoLogoutAt > AUTO_LOGOUT_DEDUP_MS) {
             lastAutoLogoutAt = now;

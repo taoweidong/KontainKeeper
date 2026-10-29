@@ -10,7 +10,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { effectScope } from "vue";
 
-import { clearPoll, clearPolls, pollKeys, setPoll, usePolls, useSeq } from "./kkPoll";
+import {
+  clearPoll,
+  clearPolls,
+  pollKeys,
+  setPoll,
+  usePolls,
+  useSeq
+} from "./kkPoll";
 
 const flushMicrotasks = async () => {
   for (let i = 0; i < 6; i++) await Promise.resolve();
@@ -37,7 +44,7 @@ describe("setPoll / clearPoll：注册与覆盖", () => {
       100
     );
     vi.advanceTimersByTime(100);
-    await flushMicrotasks();   // runGuarded 把回调放进微任务，先冲刷再断言
+    await flushMicrotasks(); // runGuarded 把回调放进微任务，先冲刷再断言
     expect(calls).toEqual(["old"]);
 
     setPoll(
@@ -46,7 +53,7 @@ describe("setPoll / clearPoll：注册与覆盖", () => {
         calls.push("new");
       },
       100
-    );   // 覆盖：旧的被 clear
+    ); // 覆盖：旧的被 clear
     // 同一次 advanceTimersByTime 的多个 tick 之间不插微任务，而在途标记要等
     // 微任务才复位——生产里 3~10s 的间隔永远留足事件循环空隙，逐 tick 冲刷
     // 才是与真实行为同构的写法
@@ -94,30 +101,38 @@ describe("setPoll / clearPoll：注册与覆盖", () => {
     let calls = 0;
     let resolveFn!: () => void;
     const gate = new Promise<void>(r => (resolveFn = r));
-    setPoll("k", async () => {
-      calls++;
-      await gate;
-    }, 100);
+    setPoll(
+      "k",
+      async () => {
+        calls++;
+        await gate;
+      },
+      100
+    );
 
-    vi.advanceTimersByTime(100);   // 第一轮开始，挂在 gate 上
+    vi.advanceTimersByTime(100); // 第一轮开始，挂在 gate 上
     await flushMicrotasks();
-    vi.advanceTimersByTime(500);   // 5 个 tick 全部跳过
+    vi.advanceTimersByTime(500); // 5 个 tick 全部跳过
     await flushMicrotasks();
     expect(calls).toBe(1);
 
     resolveFn();
     await flushMicrotasks();
-    vi.advanceTimersByTime(100);   // settle 后恢复
+    vi.advanceTimersByTime(100); // settle 后恢复
     await flushMicrotasks();
     expect(calls).toBe(2);
   });
 
   it("回调抛异常不影响下一轮（定时器不许静默停摆）", async () => {
     let calls = 0;
-    setPoll("k", () => {
-      calls++;
-      throw new Error("boom");
-    }, 100);
+    setPoll(
+      "k",
+      () => {
+        calls++;
+        throw new Error("boom");
+      },
+      100
+    );
     for (let i = 0; i < 3; i++) {
       vi.advanceTimersByTime(100);
       await flushMicrotasks();
@@ -131,7 +146,7 @@ describe("clearPolls / pollKeys：全局兜底", () => {
     setPoll("a", () => {}, 100);
     setPoll("b", () => {}, 100);
     clearPoll("a");
-    clearPoll("a");   // 重复清不抛
+    clearPoll("a"); // 重复清不抛
     expect(pollKeys()).toEqual(["b"]);
     clearPolls();
     expect(pollKeys()).toEqual([]);
@@ -152,10 +167,10 @@ describe("usePolls：作用域化清理", () => {
     expect(pollKeys().sort()).toEqual(["mine-a", "mine-b", "other-page"]);
 
     scope.stop();
-    expect(pollKeys()).toEqual(["other-page"]);   // 只清自己注册的
+    expect(pollKeys()).toEqual(["other-page"]); // 只清自己注册的
     vi.advanceTimersByTime(100);
     await flushMicrotasks();
-    expect(outside).toHaveBeenCalled();           // 别页还在跑
+    expect(outside).toHaveBeenCalled(); // 别页还在跑
   });
 
   it("同 key 二次注册不产生作用域泄漏，scopedClearPoll 只清登记过的", () => {
@@ -163,7 +178,7 @@ describe("usePolls：作用域化清理", () => {
     scope.run(() => {
       const { setPoll, clearPoll } = usePolls();
       setPoll("k", () => {}, 100);
-      setPoll("k", () => {}, 100);   // 覆盖同名 key
+      setPoll("k", () => {}, 100); // 覆盖同名 key
       clearPoll("k");
       expect(pollKeys()).toEqual([]);
       setPoll("k2", () => {}, 100);
@@ -178,7 +193,7 @@ describe("useSeq：一次性请求的竞态守卫", () => {
     const begin = useSeq();
     const first = begin();
     const second = begin();
-    expect(first()).toBe(false);    // 第二次发起让第一次的票据作废
+    expect(first()).toBe(false); // 第二次发起让第一次的票据作废
     expect(second()).toBe(true);
   });
 
@@ -186,6 +201,6 @@ describe("useSeq：一次性请求的竞态守卫", () => {
     const begin = useSeq();
     const mine = begin();
     expect(mine()).toBe(true);
-    expect(mine()).toBe(true);      // 可重复判（finally 里用）
+    expect(mine()).toBe(true); // 可重复判（finally 里用）
   });
 });

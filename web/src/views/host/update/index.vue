@@ -175,9 +175,7 @@ async function onRollback() {
             / {{ fleetInfo.total }}</span
           >
           <span v-if="current?.uploaded_at" class="kk-sub">
-            {{
-              ageText(Math.max(0, nowSec() - current.uploaded_at))
-            }}上传
+            {{ ageText(Math.max(0, nowSec() - current.uploaded_at)) }}上传
           </span>
           <span class="kk-sync" :class="{ 'kk-sync--stale': pollFailed }">
             {{

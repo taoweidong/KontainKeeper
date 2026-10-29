@@ -64,7 +64,12 @@ const pageOf = (items: any[] = [], total = items.length) => ({
   offset: 0,
   limit: 200
 });
-const rowOf = (id: number, action = "login.ok") => ({ id, actor: "admin", action, ts: id * 10 });
+const rowOf = (id: number, action = "login.ok") => ({
+  id,
+  actor: "admin",
+  action,
+  ts: id * 10
+});
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -85,7 +90,11 @@ describe("初始加载与唯一状态源", () => {
     await settle();
 
     expect(h.listAudit).toHaveBeenCalledTimes(1);
-    expect(h.listAudit.mock.calls[0][0]).toEqual({ limit: 200, offset: 0, keyword: undefined });
+    expect(h.listAudit.mock.calls[0][0]).toEqual({
+      limit: 200,
+      offset: 0,
+      keyword: undefined
+    });
   });
 
   it("offset 由 (currentPage-1)*pageSize 现场推导；返回值原样落进 dataList/total", async () => {
@@ -95,7 +104,11 @@ describe("初始加载与唯一状态源", () => {
     api.pagination.currentPage = 3;
     await api.onSearch();
 
-    expect(h.listAudit.mock.calls[1][0]).toEqual({ limit: 200, offset: 400, keyword: undefined });
+    expect(h.listAudit.mock.calls[1][0]).toEqual({
+      limit: 200,
+      offset: 400,
+      keyword: undefined
+    });
     expect(api.pagination.total).toBe(1);
   });
 
@@ -105,13 +118,17 @@ describe("初始加载与唯一状态源", () => {
     h.listAudit.mockClear();
 
     api.pagination.pageSize = 100;
-    api.pagination.currentPage = 4;      // 用户改条数前可能已在第 4 页
+    api.pagination.currentPage = 4; // 用户改条数前可能已在第 4 页
     await settle();
     await settle();
 
     expect(api.pagination.currentPage).toBe(1);
     expect(h.listAudit).toHaveBeenCalledTimes(1);
-    expect(h.listAudit.mock.calls[0][0]).toEqual({ limit: 100, offset: 0, keyword: undefined });
+    expect(h.listAudit.mock.calls[0][0]).toEqual({
+      limit: 100,
+      offset: 0,
+      keyword: undefined
+    });
   });
 });
 
@@ -131,17 +148,23 @@ describe("read 三态与失败路径（QR-W16）", () => {
     await settle();
     expect(api.read.value).toBe(true);
 
-    h.listAudit.mockRejectedValue({ response: { data: { detail: "数据库连接失败" } } });
+    h.listAudit.mockRejectedValue({
+      response: { data: { detail: "数据库连接失败" } }
+    });
     await api.onSearch();
 
-    expect(api.read.value).toBe(true);                    // 读过就是读过
-    expect(api.dataList.value).toHaveLength(1);           // 旧数据不被谎称「暂无」
+    expect(api.read.value).toBe(true); // 读过就是读过
+    expect(api.dataList.value).toHaveLength(1); // 旧数据不被谎称「暂无」
     expect(api.loading.value).toBe(false);
-    expect(h.message).toHaveBeenCalledWith("加载审计日志失败：数据库连接失败", { type: "error" });
+    expect(h.message).toHaveBeenCalledWith("加载审计日志失败：数据库连接失败", {
+      type: "error"
+    });
 
     h.listAudit.mockRejectedValue(new Error("Network Error"));
     await api.onSearch();
-    expect(h.message.mock.calls.at(-1)[0]).toBe("加载审计日志失败：Network Error");
+    expect(h.message.mock.calls.at(-1)[0]).toBe(
+      "加载审计日志失败：Network Error"
+    );
   });
 
   it("首次加载就失败：read 保持 false（页面必须显示「接口不可达」而不是「暂无审计记录」）", async () => {
@@ -153,7 +176,8 @@ describe("read 三态与失败路径（QR-W16）", () => {
     expect(api.loading.value).toBe(false);
     expect(h.message).toHaveBeenCalledTimes(1);
     expect(h.message.mock.calls[0][1]).toEqual({ type: "error" });
-  });});
+  });
+});
 
 describe("迟到包丢弃（useSeq，QR-W4）", () => {
   it("慢响应后到时不写回数据、不替最新一路关 loading", async () => {
@@ -167,9 +191,9 @@ describe("迟到包丢弃（useSeq，QR-W4）", () => {
       )
       .mockResolvedValue(pageOf([rowOf(99)]));
 
-    withHook();               // onMounted 那一路挂在 slow 上
+    withHook(); // onMounted 那一路挂在 slow 上
     await settle();
-    await api.onSearch();     // 第二路立即返回 → 拿到最新票据
+    await api.onSearch(); // 第二路立即返回 → 拿到最新票据
 
     expect(api.dataList.value[0].id).toBe(99);
     expect(api.loading.value).toBe(false);
@@ -177,7 +201,7 @@ describe("迟到包丢弃（useSeq，QR-W4）", () => {
     resolveSlow(pageOf([rowOf(1)]));
     await settle();
 
-    expect(api.dataList.value[0].id).toBe(99);   // 迟到包被丢弃
+    expect(api.dataList.value[0].id).toBe(99); // 迟到包被丢弃
     expect(api.pagination.total).toBe(1);
     expect(api.loading.value).toBe(false);
   });
@@ -224,7 +248,11 @@ describe("关键字防抖与归零", () => {
     await settle();
 
     expect(h.listAudit).toHaveBeenCalledTimes(1);
-    expect(h.listAudit.mock.calls[0][0]).toEqual({ limit: 200, offset: 0, keyword: "logout" });
+    expect(h.listAudit.mock.calls[0][0]).toEqual({
+      limit: 200,
+      offset: 0,
+      keyword: "logout"
+    });
     expect(api.pagination.currentPage).toBe(1);
   });
 
@@ -281,7 +309,7 @@ describe("resetFields 的双路径", () => {
     await nextTick();
 
     expect(api.form.keyword).toBe("");
-    expect(h.listAudit).not.toHaveBeenCalled();   // 此刻还在防抖窗内
+    expect(h.listAudit).not.toHaveBeenCalled(); // 此刻还在防抖窗内
 
     await vi.advanceTimersByTimeAsync(300);
     await settle();
@@ -300,7 +328,11 @@ describe("resetFields 的双路径", () => {
 
     expect(api.pagination.currentPage).toBe(1);
     expect(h.listAudit).toHaveBeenCalledTimes(1);
-    expect(h.listAudit.mock.calls[0][0]).toEqual({ limit: 200, offset: 0, keyword: undefined });
+    expect(h.listAudit.mock.calls[0][0]).toEqual({
+      limit: 200,
+      offset: 0,
+      keyword: undefined
+    });
   });
 });
 
@@ -318,14 +350,21 @@ describe("导出", () => {
     await settle();
     await api.onExport();
 
-    expect(h.exportAudit).toHaveBeenCalledWith({ keyword: "login", limit: 200 });
+    expect(h.exportAudit).toHaveBeenCalledWith({
+      keyword: "login",
+      limit: 200
+    });
     expect(h.downloadBlob.mock.calls[0][0]).toBe(blob);
-    expect(h.downloadBlob.mock.calls[0][1]).toMatch(/^审计日志_\d{8}-\d{6}\.csv$/);
+    expect(h.downloadBlob.mock.calls[0][1]).toMatch(
+      /^审计日志_\d{8}-\d{6}\.csv$/
+    );
     expect(api.exporting.value).toBe(false);
   });
 
   it("失败：exporting 必复位、不落盘、给可读错误（按钮不许永久置灰）", async () => {
-    h.exportAudit.mockRejectedValue({ response: { data: { detail: "导出行数超限" } } });
+    h.exportAudit.mockRejectedValue({
+      response: { data: { detail: "导出行数超限" } }
+    });
     withHook();
     await settle();
 
@@ -345,7 +384,10 @@ describe("导出", () => {
     await settle();
     await api.onExport();
 
-    expect(h.exportAudit).toHaveBeenCalledWith({ keyword: undefined, limit: 500 });
+    expect(h.exportAudit).toHaveBeenCalledWith({
+      keyword: undefined,
+      limit: 500
+    });
   });
 });
 
@@ -357,7 +399,13 @@ describe("列定义：严重度四档与 label 唯一性（L1-5 回归锁）", (
     withHook();
     await settle();
 
-    for (const a of ["login_failed", "cmd_blocked", "ip_rejected", "login_locked", "blacklist_violation"])
+    for (const a of [
+      "login_failed",
+      "cmd_blocked",
+      "ip_rejected",
+      "login_locked",
+      "blacklist_violation"
+    ])
       expect(actionClass(a), a).toBe("kk-state kk-state--bad kk-bad");
     expect(actionClass("proto_mismatch")).toBe("kk-state kk-state--warn");
     expect(actionClass("cmd timeout")).toBe("kk-state kk-state--warn");

@@ -21,8 +21,12 @@ beforeEach(() => {
 describe("getHealth", () => {
   it("GET /api/health 无参；bridge=null（未连 Broker）是第三态不被兜成空对象；agents_online=0 是真读数", async () => {
     httpMock.request.mockResolvedValue({
-      ok: true, version: "0.1.0", proto_ver: 4, agents_online: 3,
-      broker: "connected", bridge: { published: 12 }
+      ok: true,
+      version: "0.1.0",
+      proto_ver: 4,
+      agents_online: 3,
+      broker: "connected",
+      bridge: { published: 12 }
     });
     const res = await getHealth();
     expect(httpMock.request).toHaveBeenCalledWith("get", "/api/health");
@@ -30,10 +34,15 @@ describe("getHealth", () => {
     expect(res.broker).toBe("connected");
     expect(res.agents_online).toBe(3);
 
-    httpMock.request.mockResolvedValue({ ok: true, broker: "disconnected", bridge: null, agents_online: 0 });
+    httpMock.request.mockResolvedValue({
+      ok: true,
+      broker: "disconnected",
+      bridge: null,
+      agents_online: 0
+    });
     const down = await getHealth();
     expect(down.bridge).toBeNull();
-    expect(down.agents_online).toBe(0);   // 页面用 read 位区分「失败」与「真的 0 台」
+    expect(down.agents_online).toBe(0); // 页面用 read 位区分「失败」与「真的 0 台」
   });
 });
 
@@ -43,7 +52,10 @@ describe("getStats", () => {
     expect(httpMock.request).toHaveBeenCalledWith("get", "/api/system/stats");
 
     httpMock.request.mockResolvedValue({
-      ok: true, uptime_sec: 10, hosts: { total: 0, online: 0 }, commands: {},
+      ok: true,
+      uptime_sec: 10,
+      hosts: { total: 0, online: 0 },
+      commands: {},
       storage: { heartbeats: 0, hourly: 0 },
       broker: { connected: true, stats: null, last_msg_age_sec: null }
     });

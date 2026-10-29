@@ -32,10 +32,14 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock("vue-router", () => ({ useRoute: () => h.route }));
-vi.mock("element-plus", () => ({ ElMessageBox: { confirm: h.confirm, alert: h.alert } }));
+vi.mock("element-plus", () => ({
+  ElMessageBox: { confirm: h.confirm, alert: h.alert }
+}));
 vi.mock("@/utils/http", () => ({ http: { request: vi.fn() } }));
 vi.mock("@/utils/message", () => ({ message: h.message }));
-vi.mock("@/api/containers", () => ({ listHosts: (...a: any[]) => h.listHosts(...a) }));
+vi.mock("@/api/containers", () => ({
+  listHosts: (...a: any[]) => h.listHosts(...a)
+}));
 vi.mock("@/api/agent", () => ({
   getAgentCurrent: () => h.getAgentCurrent(),
   listUpdates: (...a: any[]) => h.listUpdates(...a),
@@ -86,15 +90,35 @@ beforeEach(() => {
   vi.useFakeTimers();
   clearPolls();
   h.route.query = {};
-  for (const fn of [h.message, h.listHosts, h.getAgentCurrent, h.listUpdates, h.upgradeHosts, h.confirm, h.alert])
+  for (const fn of [
+    h.message,
+    h.listHosts,
+    h.getAgentCurrent,
+    h.listUpdates,
+    h.upgradeHosts,
+    h.confirm,
+    h.alert
+  ])
     fn.mockReset();
-  h.listHosts.mockResolvedValue(hostsOf([host("a"), host("b", { agent_outdated: false })]));
+  h.listHosts.mockResolvedValue(
+    hostsOf([host("a"), host("b", { agent_outdated: false })])
+  );
   h.getAgentCurrent.mockResolvedValue({
-    version: "1.1.0", hosts_total: 2, hosts_outdated: 1, sha256: "s", size: 1, uploaded_at: 0
+    version: "1.1.0",
+    hosts_total: 2,
+    hosts_outdated: 1,
+    sha256: "s",
+    size: 1,
+    uploaded_at: 0
   });
   h.listUpdates.mockResolvedValue({ items: [], summary: {}, limit: 50 });
   h.confirm.mockResolvedValue(undefined);
-  h.upgradeHosts.mockResolvedValue({ ok: true, batch_id: "ug-1-1", accepted: [], skipped: [] });
+  h.upgradeHosts.mockResolvedValue({
+    ok: true,
+    batch_id: "ug-1-1",
+    accepted: [],
+    skipped: []
+  });
   h.alert.mockResolvedValue(undefined);
 });
 
@@ -106,28 +130,56 @@ afterEach(() => {
 describe("fleetInfo 三态与两条读数的独立性", () => {
   it("没读到之前一切是 —（渲染 0 就是编数据）", async () => {
     withHook();
-    expect(api.fleetInfo.value).toEqual({ version: "—", outdated: "—", total: "—", cls: "" });
+    expect(api.fleetInfo.value).toEqual({
+      version: "—",
+      outdated: "—",
+      total: "—",
+      cls: ""
+    });
     expect(api.read.value).toBe(false);
   });
 
   it("读到但没有待分发版本：outdated 仍是 —，total 用真读数 0", async () => {
-    h.getAgentCurrent.mockResolvedValue({ version: "", hosts_total: 0, hosts_outdated: 0 });
+    h.getAgentCurrent.mockResolvedValue({
+      version: "",
+      hosts_total: 0,
+      hosts_outdated: 0
+    });
     withHook();
     await settle();
 
     expect(api.read.value).toBe(true);
     expect(api.hasLatest.value).toBe(false);
-    expect(api.fleetInfo.value).toEqual({ version: "（未上传）", outdated: "—", total: 0, cls: "" });
+    expect(api.fleetInfo.value).toEqual({
+      version: "（未上传）",
+      outdated: "—",
+      total: 0,
+      cls: ""
+    });
   });
 
   it("有版本时 outdated 用真值：落后 >0 → kk-bad，0 台 → kk-ok", async () => {
     withHook();
     await settle();
-    expect(api.fleetInfo.value).toEqual({ version: "1.1.0", outdated: 1, total: 2, cls: "kk-bad" });
+    expect(api.fleetInfo.value).toEqual({
+      version: "1.1.0",
+      outdated: 1,
+      total: 2,
+      cls: "kk-bad"
+    });
 
-    h.getAgentCurrent.mockResolvedValue({ version: "1.1.0", hosts_total: 5, hosts_outdated: 0 });
+    h.getAgentCurrent.mockResolvedValue({
+      version: "1.1.0",
+      hosts_total: 5,
+      hosts_outdated: 0
+    });
     await api.load();
-    expect(api.fleetInfo.value).toEqual({ version: "1.1.0", outdated: 0, total: 5, cls: "kk-ok" });
+    expect(api.fleetInfo.value).toEqual({
+      version: "1.1.0",
+      outdated: 0,
+      total: 5,
+      cls: "kk-ok"
+    });
   });
 
   it("台账接口失败只让 ledgerRead 落 false；主表只留 agent_outdated 的行", async () => {
@@ -141,13 +193,17 @@ describe("fleetInfo 三态与两条读数的独立性", () => {
   });
 
   it("主表接口失败：read 保持 false、非静默路径给可读错误、loading 复位", async () => {
-    h.getAgentCurrent.mockRejectedValue({ response: { data: { detail: "未上传版本" } } });
+    h.getAgentCurrent.mockRejectedValue({
+      response: { data: { detail: "未上传版本" } }
+    });
     withHook();
     await settle();
 
     expect(api.read.value).toBe(false);
     expect(api.loading.value).toBe(false);
-    expect(h.message).toHaveBeenCalledWith("加载升级信息失败：未上传版本", { type: "error" });
+    expect(h.message).toHaveBeenCalledWith("加载升级信息失败：未上传版本", {
+      type: "error"
+    });
   });
 });
 
@@ -162,9 +218,9 @@ describe("前端分页与轮询", () => {
     api.pagination.currentPage = 2;
     await settle();
 
-    expect(api.pagedOutdated.value).toHaveLength(10);   // 60 - 50
+    expect(api.pagedOutdated.value).toHaveLength(10); // 60 - 50
     expect(api.pagedOutdated.value[0].pod).toBe("h50");
-    expect(h.listHosts).not.toHaveBeenCalled();         // 翻页纯前端
+    expect(h.listHosts).not.toHaveBeenCalled(); // 翻页纯前端
   });
 
   it("数据变少后页码越界 → clamp 到有内容的那一页而不是空表", async () => {
@@ -188,7 +244,7 @@ describe("前端分页与轮询", () => {
 
     api.interval.value = 30;
     await settle();
-    expect(pollKeys()).toEqual(["host-update"]);   // 只重建这一路
+    expect(pollKeys()).toEqual(["host-update"]); // 只重建这一路
 
     h.listHosts.mockClear();
     vi.advanceTimersByTime(29000);
@@ -208,7 +264,9 @@ describe("前端分页与轮询", () => {
 
 describe("勾选模型与 ?pods= 预填", () => {
   it("全选 → 模型与读数同步；数据刷新后丢掉已不再落后的主机；clearSelection 清干净", async () => {
-    h.listHosts.mockResolvedValue(hostsOf([host("a"), host("b", { online: false })]));
+    h.listHosts.mockResolvedValue(
+      hostsOf([host("a"), host("b", { online: false })])
+    );
     withHook();
     await settle();
 
@@ -219,7 +277,7 @@ describe("勾选模型与 ?pods= 预填", () => {
 
     h.listHosts.mockResolvedValue(hostsOf([host("a")]));
     await api.load();
-    expect(api.selection.value.map(x => x.pod)).toEqual(["a"]);   // 展示与提交都不引用过期数据
+    expect(api.selection.value.map(x => x.pod)).toEqual(["a"]); // 展示与提交都不引用过期数据
 
     api.clearSelection();
     expect(api.selection.value).toEqual([]);
@@ -232,7 +290,7 @@ describe("勾选模型与 ?pods= 预填", () => {
     withHook();
     await settle();
 
-    expect(api.selection.value.map(x => x.pod)).toEqual(["a", "b"]);   // ghost 被忽略
+    expect(api.selection.value.map(x => x.pod)).toEqual(["a", "b"]); // ghost 被忽略
 
     api.clearSelection();
     await api.load();
@@ -246,16 +304,28 @@ describe("批量升级的门禁与回执", () => {
     await settle();
 
     await api.onUpgrade();
-    expect(h.message).toHaveBeenCalledWith("请先勾选要升级的主机", { type: "warning" });
+    expect(h.message).toHaveBeenCalledWith("请先勾选要升级的主机", {
+      type: "warning"
+    });
 
-    h.getAgentCurrent.mockResolvedValue({ version: "", hosts_total: 3, hosts_outdated: 0 });
+    h.getAgentCurrent.mockResolvedValue({
+      version: "",
+      hosts_total: 3,
+      hosts_outdated: 0
+    });
     await api.load();
     api.selection.value = [host("a") as any];
     h.message.mockClear();
     await api.onUpgrade();
-    expect(h.message).toHaveBeenCalledWith("服务端没有待分发版本，先去上传", { type: "warning" });
+    expect(h.message).toHaveBeenCalledWith("服务端没有待分发版本，先去上传", {
+      type: "warning"
+    });
 
-    h.getAgentCurrent.mockResolvedValue({ version: "1.1.0", hosts_total: 3, hosts_outdated: 1 });
+    h.getAgentCurrent.mockResolvedValue({
+      version: "1.1.0",
+      hosts_total: 3,
+      hosts_outdated: 1
+    });
     await api.load();
     h.confirm.mockRejectedValue("cancel");
     api.selection.value = [host("a") as any];
@@ -266,11 +336,16 @@ describe("批量升级的门禁与回执", () => {
   });
 
   it("确认文案带上离线台数（会标 queued 等重连补投，不是失败）", async () => {
-    h.listHosts.mockResolvedValue(hostsOf([host("a"), host("b", { online: false })]));
+    h.listHosts.mockResolvedValue(
+      hostsOf([host("a"), host("b", { online: false })])
+    );
     withHook();
     await settle();
 
-    api.selection.value = [host("a") as any, host("b", { online: false }) as any];
+    api.selection.value = [
+      host("a") as any,
+      host("b", { online: false }) as any
+    ];
     await api.onUpgrade();
 
     const warn = h.confirm.mock.calls[0][0] as string;
@@ -285,8 +360,20 @@ describe("批量升级的门禁与回执", () => {
       ok: true,
       batch_id: "ug-2-2",
       accepted: [
-        { host: "a", from_version: "1.0.0", to_version: "1.1.0", ledger_id: "l1", queued: false },
-        { host: "b", from_version: "1.0.0", to_version: "1.1.0", ledger_id: "l2", queued: true }
+        {
+          host: "a",
+          from_version: "1.0.0",
+          to_version: "1.1.0",
+          ledger_id: "l1",
+          queued: false
+        },
+        {
+          host: "b",
+          from_version: "1.0.0",
+          to_version: "1.1.0",
+          ledger_id: "l2",
+          queued: true
+        }
       ],
       skipped: [{ host: "c", reason: "already_latest" }]
     });
@@ -305,7 +392,9 @@ describe("批量升级的门禁与回执", () => {
   });
 
   it("失败路径 upgrading 必复位并给可读错误", async () => {
-    h.upgradeHosts.mockRejectedValue({ response: { data: { detail: "服务端未连 Broker" } } });
+    h.upgradeHosts.mockRejectedValue({
+      response: { data: { detail: "服务端未连 Broker" } }
+    });
     withHook();
     await settle();
 
@@ -313,7 +402,9 @@ describe("批量升级的门禁与回执", () => {
     await api.onUpgrade();
 
     expect(api.upgrading.value).toBe(false);
-    expect(h.message).toHaveBeenCalledWith("升级失败：服务端未连 Broker", { type: "error" });
+    expect(h.message).toHaveBeenCalledWith("升级失败：服务端未连 Broker", {
+      type: "error"
+    });
   });
 });
 
@@ -327,9 +418,14 @@ describe("跳过明细的聚合（QR-W9）", () => {
 
     await api.showSkipped([{ host: "c", reason: "no_binary" }]);
     const html = h.alert.mock.calls[0][0] as any;
-    expect(h.alert.mock.calls[0][1]).toBe("跳过 1 台");   // alert(message, title, options)
-    expect(h.alert.mock.calls[0][2]).toMatchObject({ type: "warning", confirmButtonText: "知道了" });
-    expect(html.children.map((p: any) => p.children)).toEqual(["c —— 未上传任何版本"]);
+    expect(h.alert.mock.calls[0][1]).toBe("跳过 1 台"); // alert(message, title, options)
+    expect(h.alert.mock.calls[0][2]).toMatchObject({
+      type: "warning",
+      confirmButtonText: "知道了"
+    });
+    expect(html.children.map((p: any) => p.children)).toEqual([
+      "c —— 未上传任何版本"
+    ]);
   });
 
   it("超过 10 条只列前 10 条，其余按原因聚合报数（被跳过的台数不进台账，只能自己归并）", async () => {
@@ -343,7 +439,9 @@ describe("跳过明细的聚合（QR-W9）", () => {
       }))
     );
 
-    const lines = (h.alert.mock.calls[0][0] as any).children.map((p: any) => p.children);
+    const lines = (h.alert.mock.calls[0][0] as any).children.map(
+      (p: any) => p.children
+    );
     expect(lines).toHaveLength(11);
     expect(lines[0]).toBe("h0 —— 已是最新");
     expect(lines[9]).toBe("h9 —— 已是最新");
@@ -355,7 +453,9 @@ describe("跳过明细的聚合（QR-W9）", () => {
     h.alert.mockRejectedValue("close");
     withHook();
     await settle();
-    await expect(api.showSkipped([{ host: "x", reason: "weird" }])).resolves.toBeUndefined();
+    await expect(
+      api.showSkipped([{ host: "x", reason: "weird" }])
+    ).resolves.toBeUndefined();
   });
 });
 
@@ -364,13 +464,20 @@ describe("主机状态列三档", () => {
     withHook();
     await settle();
     const col = api.columns.find((c: any) => c.label === "状态") as any;
-    const render = (over: Record<string, any>) => col.cellRenderer({ row: over });
+    const render = (over: Record<string, any>) =>
+      col.cellRenderer({ row: over });
 
-    expect(render({ online: true, status_reason: "" }).props.class).toBe("kk-state");
-    expect(render({ online: false, status_reason: "updating" }).props.class).toBe(
-      "kk-state kk-state--updating"
+    expect(render({ online: true, status_reason: "" }).props.class).toBe(
+      "kk-state"
     );
-    expect(render({ online: false, status_reason: "updating" }).children[0]).toBe("更新中");
-    expect(render({ online: false, status_reason: "stopped" }).props.class).toBe("kk-state kk-state--idle");
+    expect(
+      render({ online: false, status_reason: "updating" }).props.class
+    ).toBe("kk-state kk-state--updating");
+    expect(
+      render({ online: false, status_reason: "updating" }).children[0]
+    ).toBe("更新中");
+    expect(
+      render({ online: false, status_reason: "stopped" }).props.class
+    ).toBe("kk-state kk-state--idle");
   });
 });

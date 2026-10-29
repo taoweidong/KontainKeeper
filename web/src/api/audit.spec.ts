@@ -16,19 +16,43 @@ import { listAudit, parseDetail } from "./audit";
 
 beforeEach(() => {
   httpMock.request.mockReset();
-  httpMock.request.mockResolvedValue({ items: [], total: 0, offset: 0, limit: 200 });
+  httpMock.request.mockResolvedValue({
+    items: [],
+    total: 0,
+    offset: 0,
+    limit: 200
+  });
 });
 
 describe("listAudit", () => {
   it("无参数时 params 位存在但为 undefined；关键字/操作者/动作/分页一起下推，offset=0 与 total=0 是真值不被改写", async () => {
     await listAudit();
-    expect(httpMock.request).toHaveBeenCalledWith("get", "/api/audit", { params: undefined });
+    expect(httpMock.request).toHaveBeenCalledWith("get", "/api/audit", {
+      params: undefined
+    });
 
-    httpMock.request.mockResolvedValue({ items: [], total: 0, offset: 0, limit: 200 });
-    const res = await listAudit({ keyword: "login", actor: "admin", action: "cmd.create", limit: 100, offset: 0 });
+    httpMock.request.mockResolvedValue({
+      items: [],
+      total: 0,
+      offset: 0,
+      limit: 200
+    });
+    const res = await listAudit({
+      keyword: "login",
+      actor: "admin",
+      action: "cmd.create",
+      limit: 100,
+      offset: 0
+    });
 
     expect(httpMock.request.mock.calls[1][2]).toEqual({
-      params: { keyword: "login", actor: "admin", action: "cmd.create", limit: 100, offset: 0 }
+      params: {
+        keyword: "login",
+        actor: "admin",
+        action: "cmd.create",
+        limit: 100,
+        offset: 0
+      }
     });
     expect(res.total).toBe(0);
   });
@@ -36,8 +60,11 @@ describe("listAudit", () => {
 
 describe("parseDetail：坏值不许进界面", () => {
   it("合法 JSON 对象（含嵌套）解析成对象，不提前字符串化", () => {
-    expect(parseDetail('{"cmd":"id","pods":["a"]}')).toEqual({ cmd: "id", pods: ["a"] });
-    expect(parseDetail('{"a":{"b":1}}')).toEqual({ a: { b: 1 } });   // 展示层决定怎么铺
+    expect(parseDetail('{"cmd":"id","pods":["a"]}')).toEqual({
+      cmd: "id",
+      pods: ["a"]
+    });
+    expect(parseDetail('{"a":{"b":1}}')).toEqual({ a: { b: 1 } }); // 展示层决定怎么铺
   });
 
   it("空/缺字段返回空对象；非 JSON 文本降级为 {原文} 保留取证线索", () => {
