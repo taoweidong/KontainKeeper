@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 
 from .deps import CurrentUser, HostFilters, current_user
+from ..models.helpers import clamp
 from ..models.store import DISK_ALERT_PCT
 
 # 会话鉴权在 router 级收口（QR-S2）；导出属批量数据外带，每个端点落一条审计（QR-S7）
@@ -187,7 +188,7 @@ async def export_metrics(request: Request, user: CurrentUser, pod: str = "",
     if not pod:
         raise HTTPException(status_code=400, detail="pod 为必填")
     store = request.app.state.store
-    hours = min(max(int(hours or 24), 1), 24 * 90)
+    hours = clamp(int(hours or 24), 1, 24 * 90)
     # 与 metrics_series 同源：>24h 自动走 hourly 聚合表，导出与曲线语义一致
     series, _ = await store.metrics_series(pod, hours)
     await store.add_audit(user, "export", {

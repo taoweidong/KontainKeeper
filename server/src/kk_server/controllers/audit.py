@@ -4,6 +4,7 @@ import asyncio
 from fastapi import APIRouter, Depends, Request
 
 from .deps import current_user
+from ..models.helpers import clamp
 
 # 会话鉴权在 router 级收口（QR-S2）：新增端点默认受保护
 router = APIRouter(prefix="/api", dependencies=[Depends(current_user)])
@@ -18,7 +19,7 @@ async def list_audit(request: Request, limit: int = 200, offset: int = 0,
     页面所见即导出所得；total 同条件计算，前端过滤后页内条数才会对得上。
     """
     store = request.app.state.store
-    limit = min(max(limit, 1), 1000)
+    limit = clamp(limit, 1, 1000)
     # 负 offset 直传 SQLite 之外的库会 500（评审 P2）：containers 的写法收口成惯例
     off = offset if offset and offset > 0 else None
     items, total = await asyncio.gather(

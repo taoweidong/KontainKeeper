@@ -64,3 +64,28 @@ def _b64_tail(b64, nbytes=2048):
         return base64.b64decode(tail, validate=False).decode("utf-8", "replace")[-nbytes:]
     except Exception:
         return ""
+
+
+# IN 列表的分片尺寸：三库的语句变量数上限各不相同（SQLite 默认 999 起），
+# 500 台规模一次 IN 不触顶，但常量只在这里定义一份，改动才不会漏站（QR29-S17）。
+SHARD_SIZE = 400
+
+
+def shards(seq, size=SHARD_SIZE):
+    """把序列切成 size 片的生成器：`for shard in shards(pods): ... in_(shard)`。
+
+    逐条 UPDATE 在 SQLite 上约数十毫秒，但 500 条就是 500 次事务往返——
+    分片批处理是「一次点击」路径的标准形态，原先四处手写同构循环。
+    """
+    seq = list(seq or [])
+    for i in range(0, len(seq), size):
+        yield seq[i:i + size]
+
+
+def clamp(v, lo, hi):
+    """把用户给的数值参数钳进 [lo, hi]：负 limit/超大量程在入口一次挡掉。
+
+    原先六处手写 `min(max(v, lo), hi)`，量程各不相同——量程留在调用点，
+    这里只收「钳」这个动作本身（QR29-S17）。
+    """
+    return min(max(v, lo), hi)

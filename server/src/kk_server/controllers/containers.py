@@ -6,13 +6,13 @@ import time
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from .deps import HostFilters, current_user
+from ..models.helpers import clamp
 from ..models.store import DISK_ALERT_PCT
+from ..models.tables import ONLINE_GRACE
 from ..models.version import version_lt
 
 # 会话鉴权在 router 级收口（QR-S2）：新增端点默认受保护，不再依赖人工逐行调用
 router = APIRouter(prefix="/api", dependencies=[Depends(current_user)])
-
-ONLINE_GRACE = 180  # 在线宽限：max(3×interval, 180s)，兜住 Broker 来不及发 LWT 的极端情况
 
 
 def _parse_metrics(raw):
@@ -159,6 +159,6 @@ async def container_detail(pod: str, request: Request):
 
 @router.get("/containers/{pod}/metrics")
 async def container_metrics(pod: str, request: Request, hours: int = 24):
-    hours = min(max(hours, 1), 24 * 90)
+    hours = clamp(hours, 1, 24 * 90)
     series, source = await request.app.state.store.metrics_series(pod, hours)
     return {"pod": pod, "hours": hours, "source": source, "series": series}

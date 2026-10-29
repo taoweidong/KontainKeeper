@@ -15,7 +15,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
 from ..config import COLLECT_ITEMS, COMMAND_KINDS
-from ..models.helpers import _b64_tail
+from ..models.helpers import _b64_tail, clamp
 from ..services.security import is_blacklisted
 from .deps import CurrentUser, current_user
 
@@ -112,7 +112,7 @@ async def create_commands(body: CommandBody, request: Request, user: CurrentUser
     if missing:
         raise HTTPException(status_code=404, detail="容器不存在: %s" % ", ".join(missing))
 
-    timeout = min(max(body.timeout, 1), 600)
+    timeout = clamp(body.timeout, 1, 600)
     # 黑名单只约束真正会执行命令的形态；collect/plugin_reload 不经 shell
     argv_for_check = payload.get("argv") if isinstance(payload, dict) else payload
     # use_shell 形态下 argv[0] 是整条命令串，必须按 shell 语义切分后再校验，
@@ -165,7 +165,7 @@ async def list_commands(request: Request, pod: Optional[str] = None, limit: int 
     响应只加 total/offset/limit 字段，`items` 结构不变，既有前端解析不受影响。
     """
     store = request.app.state.store
-    limit = min(max(limit, 1), 500)
+    limit = clamp(limit, 1, 500)
     # 负 offset 直传会让 PG/MySQL 500（containers 已有正确写法，这里对齐）
     off = offset if offset and offset > 0 else None
     items, total = await asyncio.gather(

@@ -20,7 +20,7 @@ from .tables import (MD, ONLINE_GRACE, _ADD_COLUMNS, _ADD_INDEXES, _CMD_COLS,
                      _SUMMARY_COLS, admins, audit, commands, containers,
                      heartbeats, hourly, kv, sessions, updates)
 from .helpers import (_PWDF_ITERS_LEGACY, TAIL_B64_CHARS, _b64_tail, _num, _pwdf,
-                      mask_url, normalize_url)
+                      clamp, mask_url, normalize_url, shards)
 from .version import version_lt as _version_lt
 from ..logsetup import get_logger
 
@@ -473,8 +473,7 @@ class Store:
         """
         pods = list(pods or [])
         out = {}
-        for i in range(0, len(pods), 400):
-            shard = pods[i:i + 400]
+        for shard in shards(pods):
             rows = await self._all(select(containers.c.pod, containers.c.agent_ver)
                                    .where(containers.c.pod.in_(shard)))
             out.update({r["pod"]: (r["agent_ver"] or "") for r in rows})
@@ -484,8 +483,7 @@ class Store:
         """批量取「有未终结升级」的主机集合（D2.3 的 in_flight 去重，一次查完）。"""
         pods = list(pods or [])
         out = set()
-        for i in range(0, len(pods), 400):
-            shard = pods[i:i + 400]
+        for shard in shards(pods):
             rows = await self._all(
                 select(updates.c.pod).where(updates.c.pod.in_(shard))
                 .where(updates.c.status.in_(("pending", "queued"))))
@@ -509,10 +507,7 @@ class Store:
         """批量下发前的存在性校验：一次 IN 查询取代 N 次单查（500 台一次点击）。"""
         pods = list(pods or [])
         found = set()
-        for i in range(0, len(pods), 400):      # 分片避开数据库变量数上限
-            shard = pods[i:i + 400]
-            if not shard:
-                continue
+        for shard in shards(pods):      # 分片避开数据库变量数上限
             rows = await self._all(select(containers.c.pod)
                                    .where(containers.c.pod.in_(shard)))
             found |= {r["pod"] for r in rows}
@@ -715,8 +710,7 @@ class Store:
             return 0
         now = int(time.time())
         total = 0
-        for i in range(0, len(cids), 400):
-            shard = cids[i:i + 400]
+        for shard in shards(cids):
             total += await self._run(
                 update(commands)
                 .where(commands.c.id.in_(shard))
@@ -1120,6 +1114,22 @@ class Store:
             .values(status="lost", finished_at=now))
         return stats
 
+    async def _key_batches(self, col, cond, batch):
+        """分批挑主键的公共骨架（QR29-S17）：`while True: select...limit(batch)` 的
+        收敛判据（空批退出 / 短批收尾）只写一遍。
+
+        前提：**动作必须让行退出 cond**（删掉或改掉标记列），否则死循环——
+        两个调用方（_delete_batched / _purge_outputs）都满足。
+        """
+        while True:
+            rows = await self._all(select(col).where(cond).limit(batch))
+            if not rows:
+                return
+            keys = [r[col.name] for r in rows]
+            yield keys
+            if len(keys) < batch:
+                return
+
     async def _delete_batched(self, table, where, pk, batch=5000, extra=None):
         """按主键分批删除：先挑一批 id 再删，每批各自一个事务。
 
@@ -1128,14 +1138,9 @@ class Store:
         """
         cond = where if extra is None else and_(where, extra)
         total = 0
-        while True:
-            rows = await self._all(select(pk).where(cond).limit(batch))
-            if not rows:
-                return total
-            keys = [r[pk.name] for r in rows]
+        async for keys in self._key_batches(pk, cond, batch):
             total += await self._run(delete(table).where(pk.in_(keys)))
-            if len(keys) < batch:
-                return total
+        return total
 
     async def _purge_outputs(self, now, out_days, batch=2000):
         """清掉超龄命令的输出文本，保留状态行（id/pod/rc/耗时都还在）。"""
@@ -1145,16 +1150,11 @@ class Store:
         cond = and_(commands.c.finished_at.isnot(None), commands.c.finished_at < cutoff,
                     commands.c.out_purged == 0, commands.c.out_b64 != "")
         total = 0
-        while True:
-            rows = await self._all(select(commands.c.id).where(cond).limit(batch))
-            if not rows:
-                return total
-            ids = [r["id"] for r in rows]
+        async for ids in self._key_batches(commands.c.id, cond, batch):
             total += await self._run(update(commands).where(commands.c.id.in_(ids))
                                      .values(out_b64="", out_tail="", out_chunks=0,
                                              out_purged=1))
-            if len(ids) < batch:
-                return total
+        return total
 
     async def counts(self):
         """可观测面板用的行数与状态分布（C5）。

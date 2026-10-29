@@ -30,6 +30,7 @@ import paho.mqtt.client as mqtt
 from .. import ACCEPT_PROTO_VERS, PROTO_VER
 from ..config import ip_in_whitelist
 from ..logsetup import get_logger
+from ..models.tables import ONLINE_GRACE
 from ..models.version import version_lt
 
 def _b64_text(raw):
@@ -47,8 +48,9 @@ QOS_RESULT = 1
 QOS_CMD = 1
 SWEEP_INTERVAL = 30
 # 心跳丢失宽限：status 的 retained online 只有在 Broker 崩溃且没发 LWT 时才会失真，
-# 用「N 倍心跳周期」兜底把这种僵尸在线判成离线。
-OFFLINE_GRACE = 180
+# 用「N 倍心跳周期」兜底把这种僵尸在线判成离线。数值与 tables.ONLINE_GRACE 同一
+# 口径（QR29-S17：180 的三处定义收进 tables 一处），常量名沿用本侧语义。
+OFFLINE_GRACE = ONLINE_GRACE
 # 同类安全审计的最小落库间隔（秒）：ip_rejected / interval_violation 这类事件的
 # 频率由**外部来源**控制，逐帧落库等于把审计表交给攻击者灌（P0：audit 曾无保留
 # 策略，两者叠加就是磁盘 DoS）。同 key 60s 一条足够溯源，stats 计数仍逐帧累加。

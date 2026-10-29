@@ -24,6 +24,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from .deps import AgentIp, CurrentUser, agent_ip_auth, current_user
+from ..models.helpers import clamp
 from ..models.tables import ONLINE_GRACE
 from ..models.version import count_outdated, version_lt
 
@@ -193,7 +194,7 @@ async def list_updates(request: Request, limit: int = 50):
     各状态计数 + 最近明细（含失败原因），逐台可核验。
     """
     store = request.app.state.store
-    limit = min(max(int(limit or 50), 1), 500)
+    limit = clamp(int(limit or 50), 1, 500)
     items, summary = await asyncio.gather(
         store.list_updates(limit=limit), store.updates_summary())
     return {"items": items, "summary": summary, "limit": limit}
