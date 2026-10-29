@@ -388,7 +388,7 @@ onMounted(() => {
               共 {{ offline }} 台离线，
               <el-link
                 type="primary"
-                :underline="false"
+                underline="never"
                 @click="go('/hosts/monitor')"
               >
                 查看全部
