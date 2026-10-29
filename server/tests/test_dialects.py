@@ -161,3 +161,30 @@ def test_safe_url_hides_password():
     assert "sup3rsecret" not in mask_url(u) and "user" not in mask_url(u)
     # 文件路径没有凭据段，不能误伤
     assert mask_url("sqlite+aiosqlite:///C:/data/kk.db") == "sqlite+aiosqlite:///C:/data/kk.db"
+
+
+async def test_sqlite_really_executes_the_upsert_and_offset_paths(tmp_path):
+    """SQLite 真执行面（第二轮 C.3）：compile 级测试证明「SQL 写得出来」，
+    这条证明「真跑得过去」。超长 detail 截断的真执行已由
+    test_qr29_remediation.test_audit_detail_is_capped_not_dropped 覆盖，不重复。
+
+    钉住两条 compile 罩不住的语义：
+    1. do-nothing upsert（MySQL 侧等价 INSERT IGNORE）冲突时不覆盖、不报错；
+       对照组带 update_cols 的形态必须真的覆盖。
+    2. 负 OFFSET 在 SQLite 上宽容执行（视同 0）——底库不挡负数，
+       真正的防线是 API 层钳制（commands/containers 控制器），别指望底层报错。
+    """
+    store = Store(str(tmp_path / "exec.db"))
+    await store.setup()
+    try:
+        await store._upsert(kv, {"k": "greet", "v": "first"}, ["k"], [])
+        await store._upsert(kv, {"k": "greet", "v": "second"}, ["k"], [])
+        assert await store.kv_get("greet") == "first"
+        await store._upsert(kv, {"k": "greet", "v": "third"}, ["k"], ["v"])
+        assert await store.kv_get("greet") == "third"
+
+        await store.add_audit("tester", "probe", {"n": 1})
+        rows = await store.list_audit(limit=5, offset=-5)
+        assert [r["action"] for r in rows] == ["probe"]
+    finally:
+        await store.close()

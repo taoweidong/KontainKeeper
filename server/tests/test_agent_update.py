@@ -322,9 +322,55 @@ def test_upload_signs_manifest_when_hmac_key_set(tmp_path):
 
 def test_upload_without_key_has_no_sig(tmp_path):
     """未配 key 时清单不带 sig 字段：存量行为不变，Agent 侧走未签名策略门。"""
-    payload = b"ELF-unsigned"
+    payload = b"ELF-unsigned"
     with TestClient(_make_app(tmp_path), client=GOOD_CLIENT) as client:
         token = _admin_token(client)
         r = _upload(client, token, payload, "0.5.0")
         assert r.status_code == 200
         assert "sig" not in r.json()
+
+
+# ---- 第二轮 C.1：upload_agent 的校验分支（此前零覆盖） ----
+
+def test_upload_rejects_bad_version(tmp_path):
+    """version 非法（首字符非数字）必须 400，且零副作用。
+
+    单槽位清单若指向坏版本，全网 Agent 会拿到一个永远校验失败的升级目标；
+    校验在 `await file.read()` 之前做，拒绝路径不许落盘、不许写清单。
+    multipart 里根本不发 version 字段时在 FastAPI 层就是 422，同样是拒绝。
+    """
+    with TestClient(_make_app(tmp_path), client=GOOD_CLIENT) as client:
+        token = _admin_token(client)
+        for bad in ("v0.3.0", ".9", " 0.3.0"):
+            r = _upload(client, token, b"\x7fELF-x", bad)
+            assert r.status_code == 400, (bad, r.text)
+        r = client.post("/api/system/agent",
+                        headers={"Authorization": "Bearer %s" % token},
+                        files={"file": ("kk-agent", b"\x7fELF-x")})
+        assert r.status_code == 422, r.text
+        assert not os.path.exists(os.path.join(str(tmp_path / "bin"), "kk-agent"))
+
+
+def test_upload_rejects_oversized_binary(tmp_path, monkeypatch):
+    """超限 413：封顶判定在分块累计循环里生效，边读边断（QR-S10 的读法）。
+
+    用 monkeypatch 把上限压到 8 字节，避免为了一条断言真的构造 64MB 包；
+    边界取等号——封顶是排他比较 `>`，恰好等于上限必须放行。
+    """
+    from kk_server.controllers import agent_update as au
+    monkeypatch.setattr(au, "MAX_BIN_BYTES", 8)
+    with TestClient(_make_app(tmp_path), client=GOOD_CLIENT) as client:
+        token = _admin_token(client)
+        r = _upload(client, token, b"x" * 9, "0.3.0")
+        assert r.status_code == 413, r.text
+        r = _upload(client, token, b"x" * 8, "0.3.0")
+        assert r.status_code == 200, r.text
+
+
+def test_upload_rejects_empty_binary(tmp_path):
+    """空包 400：否则会出现「清单已写、文件为空」的中间态，Agent 下载后校验必炸。"""
+    with TestClient(_make_app(tmp_path), client=GOOD_CLIENT) as client:
+        token = _admin_token(client)
+        r = _upload(client, token, b"", "0.3.0")
+        assert r.status_code == 400, r.text
+        assert not os.path.exists(os.path.join(str(tmp_path / "bin"), "kk-agent"))

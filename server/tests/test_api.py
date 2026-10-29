@@ -481,3 +481,65 @@ async def test_list_commands_keyword_pushed_to_backend(api):
     await store.create_commands_batch(["beta-02"], "shell", ["ls"], 30, "admin")
     r = (await api.client.get("/api/commands", params={"keyword": "alpha"})).json()
     assert r["total"] == 1 and r["items"][0]["pod"] == "alpha-01"
+
+
+# ---- 第二轮 C.2：/api/me 与登出吊销语义（此前零覆盖） ----
+
+
+@pytest.fixture
+def _clean_login_limiter():
+    """登录限流的四个字典是进程级模块状态：限流用例会留下 300s 锁定，
+    污染同文件里任何后续真走 HTTP 登录的用例。进出双向清空/恢复，
+    保证本文件任意执行顺序下无相互依赖（协作规范硬要求）。
+    """
+    from kk_server.controllers import auth as auth_mod
+    dicts = (auth_mod._LOGIN_FAILS, auth_mod._LOGIN_FAIL_AT,
+             auth_mod._LOGIN_LOCKED_UNTIL, auth_mod._LOCKED_AUDIT_TS)
+    saved = [dict(d) for d in dicts]
+    for d in dicts:
+        d.clear()
+    yield
+    for d, s in zip(dicts, saved):
+        d.clear()
+        d.update(s)
+
+
+async def test_me_returns_session_user(api):
+    """有效 Bearer 会话返回会话主体本身——前端刷新页面的身份恢复读的就是它。"""
+    r = await api.client.get("/api/me")
+    assert r.status_code == 200 and r.json() == {"username": ADMIN}
+
+
+async def test_me_rejects_absent_or_bogus_credentials(api):
+    """鉴权只认 Bearer + 有效会话：无凭据 / 伪造 token / 非 Bearer 方案一律 401。
+
+    夹具 client 带默认 Authorization 头，「无凭据」必须显式置空覆盖而不是省略头。
+    """
+    for headers in ({"Authorization": ""},
+                    {"Authorization": "Bearer no-such-token"},
+                    {"Authorization": "Basic dXNlcjpwYXNz"}):
+        r = await api.client.get("/api/me", headers=headers)
+        assert r.status_code == 401, headers
+
+
+async def test_logout_revokes_session_and_is_idempotent(api, _clean_login_limiter):
+    """登出吊销语义（W1 闭环的服务端半边）。
+
+    前端 logOut() 先尽力调 /api/logout 再清本地——这条验住服务端那一半真的把
+    会话吊销了：吊销后原 token 立即 401。重复登出幂等（仍 ok），且无有效会话
+    不写第二条审计（未鉴权接口不许匿名刷审计表）。
+    """
+    # api 夹具绕过 lifespan，管理员账号没有 ensure：HTTP 登录要真验口令，先补上
+    await api.store.ensure_admin(ADMIN, PASS)
+    r = await api.client.post("/api/login", json={"username": ADMIN, "password": PASS})
+    token = r.json()["token"]
+    h = {"Authorization": "Bearer " + token}
+    assert (await api.client.get("/api/me", headers=h)).status_code == 200
+
+    assert (await api.client.post("/api/logout", headers=h)).json() == {"ok": True}
+    assert (await api.client.get("/api/me", headers=h)).status_code == 401
+
+    n_after_first = len(await api.store.list_audit(action="logout"))
+    assert n_after_first == 1
+    assert (await api.client.post("/api/logout", headers=h)).json() == {"ok": True}
+    assert len(await api.store.list_audit(action="logout")) == n_after_first
