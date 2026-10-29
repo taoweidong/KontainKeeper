@@ -95,6 +95,21 @@ def disk_metrics(paths=None):
     return out
 
 
+def _deltas(prev, now, cur):
+    """累计计数器五元组 (t, v0..v3) 的差分：dt<=0 回 None；计数器重置/回绕
+    （磁盘重插、容器迁移）算出的负速率钳 0（QR-A13）。
+
+    disk_io 与 net 两侧共用同一公式（QR29-A7）——负速率钳制历史上就是
+    两边各修一次，同类修复不能再漏一边。
+    """
+    if not prev:
+        return None
+    dt = now - prev[0]
+    if dt <= 0:
+        return None
+    return tuple(max(0, c - p) / dt for c, p in zip(cur[1:], prev[1:]))
+
+
 def disk_io_metrics(state):
     """磁盘 IO 速率（MB/s、IOPS）。依赖上次累计值差分。
 
@@ -109,15 +124,12 @@ def disk_io_metrics(state):
     prev = state.get("disk_io")
     state_out = (now, cur.read_bytes, cur.write_bytes, cur.read_count, cur.write_count)
     out = {"disk_read_mb": 0.0, "disk_write_mb": 0.0, "disk_read_iops": 0.0, "disk_write_iops": 0.0}
-    if prev:
-        dt = now - prev[0]
-        if dt > 0:
-            # max(0, ...) 与 net 侧同理：计数器重置/回绕（磁盘重插、容器迁移）
-            # 会算出负速率，钳到 0（QR-A13）
-            out["disk_read_mb"] = round(max(0, cur.read_bytes - prev[1]) / MB / dt, 2)
-            out["disk_write_mb"] = round(max(0, cur.write_bytes - prev[2]) / MB / dt, 2)
-            out["disk_read_iops"] = round(max(0, cur.read_count - prev[3]) / dt, 1)
-            out["disk_write_iops"] = round(max(0, cur.write_count - prev[4]) / dt, 1)
+    d = _deltas(prev, now, state_out)
+    if d:
+        out["disk_read_mb"] = round(d[0] / MB, 2)
+        out["disk_write_mb"] = round(d[1] / MB, 2)
+        out["disk_read_iops"] = round(d[2], 1)
+        out["disk_write_iops"] = round(d[3], 1)
     return out, state_out
 
 
@@ -132,14 +144,12 @@ def net_metrics(state):
             continue
         new_state[nic] = (now, c.bytes_sent, c.bytes_recv, c.packets_sent, c.packets_recv)
         row = {"sent_mb": 0.0, "recv_mb": 0.0, "sent_pps": 0.0, "recv_pps": 0.0}
-        p = prev.get(nic)
-        if p:
-            dt = now - p[0]
-            if dt > 0:
-                row["sent_mb"] = round(max(0, c.bytes_sent - p[1]) / MB / dt, 3)
-                row["recv_mb"] = round(max(0, c.bytes_recv - p[2]) / MB / dt, 3)
-                row["sent_pps"] = round(max(0, c.packets_sent - p[3]) / dt, 1)
-                row["recv_pps"] = round(max(0, c.packets_recv - p[4]) / dt, 1)
+        d = _deltas(prev.get(nic), now, new_state[nic])
+        if d:
+            row["sent_mb"] = round(d[0] / MB, 3)
+            row["recv_mb"] = round(d[1] / MB, 3)
+            row["sent_pps"] = round(d[2], 1)
+            row["recv_pps"] = round(d[3], 1)
         out[nic] = row
     return out, new_state
 

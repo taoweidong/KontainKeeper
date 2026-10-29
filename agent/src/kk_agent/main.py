@@ -30,6 +30,22 @@ CHUNK = 48 * 1024  # 命令输出分块大小（base64 前）
 # 且覆盖得住离线队列上限（KK_MAX_QUEUED，默认 128）内所有命令的重投。
 DEDUP_MAX = 512
 
+# 主循环的调度粒度（QR29-A10）：stop.wait 的节拍——它只决定信号到达后多久醒，
+# 心跳与更新检查各有自己的下次时刻，这个值不需要比 1s 更细。
+SCHED_TICK_SEC = 0.5
+# 首次等传输就绪的上限：Broker 不可达时不该卡死启动流程，进循环后照常调度重连。
+READY_TIMEOUT_SEC = 10
+
+
+def _res(rc, out, elapsed_ms=0):
+    """collect / plugin_reload / update 三个 kind 的结果帧构造（QR29-A8）。
+
+    字段集刻意比 shell 路径（executor.mk_result）少 `truncated`：send_result
+    只按存在的字段组帧，协议字段增删必须显式过 proto/messages.md，不能靠
+    构造器默认值悄悄带上。
+    """
+    return {"rc": rc, "out": out, "timed_out": False, "elapsed_ms": elapsed_ms}
+
 
 def _fail_frame(cmd_id, seq, total, res):
     """分块没能进 Broker 队列时补发的失败终态。"""
@@ -95,18 +111,17 @@ def _run_collect(cmd, cfg, state_box):
     """kind=collect：不经 shell，直接调用 psutil 采集指定项并返回结构化 JSON。"""
     items = cmd.get("items") or []
     if not items:
-        return {"rc": 2, "out": b"collect command requires items",
-                "timed_out": False, "elapsed_ms": 0}
+        return _res(2, b"collect command requires items")
     data, new_state = kk_collector.collect_items(items, state_box.value, cfg)
     state_box.put(new_state)
     body = json.dumps({"items": items, "data": data}, ensure_ascii=False)
-    return {"rc": 0, "out": body.encode("utf-8"), "timed_out": False, "elapsed_ms": 0}
+    return _res(0, body.encode("utf-8"))
 
 
 def _run_plugin_reload(cfg, log):
     data = kk_plugins.collect_all(cfg["plugin_dir"], log, timeout=cfg["plugin_timeout"])
     body = json.dumps({"plugins": data}, ensure_ascii=False)
-    return {"rc": 0, "out": body.encode("utf-8"), "timed_out": False, "elapsed_ms": 0}
+    return _res(0, body.encode("utf-8"))
 
 
 def _run_update(tr, cmd, cfg, log):
@@ -130,8 +145,7 @@ def _run_update(tr, cmd, cfg, log):
         log.warning("push update rejected: unsigned manifest without "
                     "KK_UPDATE_HMAC_KEY (set KK_UPDATE_ALLOW_UNSIGNED=1 on the "
                     "agent to allow, or configure the key on both ends)")
-        return {"rc": 1, "out": b"unsigned_push_rejected",
-                "timed_out": False, "elapsed_ms": 0}
+        return _res(1, b"unsigned_push_rejected")
 
     def before_restart():
         # B6.1：让服务端能把「正在自更新」与「容器停了」区分开。
@@ -143,8 +157,7 @@ def _run_update(tr, cmd, cfg, log):
 
     ok, reason = kk_updater.apply_manifest_receipt(cfg, log, cmd,
                                                    on_before_restart=before_restart)
-    return {"rc": 0 if ok else 1, "out": (reason or "").encode("utf-8", "replace"),
-            "timed_out": False, "elapsed_ms": 0}
+    return _res(0 if ok else 1, (reason or "").encode("utf-8", "replace"))
 
 
 def make_dispatcher(tr, runner, cfg, log, state_box):
@@ -175,15 +188,13 @@ def make_dispatcher(tr, runner, cfg, log, state_box):
                 # 否则运维显式关了更新，推送式升级仍能把 Agent 整个换掉。
                 # 回执带原因码，服务端台账可辨。
                 log.warning("update command %s rejected: KK_UPDATE_DISABLED is set", cid)
-                send_result(tr, cid, {"rc": 1, "out": b"update_disabled",
-                                      "timed_out": False, "elapsed_ms": 0})
+                send_result(tr, cid, _res(1, b"update_disabled"))
                 return
             # 服务端推送式自更新：命令载荷即版本清单，形态校验在 updater 内做。
             # 走 runner 而不是裸线程：更新要回执（A6.2），失败原因必须能送到服务端
             runner.submit_fn(cid, lambda: _run_update(tr, cmd, cfg, log))
         else:
-            send_result(tr, cid, {"rc": 127, "out": b"unknown command kind: " + kind.encode(),
-                                  "timed_out": False, "elapsed_ms": 0})
+            send_result(tr, cid, _res(127, b"unknown command kind: " + kind.encode()))
 
     return dispatch
 
@@ -269,7 +280,7 @@ def run(stop=None, cfg=None, overrides=None):
     next_hb = 0.0
     next_update = 0.0  # 启动后尽快检查一次版本
     try:
-        tr.wait_ready(timeout=10, stop=stop)
+        tr.wait_ready(timeout=READY_TIMEOUT_SEC, stop=stop)
         while not stop.is_set():
             # 调度必须用单调钟：NTP 回拨会让心跳停摆、前跳会集中补发，
             # 而 500 台同时到点正是 Broker 与数据库的尖峰来源。
@@ -287,7 +298,7 @@ def run(stop=None, cfg=None, overrides=None):
                                        on_before_restart=lambda: tr.announce_update())
                 next_update = now + cfg["update_interval"] * random.uniform(0.8, 1.2)
 
-            stop.wait(0.5)
+            stop.wait(SCHED_TICK_SEC)
     finally:
         tr.stop(reason="stopping")
     log.info("kk-agent stopped")

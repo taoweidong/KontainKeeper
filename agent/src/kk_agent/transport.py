@@ -46,6 +46,9 @@ RECONNECT_MIN, RECONNECT_MAX = 1, 60
 # 结果分块无法送达（out-queue 溢出等）时回传的失败退出码：
 # 让服务端把命令收敛成 failed，而不是永远停在 running。
 RC_SEND_FAILED = -3
+# announce_update 等 PUBACK 的上限（QR29-A10）：B6 要求 execv 前等到确认，
+# 但 Broker 无响应时也不能无限挂住更新线程。
+PUBACK_WAIT_SEC = 1.0
 
 
 class TransportError(Exception):
@@ -280,7 +283,7 @@ class Transport:
         if info.rc != mqtt.MQTT_ERR_SUCCESS:
             return False
         try:
-            info.wait_for_publish(1.0)
+            info.wait_for_publish(PUBACK_WAIT_SEC)
         except Exception as e:
             self.log.warning("status frame PUBACK wait failed: %s", e)
             return False

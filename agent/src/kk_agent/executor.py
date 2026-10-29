@@ -27,6 +27,21 @@ _READ_CHUNK = 65536  # 读取线程的单次排水块大小
 # 溢出当场回 rc=-3 的失败终态，让服务端那一行收敛成 failed。
 MAX_PENDING = 64
 
+# 子进程回收与读取线程的等待上限（QR29-A10：魔法数命名，调参有处可查）。
+# TERM 与 KILL 之间留出体面退出的时间窗；reader.join 只兜「孙进程占住管道
+# 写端」的极端情况，不该阻塞结果回传。
+TERM_GRACE_SEC = 3
+KILL_REAP_SEC = 5
+READER_JOIN_SEC = 2
+TASKKILL_SEC = 10
+
+
+def mk_result(rc, out, elapsed_ms=0, timed_out=False, truncated=False):
+    """shell 执行结果帧的唯一构造点（QR29-A8）：这五个字段是协议契约，
+    手写散落多处迟早漂移（历史上 elapsed 单位就差点写错）。"""
+    return {"rc": rc, "out": out, "timed_out": timed_out,
+            "elapsed_ms": int(elapsed_ms), "truncated": truncated}
+
 
 def run_shell(argv, timeout=30, max_out=4 * 1024 * 1024, use_shell=False):
     """执行 argv（或 shell 字符串），返回 {rc, out, timed_out, elapsed_ms, truncated}。"""
@@ -45,12 +60,10 @@ def run_shell(argv, timeout=30, max_out=4 * 1024 * 1024, use_shell=False):
             start_new_session=True,  # 独立进程组，便于整组回收
         )
     except SPAWN_ERRORS as e:
-        return {"rc": 127 if isinstance(e, FileNotFoundError) else 126,
-                "out": ("kk-agent: cannot spawn: %s" % e).encode("utf-8", "replace"),
-                "timed_out": False, "elapsed_ms": 0, "truncated": False}
+        return mk_result(127 if isinstance(e, FileNotFoundError) else 126,
+                         ("kk-agent: cannot spawn: %s" % e).encode("utf-8", "replace"))
     except OSError as e:
-        return {"rc": 126, "out": ("kk-agent: spawn error: %s" % e).encode("utf-8", "replace"),
-                "timed_out": False, "elapsed_ms": 0, "truncated": False}
+        return mk_result(126, ("kk-agent: spawn error: %s" % e).encode("utf-8", "replace"))
 
     def _kill_tree():
         """先 TERM 给进程组一个体面退出的机会，再 KILL 兜底。
@@ -66,7 +79,7 @@ def run_shell(argv, timeout=30, max_out=4 * 1024 * 1024, use_shell=False):
         except (ProcessLookupError, PermissionError, OSError):
             return
         try:
-            p.wait(timeout=3)
+            p.wait(timeout=TERM_GRACE_SEC)
             return
         except subprocess.TimeoutExpired:
             pass
@@ -79,11 +92,11 @@ def run_shell(argv, timeout=30, max_out=4 * 1024 * 1024, use_shell=False):
         try:
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                           timeout=10)
+                           timeout=TASKKILL_SEC)
         except Exception:
             pass
         try:
-            p.wait(timeout=3)
+            p.wait(timeout=TERM_GRACE_SEC)
         except Exception:
             try:
                 p.kill()
@@ -127,26 +140,24 @@ def run_shell(argv, timeout=30, max_out=4 * 1024 * 1024, use_shell=False):
         timed_out = True
         _kill_tree()
         try:
-            p.wait(timeout=5)
+            p.wait(timeout=KILL_REAP_SEC)
         except subprocess.TimeoutExpired:
             pass
         rc = -1
     except Exception as e:
         _kill_tree()
-        return {"rc": 125, "out": ("kk-agent: exec error: %s" % e).encode("utf-8", "replace"),
-                "timed_out": False, "elapsed_ms": int((time.monotonic() - t0) * 1000),
-                "truncated": bool(state["overflow"])}
+        return mk_result(125, ("kk-agent: exec error: %s" % e).encode("utf-8", "replace"),
+                         elapsed_ms=(time.monotonic() - t0) * 1000,
+                         truncated=bool(state["overflow"]))
 
     # 读取线程通常随管道 EOF 结束；孙进程占住管道写端的极端情况留给
-    # daemon 线程自行消亡，主流程最多等 2s，不阻塞结果回传。
-    reader.join(timeout=2)
-    return {
-        "rc": rc if rc is not None else -2,
-        "out": bytes(buf),
-        "timed_out": timed_out,
-        "elapsed_ms": int((time.monotonic() - t0) * 1000),
-        "truncated": bool(state["overflow"] or len(buf) > max_out),
-    }
+    # daemon 线程自行消亡，主流程最多等 READER_JOIN_SEC，不阻塞结果回传。
+    reader.join(timeout=READER_JOIN_SEC)
+    # truncated 只看 overflow 标记：_drain 保证 buf 恒不超过 max_out
+    # （超限部分只丢弃不保留），此前同句里的 `len(buf) > max_out` 恒 False（QR29-A11）
+    return mk_result(rc if rc is not None else -2, bytes(buf),
+                     elapsed_ms=(time.monotonic() - t0) * 1000,
+                     timed_out=timed_out, truncated=state["overflow"])
 
 
 class _Pool:
@@ -222,8 +233,7 @@ class Runner:
             try:
                 res = fn()
             except Exception as e:
-                res = {"rc": 125, "out": ("kk-agent: task error: %s" % e).encode("utf-8", "replace"),
-                       "timed_out": False, "elapsed_ms": 0, "truncated": False}
+                res = mk_result(125, ("kk-agent: task error: %s" % e).encode("utf-8", "replace"))
             self.emit(cmd_id, res)
 
         if self._get_pool().submit(work):
@@ -232,6 +242,5 @@ class Runner:
         if self._log:
             self._log.bind(cmd=cmd_id).warning(
                 "task queue full (%d pending), command rejected", self._max_pending)
-        self.emit(cmd_id, {"rc": RC_SEND_FAILED,
-                           "out": b"kk-agent: task queue full, try again later",
-                           "timed_out": False, "elapsed_ms": 0, "truncated": False})
+        self.emit(cmd_id, mk_result(RC_SEND_FAILED,
+                                    b"kk-agent: task queue full, try again later"))

@@ -126,4 +126,11 @@ def load(env=None, **overrides):
         raise ValueError(
             "主机名 %r 含 MQTT 主题非法字符（只允许字母数字与 . _ -，且以字母数字开头）；"
             "请设置 KK_HOST_NAME 为合法值" % cfg["host"])
+    # topic_prefix 与 host 同级校验（QR29-A11）：含 +/# 会让本 Agent 订阅到
+    # 通配符主题、收到**其他主机**的命令并执行。/ 在前缀里是合法的层级分隔
+    # （默认值 kk/v1），所以只挡通配符，不挡斜杠。
+    if "+" in cfg["topic_prefix"] or "#" in cfg["topic_prefix"]:
+        raise ValueError(
+            "主题前缀 %r 含 MQTT 通配符（+ / #）：会让本机订阅到其他主机的命令主题；"
+            "请设置 KK_TOPIC_PREFIX 为不含通配符的值" % cfg["topic_prefix"])
     return cfg

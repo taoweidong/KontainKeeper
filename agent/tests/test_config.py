@@ -28,3 +28,22 @@ def test_overrides_host_also_validated():
     """overrides 传入的 host 与环境变量同受校验（校验必须发生在合并之后）。"""
     with pytest.raises(ValueError):
         load(env={"KK_HOST_NAME": "ok"}, host="bad#name")
+
+
+# ---- QR29-A11：topic_prefix 与 host 同级的通配符校验 ----
+
+def test_topic_prefix_default_passes():
+    """默认前缀 kk/v1 含 / 但不含通配符：/ 是前缀自身的层级分隔，必须放行。"""
+    assert load(env={})["topic_prefix"] == "kk/v1"
+
+
+@pytest.mark.parametrize("bad", ["kk/+", "kk/#", "+", "#", "kk/+v1"])
+def test_topic_prefix_wildcard_rejected(bad):
+    """前缀含 +/# 会让本 Agent 订阅到通配符主题、收到其他主机的命令并执行
+    ——与 host 同一攻击面，同一条安全评审（T2），启动即拒。"""
+    with pytest.raises(ValueError):
+        load(env={"KK_TOPIC_PREFIX": bad})
+
+
+def test_topic_prefix_custom_valid_value_passes():
+    assert load(env={"KK_TOPIC_PREFIX": "prod/edge"})["topic_prefix"] == "prod/edge"

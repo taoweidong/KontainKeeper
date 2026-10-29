@@ -48,14 +48,7 @@ _NO_BACKOFF = frozenset({"not_newer", "backoff"})   # 非失败：无更新 / �
 _fail_state = {"count": 0, "until": 0.0, "ver": ""}
 # 退避账本的并发守卫：轮询线程（spawn_check）与 kind=update 命令线程都会读写
 # _fail_state，无锁时读改交错会让退避计数错乱、提前重试坏版本（评审 P1）。
-# RLock 是为了 _in_backoff 可以在已持锁的检查块里复用。
 _fail_lock = threading.RLock()
-
-
-def _in_backoff(now=None):
-    now = time.monotonic() if now is None else now
-    with _fail_lock:
-        return now < _fail_state["until"]
 
 
 def note_update_failure(ver=""):
@@ -158,15 +151,13 @@ def _build_opener(insecure):
     return urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
 
 
-def _http_get(url, timeout=15, as_bytes=False, insecure=False,
-              max_bytes=MAX_MANIFEST_BYTES):
-    """流式读取并**硬性封顶**（QR-A23）。
+def _stream_capped(req, timeout, max_bytes, what, insecure=False):
+    """流式读取并**硬性封顶**（QR-A23）：`KK_UPDATE_URL` 指向异变的源时，
+    超大响应体在 `resp.read()` 里一次性成形会把 Agent 顶出内存。
 
-    二进制侧早有 MAX_BIN_BYTES 帽子，清单侧漏了同一半：`KK_UPDATE_URL` 一旦指向
-    异变的源，超大响应体会在 `resp.read()` 里一次性成形，把 Agent 直接顶出内存。
-    清单是 KB 级 JSON，1MB 之外只能是坏数据。
+    清单（KB 级 JSON）与二进制（8~12MB）两个下载路径共用同一骨架（QR29-A7），
+    封顶语义只有一份；`what` 只进报错文案，区分是哪个资源超限。
     """
-    req = urllib.request.Request(url)
     buf = bytearray()
     with _build_opener(insecure).open(req, timeout=timeout) as resp:
         while True:
@@ -175,8 +166,15 @@ def _http_get(url, timeout=15, as_bytes=False, insecure=False,
                 break
             buf.extend(chunk)
             if len(buf) > max_bytes:
-                raise RuntimeError("manifest too large: >%d bytes" % max_bytes)
-    data = bytes(buf)
+                raise RuntimeError("%s too large: >%d bytes" % (what, max_bytes))
+    return bytes(buf)
+
+
+def _http_get(url, timeout=15, as_bytes=False, insecure=False,
+              max_bytes=MAX_MANIFEST_BYTES):
+    """清单侧下载：流式封顶 + 解码（QR29-A7 收口后只剩形状差异）。"""
+    req = urllib.request.Request(url)
+    data = _stream_capped(req, timeout, max_bytes, "manifest", insecure=insecure)
     return data if as_bytes else data.decode("utf-8", "replace")
 
 
@@ -258,18 +256,9 @@ def _verify_signature(data, manifest, cfg, log):
 
 
 def download_binary(url, log, insecure=False, max_bytes=MAX_BIN_BYTES):
-    """分块下载二进制，带大小上限保护。"""
+    """分块下载二进制，带大小上限保护（骨架与清单侧同一份，QR29-A7）。"""
     req = urllib.request.Request(url)
-    buf = bytearray()
-    with _build_opener(insecure).open(req, timeout=60) as resp:
-        while True:
-            chunk = resp.read(_CHUNK)
-            if not chunk:
-                break
-            buf.extend(chunk)
-            if len(buf) > max_bytes:
-                raise RuntimeError("binary too large: >%d bytes" % max_bytes)
-    return bytes(buf)
+    return _stream_capped(req, 60, max_bytes, "binary", insecure=insecure)
 
 
 _BAK_SUFFIX = ".kkbak"   # 旧二进制备份（execv 失败回滚用，QR-A2）
