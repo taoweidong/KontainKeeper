@@ -112,3 +112,38 @@ A（门禁，秒级）→ B（前端测试）→ C（后端测试）→ D（契�
 
 每阶段收口必须给出：改动文件清单、测试计数变化（444 → ?，25 → ?）、是否属语义修正。
 每阶段独立可验证、独立可 revert，阶段之间只有顺序依赖，无半成品耦合。
+
+---
+
+## 实施记录（2026-10-30 第二会话收口，阶段 A 于 10-30 01:xx 已先行落成）
+
+| 阶段 | 状态 | 提交 | 验证证据 |
+|---|---|---|---|
+| A | ✅（10-30 凌晨） | 2008eb2 / 14472b6 | `scripts/quality_gate.sh` 一条可执行入口（junitxml 判定 + skipped>5 判红）；vitest 配置补 @ 别名与 JSX 解析、v8 覆盖率 |
+| B | ✅ | 49f7a24 | 13 个 spec、2,679 行：api/*(7)、utils/http、utils/auth、store/user、audit/command/update 三页 hook；**前端 25 → 154 条**；`--sequence.shuffle` 随机顺序复跑绿、连续两遍计数一致 |
+| C | ✅ | c900dd7 | C.1 upload_agent 四条拒绝路径（400/422/413/空包）；C.2 /api/me + 登出吊销闭环 + 幂等；C.3 方言真执行（do-nothing upsert、负 OFFSET）；C.4 确认 S9 已有锁；**后端 449 → 456 条**。过程发现：登录限流四字典是进程级模块状态，新增 `_clean_login_limiter` 夹具双向清空/恢复 |
+| D | ✅（D.1 裁决改道） | f8636fa / 822afb6 / 737b5b0 | D.4 argv 双端统一（控制器 `_parse_argv`，列表与单条同形，历史脏数据仍字符串）；D.2 契约快照 `test_contract.py` 10 条（TS 行级解析 + 双向对账 + backend_only 白名单），顺带闭 §5 两处 TS 残留；D.3 hourly.last_metrics 砍写入（唯一读方 metrics_series 不读它，顺带消除聚合 N+1）。**后端 456 → 468 条** |
+| E | ✅ | cf3ac05 / bb9abb3 / a584f76 | E.1（S17）：ONLINE_GRACE 三处归一、clamp 六处、shards 四处、`_key_batches` 合成分批删骨架；E.3（A7/A8/A10/A11）：`_deltas`/`_stream_capped`/`mk_result`/`_res` 收敛、超时魔法数命名、`_in_backoff` 与恒 False 死分支删除、topic_prefix 通配符校验（唯一语义新增，6 条回归锁）；E.2：argvText/nowSec/DISK_ALERT_PCT 常量单点。间隔档位登记不做（三页文案刻意不同，属模板级重构）。**前端 157 条** |
+| F | ✅ | 697e9ed | `download_binary` 流式 to_path 形态（边写边算 sha256，返回 (size, sha)）；`_verify_signature_stream` 判定链单点；`promote_downloaded` 取代 verify_and_replace；tracemalloc 断言峰值 < 包体 1/4。过程中 hmac.new 漏 digestmod 被既有签名用例当场拦下。**后端 468 → 478 条** |
+| G | ✅ | 89128fa → 9246388（7 笔） | store.py 1,180 行 → **197 行门面**（引擎装配 + 执行原语 + 方言收敛点 `_upsert`/`_ensure_schema`/`_column_ddl` 单点未动）；六域 Mixin：auth(85)/audit(70)/commands(342)/metrics(80)/hosts(386)/maintenance(145)。G.3 验收：`git diff --stat` 显示 controllers/services/web **零改动**；调用点零改动。门面无用 import 清出；`test_verify_admin_offloads_pbkdf2` 的 monkeypatch 目标随迁 `_store_auth`；顺带修掉 D.3 用例的小时边界闪失（~1.7% 时钟相关）。**连续三遍全量 478 绿** |
+
+### D.1 裁决（改道记录）
+
+原计划「4 个热点端点加 response_model」**不再执行**，理由：D.2 的契约快照测试已提供同等
+且更细的漂移防护（字段级、双向），而 response_model 在 10s 轮询 × 500 行的列表端点上
+引入逐请求校验开销，且模型声明≠前端实际读取面时会产生「剥字段」风险（本计划 D.6 自列
+的头条风险）。若未来引入 OpenAPI codegen 或对外 API 消费方，再按端点逐个补。
+
+### 本轮需要人工知悉的语义变更
+
+1. D.4：`GET /api/commands` 列表的 argv 从入库 JSON 文本改为解析后结构（与单条一致）；脏数据仍字符串；
+2. D.3：`hourly.last_metrics` 从此恒为空串（历史行不受影响）；
+3. E.3：`KK_TOPIC_PREFIX` 含 `+`/`#` 启动即拒（此前静默订阅到通配符主题）；
+4. E.2：命令预览的 items 前缀统一为「采集项: 」（原一处 items: 一处采集项:）；
+5. G：模块布局变化——`kk_server.models.store` 门面 re-export 保持既有导入路径成立
+   （admins/audit/…/mask_url/normalize_url/_column_ddl/DISK_ALERT_PCT 均可继续从门面导入）。
+
+### 测试计数终态
+
+后端 **478 passed / 5 skipped / 0 failed**（Broker 级集成 5 条，连续三遍复跑同数）；
+前端 **157 passed**（15 个 spec）。全量门禁 `bash scripts/quality_gate.sh` 绿。
