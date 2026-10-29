@@ -49,6 +49,8 @@ export type HostListResult = {
   total: number;
   online: number;
   alerts: number;
+  /** 服务端当前待分发版本：与行内 latest_agent_ver 同源，由后端顶层再发一份（QR29-D.2 契约对账） */
+  latest_agent_ver: string;
   /** 「最新版本下的落后台数」——与 summary 中 agent_outdated 等价，由后端算好避免前端再过 500 行 */
   outdated: number;
 };
@@ -65,6 +67,8 @@ export type HostDetail = HostMeta & {
   last_seen: number;
   online: boolean;
   age_sec: number;
+  /** 离线原因（updating / stopped / ...）：列表行已有，详情对齐建模（QR29-D.2） */
+  status_reason: string;
   metrics: Record<string, any>;
   custom: Record<string, any>;
   disk_alert: boolean;
