@@ -74,21 +74,30 @@ def test_verify_signature_require_sig_without_key_rejected():
 
 # ---- 原子替换 ----
 
-def test_verify_and_replace_writes_atomically(tmp_path):
+def _promoted_tmp(tmp_path, data, name="dl-tmp"):
+    """promote_downloaded 的前置：模拟「下载侧已流式落盘的 tmp」。"""
+    tmp = tmp_path / name
+    tmp.write_bytes(data)
+    return str(tmp)
+
+
+def test_promote_downloaded_writes_atomically(tmp_path):
+    """QR29-A4：流式下载后的上位步骤——备份旧版 → 原子替换，与原
+    verify_and_replace 的备份/回滚语义一字不变。"""
     data = b"\x7fELF-fake-binary-content"
     target = tmp_path / "kk-agent"
     target.write_bytes(b"old")
-    assert updater.verify_and_replace(data, str(target)) is True
+    assert updater.promote_downloaded(_promoted_tmp(tmp_path, data), str(target)) is True
     assert target.read_bytes() == data
-    assert list(tmp_path.glob(".kk-agent.update.*")) == [], "临时文件必须清干净"
+    assert list(tmp_path.glob(".kk-agent.download.*")) == [], "下载临时文件必须清干净"
 
 
-def test_verify_and_replace_failure_leaves_target_untouched(tmp_path):
+def test_promote_downloaded_failure_leaves_target_untouched(tmp_path):
     """目标目录不可写时：原文件保持不动，且不残留临时文件。"""
     target = tmp_path / "nowhere" / "kk-agent"
     before = list(tmp_path.iterdir())
     try:
-        updater.verify_and_replace(b"data", str(target))
+        updater.promote_downloaded(_promoted_tmp(tmp_path, b"data"), str(target))
         assert False, "expected OSError for missing directory"
     except OSError:
         pass
@@ -182,6 +191,20 @@ def test_refuses_missing_target_file(monkeypatch, tmp_path):
     assert updater.apply_manifest(cfg, None, manifest) is False
 
 
+def _stub_download(data):
+    """download_binary 流式契约（QR29-A4）的替身：写 to_path、回 (size, sha256)。
+
+    各 apply_manifest 用例的断言与旧字节替身一字不差——变的只是替身的实现面。
+    """
+    def _dl(url, log, insecure=False, max_bytes=updater.MAX_BIN_BYTES, to_path=None):
+        if to_path is None:
+            return data
+        with open(to_path, "wb") as f:
+            f.write(data)
+        return len(data), hashlib.sha256(data).hexdigest()
+    return _dl
+
+
 def test_apply_manifest_updates_and_execv(tmp_path, monkeypatch):
     data = b"\x7fELF-updated-binary"
     target = tmp_path / "kk-agent-test"
@@ -189,7 +212,7 @@ def test_apply_manifest_updates_and_execv(tmp_path, monkeypatch):
     sha = hashlib.sha256(data).hexdigest()
 
     captured = {}
-    monkeypatch.setattr(updater, "download_binary", lambda *a, **k: data)
+    monkeypatch.setattr(updater, "download_binary", _stub_download(data))
     monkeypatch.setattr(os, "execv", lambda p, argv: captured.setdefault("execv", (p, argv)))
 
     cfg = {"token": "t", "update_url": "http://api",
@@ -206,7 +229,7 @@ def test_apply_manifest_bad_sha_does_not_replace(tmp_path, monkeypatch):
     """下载成功但校验不过：目标必须保持原样。"""
     target = tmp_path / "kk-agent-test"
     target.write_bytes(b"old")
-    monkeypatch.setattr(updater, "download_binary", lambda *a, **k: b"tampered")
+    monkeypatch.setattr(updater, "download_binary", _stub_download(b"tampered"))
     monkeypatch.setattr(os, "execv", lambda *a: None)
     cfg = {"token": "t", "update_url": "http://api", "agent_bin": str(target),
            "update_insecure": False}
@@ -304,6 +327,114 @@ def test_download_binary_enforces_size_cap():
         srv.server_close()   # 不关监听套接字，GC 时 ResourceWarning 会炸到后面的用例
 
 
+def test_download_binary_stream_to_path(tmp_path):
+    """QR29-A4：to_path 形态流式落盘——文件内容与返回的 (size, sha256) 一致，
+    且不残留半成品；字节形态的旧契约保持可用（推送路径与替身依赖）。"""
+    import http.server
+    import threading
+
+    payload = b"ELF-streamed" * 100
+    sha = hashlib.sha256(payload).hexdigest()
+
+    class _H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), _H)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    dst = tmp_path / "dl.bin"
+    try:
+        size, got = updater.download_binary("http://127.0.0.1:%d/bin" % port,
+                                            "tok", None, to_path=str(dst))
+        assert (size, got) == (len(payload), sha)
+        assert dst.read_bytes() == payload
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_download_binary_stream_enforces_cap_and_cleans_tmp(tmp_path):
+    """流式形态的封顶与半成品收口：超限 RuntimeError，tmp 必须删干净。"""
+    import http.server
+    import threading
+
+    class _H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(4096))
+            self.end_headers()
+            self.wfile.write(b"z" * 4096)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), _H)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    dst = tmp_path / "dl.bin"
+    try:
+        try:
+            updater.download_binary("http://127.0.0.1:%d/bin" % port, "tok", None,
+                                    max_bytes=1024, to_path=str(dst))
+            assert False, "expected RuntimeError on oversized payload"
+        except RuntimeError as e:
+            assert "too large" in str(e)
+        assert not dst.exists(), "超限后半成品必须清理"
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_stream_download_peak_memory_is_bounded(tmp_path, monkeypatch):
+    """QR29-A4 验收：流式落盘的峰值内存不随包体线性。
+
+    _CHUNK 压到 8KB 后喂 512KB 的包：tracemalloc 峰值必须远小于包体——
+    旧实现整包驻留（bytearray + bytes 各一份）会把 25–35MB 常驻口径顶穿。
+    """
+    import http.server
+    import threading
+    import tracemalloc
+
+    payload = b"x" * (512 * 1024)
+    monkeypatch.setattr(updater, "_CHUNK", 8192)
+
+    class _H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), _H)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    dst = tmp_path / "dl.bin"
+    try:
+        tracemalloc.start()
+        try:
+            size, sha = updater.download_binary("http://127.0.0.1:%d/bin" % port,
+                                                "tok", None, to_path=str(dst))
+        finally:
+            _, peak = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
+        assert size == len(payload) and len(sha) == 64
+        assert peak < len(payload) // 4, (
+            "峰值内存 %d 已追上包体 %d——流式语义退化" % (peak, len(payload)))
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
 def test_manifest_fetch_is_size_capped():
     """QR-A23：清单侧必须有与二进制侧对称的帽子。
 
@@ -365,9 +496,9 @@ def test_update_absolute_url_used_directly(tmp_path, monkeypatch):
     target.write_bytes(b"old")
     hit = {}
 
-    def fake_download(url, log, insecure=False, max_bytes=None):
+    def fake_download(url, log, insecure=False, max_bytes=None, to_path=None):
         hit["url"] = url
-        return data
+        return _stub_download(data)(url, log, insecure, max_bytes, to_path)
 
     monkeypatch.setattr(updater, "download_binary", fake_download)
     monkeypatch.setattr(os, "execv", lambda *a: None)
@@ -386,9 +517,10 @@ def test_update_relative_url_falls_back_to_base(tmp_path, monkeypatch):
     target = tmp_path / "kk-agent-rel"
     target.write_bytes(b"old")
     hit = {}
-    monkeypatch.setattr(updater, "download_binary",
-                        lambda url, log, insecure=False, max_bytes=None:
-                        (hit.setdefault("url", url), data)[1])
+    def recording_dl(url, log, insecure=False, max_bytes=None, to_path=None):
+        hit.setdefault("url", url)
+        return _stub_download(data)(url, log, insecure, max_bytes, to_path)
+    monkeypatch.setattr(updater, "download_binary", recording_dl)
     monkeypatch.setattr(os, "execv", lambda *a: None)
     cfg = {"token": "t", "update_url": "http://srv:8443", "agent_bin": str(target),
            "update_insecure": False}
@@ -427,7 +559,7 @@ def test_size_mismatch_rejected_before_sha(tmp_path, monkeypatch):
     data = b"abc"                     # 实际 3 字节
     target = tmp_path / "kk-agent-size"
     target.write_bytes(b"old")
-    monkeypatch.setattr(updater, "download_binary", lambda *a, **k: data)
+    monkeypatch.setattr(updater, "download_binary", _stub_download(data))
     monkeypatch.setattr(os, "execv", lambda *a: None)
     cfg = {"token": "t", "update_url": "http://api", "agent_bin": str(target),
            "update_insecure": False}
@@ -457,9 +589,10 @@ def test_update_failure_backoff_skips_same_version(tmp_path, monkeypatch):
     target.write_bytes(b"old")
     calls = {"n": 0}
 
-    def fake_dl(url, log, insecure=False, max_bytes=None):
+    def fake_dl(url, log, insecure=False, max_bytes=None, to_path=None):
         calls["n"] += 1
-        return b"tampered"           # 8 字节，与清单 size 对齐，只让 sha 不符
+        # 8 字节，与清单 size 对齐，只让 sha 不符
+        return _stub_download(b"tampered")(url, log, insecure, max_bytes, to_path)
 
     monkeypatch.setattr(updater, "download_binary", fake_dl)
     monkeypatch.setattr(os, "execv", lambda *a: None)
@@ -484,7 +617,7 @@ def test_update_backoff_clears_after_success(tmp_path, monkeypatch):
     """成功后清零退避（换新版本成功即恢复正常节奏）。"""
     target = tmp_path / "kk-agent-rs"
     target.write_bytes(b"old")
-    monkeypatch.setattr(updater, "download_binary", lambda *a, **k: b"tampered")
+    monkeypatch.setattr(updater, "download_binary", _stub_download(b"tampered"))
     monkeypatch.setattr(os, "execv", lambda *a: None)
     cfg = {"token": "t", "update_url": "http://api", "agent_bin": str(target),
            "update_insecure": False}
@@ -493,7 +626,7 @@ def test_update_backoff_clears_after_success(tmp_path, monkeypatch):
     assert updater._fail_state["count"] == 1
 
     good = b"\x7fELF-good"
-    monkeypatch.setattr(updater, "download_binary", lambda *a, **k: good)
+    monkeypatch.setattr(updater, "download_binary", _stub_download(good))
     man = {"version": "9.9.10", "sha256": hashlib.sha256(good).hexdigest(),
            "size": len(good), "url": "/x"}
     assert updater.apply_manifest(cfg, None, man) is True
@@ -536,7 +669,7 @@ def test_apply_manifest_execv_failure_restores_old_binary(tmp_path, monkeypatch)
     data = b"\x7fELF-new-binary"
     target = tmp_path / "kk-agent-test"
     target.write_bytes(b"old-binary-bytes")
-    monkeypatch.setattr(updater, "download_binary", lambda *a, **k: data)
+    monkeypatch.setattr(updater, "download_binary", _stub_download(data))
 
     def boom(p, argv):
         raise OSError("Exec format error")
@@ -558,7 +691,7 @@ def test_apply_manifest_execv_failure_without_backup_still_receipts(tmp_path, mo
     data = b"\x7fELF-new"
     target = tmp_path / "kk-agent-test"
     target.write_bytes(b"old")
-    monkeypatch.setattr(updater, "download_binary", lambda *a, **k: data)
+    monkeypatch.setattr(updater, "download_binary", _stub_download(data))
     monkeypatch.setattr(os, "execv", lambda *a: (_ for _ in ()).throw(OSError("noexec")))
     # 备份先被人为拿走：模拟还原失败的极端路径
     monkeypatch.setattr(updater, "restore_backup", lambda t: False)
@@ -570,7 +703,7 @@ def test_apply_manifest_execv_failure_without_backup_still_receipts(tmp_path, mo
     assert ok is False and reason == "exec_error"
 
 
-def test_verify_and_replace_replace_failure_cleans_backup(tmp_path, monkeypatch):
+def test_promote_downloaded_replace_failure_cleans_backup(tmp_path, monkeypatch):
     """替换本身失败：目标保持原样，冗余备份也要清掉（不留陈旧 .kkbak）。"""
     target = tmp_path / "kk-agent-test"
     target.write_bytes(b"old")
@@ -579,16 +712,17 @@ def test_verify_and_replace_replace_failure_cleans_backup(tmp_path, monkeypatch)
         raise OSError("cross-device link")
     monkeypatch.setattr(os, "replace", boom)
     with pytest.raises(OSError):
-        updater.verify_and_replace(b"new", str(target))
+        updater.promote_downloaded(_promoted_tmp(tmp_path, b"new"), str(target))
     assert target.read_bytes() == b"old"
     assert not os.path.exists(str(target) + updater._BAK_SUFFIX)
 
 
-def test_verify_and_replace_keeps_backup_for_execv_rollback(tmp_path):
+def test_promote_downloaded_keeps_backup_for_execv_rollback(tmp_path):
     """QR-A2 正向：替换成功后 .kkbak 必须在场（execv 阶段回滚的原料）。"""
     target = tmp_path / "kk-agent-test"
     target.write_bytes(b"old-binary")
-    assert updater.verify_and_replace(b"new-binary", str(target)) is True
+    assert updater.promote_downloaded(
+        _promoted_tmp(tmp_path, b"new-binary"), str(target)) is True
     assert target.read_bytes() == b"new-binary"
     with open(str(target) + updater._BAK_SUFFIX, "rb") as f:
         assert f.read() == b"old-binary"
@@ -598,7 +732,7 @@ def test_apply_manifest_missing_sha256_reports_no_sha256(tmp_path, monkeypatch):
     """缺 sha256 的清单拒绝原因必须是 no_sha256，而不是误标 hmac_mismatch（QR-A10）。"""
     target = tmp_path / "kk-agent-test"
     target.write_bytes(b"old")
-    monkeypatch.setattr(updater, "download_binary", lambda *a, **k: b"data")
+    monkeypatch.setattr(updater, "download_binary", _stub_download(b"data"))
     monkeypatch.setattr(os, "execv", lambda *a: None)
     cfg = {"token": "t", "update_url": "http://api", "agent_bin": str(target),
            "update_insecure": False}

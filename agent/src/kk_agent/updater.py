@@ -230,23 +230,33 @@ def push_update_allowed(cfg):
     return bool(cfg.get("update_allow_unsigned"))
 
 
-def _verify_signature(data, manifest, cfg, log):
-    """校验 sha256（防损坏）+ 可选 HMAC 签名（防伪造）。返回是否放行。"""
+def _verify_signature_stream(chunks, manifest, cfg, log):
+    """sha256/HMAC 判定链的唯一实现（QR29-A4）：chunks 是二进制内容的可迭代块。
+
+    字节版（推送路径/既有测试）喂 `[data]`，文件版（轮询下载路径）喂分块读——
+    判定顺序与拒绝原因共用同一份，两条路径的接受口径才不会各自漂移。
+    HMAC 与 sha256 同趟增量计算，不要求内容整体驻留内存。
+    """
     log = _log(log)
     expected = str(manifest.get("sha256") or "")
     if not expected:
         log.warning("manifest missing sha256, refuse to replace")
         return False
-    digest = hashlib.sha256(data).hexdigest()
+    key = (cfg.get("update_hmac_key") or "").encode()
+    sha = hashlib.sha256()
+    mac = hmac.new(key, digestmod=hashlib.sha256) if key else None
+    for chunk in chunks:
+        sha.update(chunk)
+        if mac:
+            mac.update(chunk)
+    digest = sha.hexdigest()
     if digest.lower() != expected.lower():
         log.warning("sha256 mismatch: got %s expect %s", digest, expected)
         return False
 
-    key = (cfg.get("update_hmac_key") or "").encode()
     sig = str(manifest.get("sig") or "")
-    if key:
-        mac = hmac.new(key, data, hashlib.sha256).hexdigest()
-        if not sig or not hmac.compare_digest(mac, sig.lower()):
+    if mac:
+        if not sig or not hmac.compare_digest(mac.hexdigest(), sig.lower()):
             log.warning("HMAC signature mismatch, refuse to replace")
             return False
     elif cfg.get("update_require_sig"):
@@ -255,30 +265,67 @@ def _verify_signature(data, manifest, cfg, log):
     return True
 
 
-def download_binary(url, log, insecure=False, max_bytes=MAX_BIN_BYTES):
-    """分块下载二进制，带大小上限保护（骨架与清单侧同一份，QR29-A7）。"""
+def _verify_signature(data, manifest, cfg, log):
+    """校验 sha256（防损坏）+ 可选 HMAC 签名（防伪造）。返回是否放行。"""
+    return _verify_signature_stream([data], manifest, cfg, log)
+
+
+def _verify_signature_path(path, manifest, cfg, log):
+    """_verify_signature 的文件版：分块读盘，不整包读回内存（QR29-A4）。"""
+    with open(path, "rb") as f:
+        return _verify_signature_stream(iter(lambda: f.read(_CHUNK), b""),
+                                        manifest, cfg, log)
+
+
+def download_binary(url, log, insecure=False, max_bytes=MAX_BIN_BYTES, to_path=None):
+    """分块下载二进制，带大小上限保护（QR29-A4：更新期 RSS 峰值不随包体线性）。
+
+    - to_path 给出：流式写入该文件并**边写边算 sha256**，返回 (size, sha256hex)。
+      8~12MB 整包驻留会把 25–35MB 常驻口径顶穿；落盘即 fsync，后续 replace
+      不再二次写。下载失败/超限删干净半成品后原样抛出。
+    - to_path 为空：保留旧契约返回 bytes（字节语义一字不变）。
+    封顶语义不变：任何时刻累计超过 max_bytes 立即 RuntimeError。
+    """
     req = urllib.request.Request(url)
-    return _stream_capped(req, 60, max_bytes, "binary", insecure=insecure)
+    if to_path is None:
+        return _stream_capped(req, 60, max_bytes, "binary", insecure=insecure)
+    sha = hashlib.sha256()
+    total = 0
+    try:
+        with _build_opener(insecure).open(req, timeout=60) as resp, \
+                open(to_path, "wb") as f:
+            while True:
+                chunk = resp.read(_CHUNK)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise RuntimeError("binary too large: >%d bytes" % max_bytes)
+                sha.update(chunk)
+                f.write(chunk)
+            f.flush()
+            os.fsync(f.fileno())
+    except BaseException:
+        try:
+            os.remove(to_path)
+        except OSError:
+            pass
+        raise
+    return total, sha.hexdigest()
 
 
 _BAK_SUFFIX = ".kkbak"   # 旧二进制备份（execv 失败回滚用，QR-A2）
 
 
-def verify_and_replace(data, target):
-    """写临时文件 → fsync → 备份旧二进制 → 原子替换 target。失败清理临时文件。
+def promote_downloaded(tmp, target):
+    """已下载并校验通过的 tmp 二进制上位：备份旧版 → 原子替换（QR29-A4）。
 
-    备份（QR-A2）：execv 阶段失败时 _apply_manifest 用 .kkbak 还原旧二进制，
-    否则「进程还跑着旧代码、磁盘已是新二进制」，下次重启即变砖。备份固定单槽位，
-    下次更新覆盖；还原时被消费，不会堆积。
+    原 verify_and_replace 的备份/回滚语义一字不变，只是「把 data 再写一遍 tmp」
+    这步被流式下载取代——fsync 与 chmod 在下载侧/此处分别完成。tmp 必须与
+    target 同目录（下载侧保证），os.replace 才是同文件系统内的原子替换。
     """
-    d = os.path.dirname(os.path.abspath(target))
-    tmp = os.path.join(d, ".kk-agent.update.%d" % os.getpid())
     bak = target + _BAK_SUFFIX
     try:
-        with open(tmp, "wb") as f:
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
         if os.name == "posix":
             os.chmod(tmp, 0o755)
         if os.path.exists(target):
@@ -368,39 +415,51 @@ def _apply_manifest(cfg, log, manifest, on_before_restart=None):
 
     log.info("agent update available: %s -> %s, downloading", kk_config.AGENT_VER, ver)
     with _update_lock:
+        # 流式下载直落 target 同目录的 tmp（QR29-A4）：同文件系统 os.replace 才
+        # 原子；sha256 与 size 都来自下载那一趟的边写边算，不再整包驻留内存。
+        tmp = os.path.join(os.path.dirname(os.path.abspath(target)),
+                           ".kk-agent.download.%d" % os.getpid())
         try:
-            data = download_binary(url, log, cfg.get("update_insecure"))
-        except Exception as e:
-            log.warning("download failed: %s", e)
-            return False, "http_error"
-        # 先比 size 再比 sha256（B6.4）：截断/半截响应在 size 上就露馅，
-        # 早一步拒绝，失败原因也更直观（sha256 不符看不出「短了多少」）。
-        declared = manifest.get("size")
-        if declared not in (None, ""):
             try:
-                declared = int(declared)
-            except (TypeError, ValueError):
-                declared = None
-        if declared is not None and len(data) != declared:
-            log.warning("size mismatch: got %d expect %d, refuse to replace",
-                        len(data), declared)
-            return False, "size_mismatch"
-        expected = str(manifest.get("sha256") or "")
-        if not expected:
-            log.warning("manifest missing sha256, refuse to replace")
-            return False, "no_sha256"
-        if hashlib.sha256(data).hexdigest().lower() != expected.lower():
-            log.warning("sha256 mismatch, refuse to replace")
-            return False, "sha256_mismatch"
-        if not _verify_signature(data, manifest, cfg, log):
-            # sha256 已在上面单独判过（含缺失），走到这里只剩签名问题
-            return False, "hmac_mismatch"
-        try:
-            verify_and_replace(data, target)
-        except Exception as e:
-            log.warning("replace failed: %s", e)
-            return False, "disk_error"
-        log.info("agent binary replaced (%d bytes); restarting", len(data))
+                size, sha = download_binary(url, log, cfg.get("update_insecure"),
+                                            to_path=tmp)
+            except Exception as e:
+                log.warning("download failed: %s", e)
+                return False, "http_error"
+            # 先比 size 再比 sha256（B6.4）：截断/半截响应在 size 上就露馅，
+            # 早一步拒绝，失败原因也更直观（sha256 不符看不出「短了多少」）。
+            declared = manifest.get("size")
+            if declared not in (None, ""):
+                try:
+                    declared = int(declared)
+                except (TypeError, ValueError):
+                    declared = None
+            if declared is not None and size != declared:
+                log.warning("size mismatch: got %d expect %d, refuse to replace",
+                            size, declared)
+                return False, "size_mismatch"
+            expected = str(manifest.get("sha256") or "")
+            if not expected:
+                log.warning("manifest missing sha256, refuse to replace")
+                return False, "no_sha256"
+            if sha.lower() != expected.lower():
+                log.warning("sha256 mismatch, refuse to replace")
+                return False, "sha256_mismatch"
+            if not _verify_signature_path(tmp, manifest, cfg, log):
+                # sha256 已在上面单独判过（含缺失），走到这里只剩签名问题
+                return False, "hmac_mismatch"
+            try:
+                promote_downloaded(tmp, target)
+            except Exception as e:
+                log.warning("replace failed: %s", e)
+                return False, "disk_error"
+        finally:
+            # 拒绝路径的半成品收口：promote 成功后 tmp 已改名，这里是无害空操作
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        log.info("agent binary replaced (%d bytes); restarting", size)
         # 成功回执必须在 execv **之前** 发出：进程被替换后来不及发帧。
         # 此刻 os.replace 已返回，判定成功是准确的。
         if on_before_restart:
