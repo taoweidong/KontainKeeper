@@ -50,3 +50,7 @@ docker/offline/images/SHA256SUMS
 service/
 # playwright-cli 会话快照（每次 snapshot/goto 往仓库根落 yml+console log，已数 MB，严禁入库）
 .playwright-cli/
+# 真实环境全流程 E2E 的运行产物（截图/下载/DB/Agent 日志 + 顺手重定向的 stdout），
+# 每次跑都新增一个时间戳目录；脚本与文档在 scripts/e2e/ 与 docs/，产物不入库
+artifacts-e2e/
+artifacts-e2e-*.log
