@@ -105,13 +105,15 @@ async def test_verify_admin_offloads_pbkdf2_from_event_loop(store, monkeypatch):
     仍能按时醒来。旧实现在协程里同步哈希，MQTT 桥接的心跳落库会被一次未鉴权的
     /api/login 阻塞数十毫秒。"""
     await store.ensure_admin("admin", "pw")     # 先建行，别让慢哈希拖慢建行
-    from kk_server.models import store as store_mod
+    # G 拆分后 verify_admin 住在 _store_auth，_pwdf 从该模块命名空间解析——
+    # 补丁要打在名字的定义处，打在门面 store.py 上已经打不中
+    from kk_server.models import _store_auth as auth_impl
 
     def slow_pwdf(*args, **kwargs):
         time.sleep(0.5)
         return "0" * 64
 
-    monkeypatch.setattr(store_mod, "_pwdf", slow_pwdf)
+    monkeypatch.setattr(auth_impl, "_pwdf", slow_pwdf)
     t0 = asyncio.get_running_loop().time()
     task = asyncio.create_task(store.verify_admin("admin", "whatever"))
     await asyncio.sleep(0.05)     # 旧实现这里要等满 0.5s 的同步哈希
@@ -269,7 +271,9 @@ async def test_aggregate_hours_stops_writing_last_metrics(store):
     这个字段，必须先恢复写入并同步更新本锁——否则列里永远只有空串，读了个寂寞。
     """
     now = int(time.time())
-    old_ts = now - 5 * 3600
+    # 对齐到小时桶内（+60 后仍在同桶）：old_ts 若落在整点前 60s 内，两次心跳会
+    # 分属两个桶，samples==2 的断言就有 ~1.7% 的时钟相关闪失
+    old_ts = (now - 5 * 3600) // 3600 * 3600 + 60
     await store.upsert_container("pod-lm", "img", "0.1.0", 60)
     await store.record_hb("pod-lm", {"ts": old_ts, "interval": 60,
                                      "metrics": {"cpu": 7.5, "mem_mb": 100.0}})

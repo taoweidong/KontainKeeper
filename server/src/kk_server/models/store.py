@@ -1,27 +1,22 @@
 """异步存储层：SQLAlchemy 2 Core + async engine，一套代码适配 SQLite / PG / MySQL。
 
 KK_DB_URL 选库，缺省回落 KK_DB_PATH 的 SQLite。表定义见 tables.py，工具函数见 helpers.py。
-阶段 B 的异步化在这里一并完成——Store 全协程，事件循环不再被数据库拖住。
+Store 是门面（QR29-G 第二轮拆分）：基座只留引擎装配、执行原语与方言收敛点，
+业务方法按域住在 _store_*.py 的 Mixin 里（auth/audit/commands/metrics/hosts/
+maintenance 六域），调用点零改动。
 """
-import asyncio
-import base64
-import json
-import secrets
-import time
 from urllib.parse import urlparse
 
-from sqlalchemy import (BigInteger, and_, case, delete, func, insert, or_,
-                        select, text, update)
+from sqlalchemy import insert, text
 from sqlalchemy.dialects import mysql, postgresql, sqlite
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from .tables import (MD, ONLINE_GRACE, _ADD_COLUMNS, _ADD_INDEXES, _CMD_COLS,
-                     _SUMMARY_COLS, admins, audit, commands, containers,
-                     heartbeats, hourly, kv, sessions, updates)
-from .helpers import (_PWDF_ITERS_LEGACY, TAIL_B64_CHARS, _b64_tail, _num, _pwdf,
-                      clamp, mask_url, normalize_url, shards)
-from .version import version_lt as _version_lt
+# admins..sessions 这批表对象在本文件已无直接使用，但保持可从
+# `kk_server.models.store` 导入的历史路径（test_dialects 等既有契约）
+from .tables import (MD, _ADD_COLUMNS, _ADD_INDEXES, admins, audit, commands,
+                     containers, heartbeats, hourly, kv, sessions, updates)
+from .helpers import mask_url, normalize_url
 from ._store_auth import _StoreAuthMixin
 from ._store_audit import _StoreAuditMixin
 from ._store_commands import _StoreCommandsMixin
@@ -195,103 +190,3 @@ class Store(_StoreAuthMixin, _StoreAuditMixin, _StoreCommandsMixin,
             else:
                 stmt = stmt.on_conflict_do_nothing(index_elements=conflict_cols)
         return await self._run(stmt)
-
-    # ---- 聚合与回收 ----
-    async def cleanup(self, now=None, raw_days=2, cmd_days=30, hourly_days=90, out_days=7,
-                      update_days=90, audit_days=90):
-        """存储回收：只增不减的表在这里收敛（修 P1-6）。
-
-        两条不同的保留长度是刻意的：命令状态行要留 30 天（审计可追溯），
-        但 4MB 的命令输出跟着留一个月纯属浪费——输出单独按 7 天清，状态行保持完整。
-        审计表此前不在回收之列（评审 P0）：ip_rejected / interval_violation 是
-        外部来源可控的高频写入，只增不减会被撑到磁盘告急。
-        """
-        now = int(now or time.time())
-        stats = {"hours_aggregated": await self._aggregate_hours(now, raw_days)}
-        # 大表分批删：一次 DELETE 掉几十万行会长时间锁表、撑大事务日志，
-        # SQLite 上还会顶住 WAL 让前台写入一起变慢。
-        stats["heartbeats_deleted"] = await self._delete_batched(
-            heartbeats, heartbeats.c.ts < now - raw_days * 86400, heartbeats.c.id)
-        stats["hourly_deleted"] = await self._run(
-            delete(hourly).where(hourly.c.hour < (now - hourly_days * 86400) // 3600))
-        stats["commands_deleted"] = await self._delete_batched(
-            commands, commands.c.finished_at < now - cmd_days * 86400, commands.c.id,
-            extra=commands.c.finished_at.isnot(None))
-        stats["outputs_purged"] = await self._purge_outputs(now, out_days)
-        stats["sessions_deleted"] = await self._run(
-            delete(sessions).where(sessions.c.expires < now))
-        # 台账与命令同型只增不减；升级是低频操作，行数远小于心跳，保留 90 天
-        stats["updates_deleted"] = await self._delete_batched(
-            updates, updates.c.created_at < now - update_days * 86400, updates.c.id)
-        # 审计保留 90 天：够溯源，也不给「持续灌拒绝帧」留无限增长的空间
-        stats["audit_deleted"] = await self._delete_batched(
-            audit, audit.c.ts < now - audit_days * 86400, audit.c.id)
-        # sweeper 漏掉的僵死命令盖成 lost 并补 finished_at：不补时间戳的 lost 行
-        # 永远落在上面那条 DELETE 的窗口之外，正是 P1-6。
-        stats["commands_lost"] = await self._run(
-            update(commands).where(commands.c.status.in_(("sent", "running")))
-            .where(commands.c.created_at < now - 3600)
-            .values(status="lost", finished_at=now))
-        return stats
-
-    async def _key_batches(self, col, cond, batch):
-        """分批挑主键的公共骨架（QR29-S17）：`while True: select...limit(batch)` 的
-        收敛判据（空批退出 / 短批收尾）只写一遍。
-
-        前提：**动作必须让行退出 cond**（删掉或改掉标记列），否则死循环——
-        两个调用方（_delete_batched / _purge_outputs）都满足。
-        """
-        while True:
-            rows = await self._all(select(col).where(cond).limit(batch))
-            if not rows:
-                return
-            keys = [r[col.name] for r in rows]
-            yield keys
-            if len(keys) < batch:
-                return
-
-    async def _delete_batched(self, table, where, pk, batch=5000, extra=None):
-        """按主键分批删除：先挑一批 id 再删，每批各自一个事务。
-
-        为什么不用 DELETE ... LIMIT：PostgreSQL 不支持，MySQL 的 LIMIT 又是方言
-        专属写法，SQLite 还要编译期开关——选主键是唯一三库通用且不锁全表的做法。
-        """
-        cond = where if extra is None else and_(where, extra)
-        total = 0
-        async for keys in self._key_batches(pk, cond, batch):
-            total += await self._run(delete(table).where(pk.in_(keys)))
-        return total
-
-    async def _purge_outputs(self, now, out_days, batch=2000):
-        """清掉超龄命令的输出文本，保留状态行（id/pod/rc/耗时都还在）。"""
-        if out_days <= 0:
-            return 0
-        cutoff = now - out_days * 86400
-        cond = and_(commands.c.finished_at.isnot(None), commands.c.finished_at < cutoff,
-                    commands.c.out_purged == 0, commands.c.out_b64 != "")
-        total = 0
-        async for ids in self._key_batches(commands.c.id, cond, batch):
-            total += await self._run(update(commands).where(commands.c.id.in_(ids))
-                                     .values(out_b64="", out_tail="", out_chunks=0,
-                                             out_purged=1))
-        return total
-
-    async def counts(self):
-        """可观测面板用的行数与状态分布（C5）。
-
-        不追求单条 SQL：这个接口给运维面板看，几分钟调一次，5 次小查询比一条
-        三库方言不通的大 JOIN 好维护。
-        """
-        total = await self._one(select(func.count().label("n")).select_from(containers))
-        online = await self._one(select(func.count().label("n")).select_from(containers)
-                                 .where(containers.c.online == 1))
-        by_status = {r["status"]: r["n"] for r in await self._all(
-            select(commands.c.status.label("status"), func.count().label("n"))
-            .group_by(commands.c.status))}
-        hb = await self._one(select(func.count().label("n")).select_from(heartbeats))
-        hrs = await self._one(select(func.count().label("n")).select_from(hourly))
-        return {
-            "hosts": {"total": (total or {}).get("n", 0), "online": (online or {}).get("n", 0)},
-            "commands": by_status,
-            "storage": {"heartbeats": (hb or {}).get("n", 0), "hourly": (hrs or {}).get("n", 0)},
-        }
