@@ -22,6 +22,12 @@ from .tables import (MD, ONLINE_GRACE, _ADD_COLUMNS, _ADD_INDEXES, _CMD_COLS,
 from .helpers import (_PWDF_ITERS_LEGACY, TAIL_B64_CHARS, _b64_tail, _num, _pwdf,
                       clamp, mask_url, normalize_url, shards)
 from .version import version_lt as _version_lt
+from ._store_auth import _StoreAuthMixin
+from ._store_audit import _StoreAuditMixin
+from ._store_commands import _StoreCommandsMixin
+from ._store_hosts import _StoreHostsMixin
+from ._store_maintenance import _StoreMaintenanceMixin
+from ._store_metrics import _StoreMetricsMixin
 from ..logsetup import get_logger
 
 log = get_logger("kk.store")
@@ -154,8 +160,16 @@ def _column_ddl(ddl, dialect):
     return ddl.get(dialect, ddl["*"]) if isinstance(ddl, dict) else ddl
 
 
-class Store:
-    """异步存储。全部方法是协程——调用方 await，事件循环不再被数据库拖住。"""
+class Store(_StoreAuthMixin, _StoreAuditMixin, _StoreCommandsMixin,
+            _StoreMetricsMixin, _StoreHostsMixin, _StoreMaintenanceMixin):
+    """异步存储门面（QR29-G 第二轮拆分）。
+
+    基座只留三样东西：引擎装配（__init__/setup/close）、执行原语（_all/_one/
+    _run/_upsert/_ensure_schema）、方言收敛点（_column_ddl 与补列路径）——
+    AGENTS.md 硬约束「三库方言差异全部收在 _upsert/_ensure_schema 两处」的
+    那个「两处」就在这里，不许散回各域。业务方法按域住在 _store_*.py 的
+    Mixin 里，调用点（controllers/services）零改动。
+    """
 
     def __init__(self, url):
         # 允许直接给裸文件路径（旧 KK_DB_PATH 用法），内部规整成 async URL
