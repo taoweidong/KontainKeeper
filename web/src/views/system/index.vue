@@ -11,6 +11,7 @@ import {
   ageText,
   durText,
   errText,
+  nowSec,
   statusLabel,
   statusType,
   tsText
@@ -224,8 +225,6 @@ const counterRows = computed(() => {
     }));
   return [...known, ...extra];
 });
-
-const nowSec = () => Math.floor(Date.now() / 1000);
 
 /** 读数只报绝对时刻：computed 里没有秒级响应式时钟，写「N 秒前」会冻在求值那一刻骗人。 */
 const syncText = computed(() => {

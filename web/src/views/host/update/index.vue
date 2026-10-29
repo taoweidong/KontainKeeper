@@ -15,7 +15,7 @@ import { ElMessageBox } from "element-plus";
 import type { FormInstance } from "element-plus";
 
 import { rollbackAgent, uploadAgent } from "@/api/agent";
-import { ageText, errText, mbText } from "@/utils/kk";
+import { ageText, errText, mbText, nowSec } from "@/utils/kk";
 import { message } from "@/utils/message";
 import { PureTableBar } from "@/components/RePureTableBar";
 import { addDialog } from "@/components/ReDialog";
@@ -176,9 +176,7 @@ async function onRollback() {
           >
           <span v-if="current?.uploaded_at" class="kk-sub">
             {{
-              ageText(
-                Math.max(0, Math.floor(Date.now() / 1000) - current.uploaded_at)
-              )
+              ageText(Math.max(0, nowSec() - current.uploaded_at))
             }}上传
           </span>
           <span class="kk-sync" :class="{ 'kk-sync--stale': pollFailed }">

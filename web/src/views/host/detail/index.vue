@@ -24,6 +24,7 @@ import { upgradeHosts } from "@/api/agent";
 import { exportMetrics } from "@/api/exporting";
 import {
   ageText,
+  DISK_ALERT_PCT,
   downloadBlob,
   errText,
   fileStamp,
@@ -354,7 +355,7 @@ onBeforeUnmount(() => {
               <template #default="{ row }">
                 <el-progress
                   :percentage="Math.min(100, Math.round(row.pct || 0))"
-                  :status="row.pct >= 85 ? 'exception' : undefined"
+                  :status="row.pct >= DISK_ALERT_PCT ? 'exception' : undefined"
                 />
               </template>
             </el-table-column>

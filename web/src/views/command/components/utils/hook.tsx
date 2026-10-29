@@ -17,6 +17,7 @@ import {
 } from "@/api/commands";
 import { exportCommands } from "@/api/exporting";
 import {
+  argvText,
   downloadBlob,
   elapsedText,
   errText,
@@ -314,17 +315,9 @@ export function useCommandHistory() {
     }
   }
 
+  /** 命令内容预览：语义收进 utils/kk 的 argvText（QR29-E.2），此处只留列渲染壳 */
   function argvPreview(argv: CommandRow["argv"]): string {
-    if (!argv) return "-";
-    // argv 双端统一解析后（QR29-D.4）：数组/结构体是常态，字符串只剩历史脏数据
-    if (typeof argv === "string") return argv;
-    if (Array.isArray(argv)) return argv.join(" ");
-    if (typeof argv === "object") {
-      const o = argv as Record<string, any>;
-      if (o.items) return "items: " + (o.items as string[]).join(", ");
-      return JSON.stringify(argv);
-    }
-    return String(argv);
+    return argvText(argv);
   }
 
   /** 新下发的行加左侧色条：一眼找到刚才发的那批 */

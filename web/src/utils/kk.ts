@@ -142,3 +142,32 @@ export const upgradeSkipText = (reason?: string): string => {
     "未知原因"
   );
 };
+
+/** 磁盘告警阈值（%）：与服务端 store.DISK_ALERT_PCT 同一口径。前后端各一份
+ *  是部署形态决定的（前端拿不到服务端模块），改口径必须两边同步（QR29-E.2）。 */
+export const DISK_ALERT_PCT = 85;
+
+/** 秒级当前时刻：轮询同步读数条与相对时间换算共用（原先三处内联，QR29-E.2）。 */
+export const nowSec = (): number => Math.floor(Date.now() / 1000);
+
+/** 命令内容预览的统一出口（QR29-E.2）：welcome 与命令中心原先各一套语义——
+ *  一个 parse 字符串、一个不 parse，items 前缀一处「采集项:」一处「items:」。
+ *  统一后：字符串先试 JSON.parse（D.4 之后列表接口已回解析结构，字符串只剩
+ *  历史脏数据，解析失败原样展示）；items 结构统一「采集项: 」前缀，与
+ *  「采集面板」的产品术语一致（一处可见文案变更，评审 §6.2 第 5 行的裁决）。 */
+export function argvText(raw: unknown): string {
+  let argv = raw as any;
+  if (typeof argv === "string") {
+    try {
+      argv = JSON.parse(argv);
+    } catch {
+      return argv || "-";
+    }
+  }
+  if (Array.isArray(argv)) return argv.join(" ");
+  if (argv && typeof argv === "object") {
+    if (Array.isArray(argv.items)) return "采集项: " + argv.items.join(", ");
+    return JSON.stringify(argv);
+  }
+  return "-";
+}

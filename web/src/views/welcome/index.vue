@@ -12,6 +12,7 @@ import {
 } from "@/api/system";
 import { listCommands, type CommandRow } from "@/api/commands";
 import {
+  argvText,
   durText,
   elapsedText,
   errText,
@@ -160,24 +161,6 @@ async function load(silent = false) {
 
 function kindLabel(k: string): string {
   return { shell: "命令", collect: "采集", plugin_reload: "插件重载" }[k] || k;
-}
-
-/** 命令内容预览：列表接口的 argv 是 JSON 字符串（单条接口才是对象），两种都兼容 */
-function argvText(row: CommandRow): string {
-  let argv: any = row.argv;
-  if (typeof argv === "string") {
-    try {
-      argv = JSON.parse(argv);
-    } catch {
-      return argv || "-";
-    }
-  }
-  if (Array.isArray(argv)) return argv.join(" ");
-  if (argv && typeof argv === "object") {
-    if (Array.isArray(argv.items)) return "采集项: " + argv.items.join(", ");
-    return JSON.stringify(argv);
-  }
-  return "-";
 }
 
 function go(path: string) {
@@ -337,7 +320,7 @@ onMounted(() => {
             </el-table-column>
             <el-table-column label="内容" min-width="180" show-overflow-tooltip>
               <template #default="{ row }">{{
-                argvText(row as CommandRow)
+                argvText((row as CommandRow).argv)
               }}</template>
             </el-table-column>
             <el-table-column prop="status" label="状态" width="90">

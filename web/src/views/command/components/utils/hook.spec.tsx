@@ -428,7 +428,7 @@ describe("导出与列渲染", () => {
     expect(h.message.mock.calls.at(-1)[0]).toBe("导出失败：导出超限");
   });
 
-  it("argv 预览：后端统一解析后（QR29-D.4）数组/结构体是常态，字符串只剩历史脏数据 —— 字符串原样、数组空格连接、items 结构点名、其余 JSON", async () => {
+  it("argv 预览：语义收进 utils/kk 的 argvText（QR29-E.2）—— 字符串原样、数组空格连接、items 结构以「采集项:」点名（与产品术语统一）、其余 JSON", async () => {
     withHook();
     await settle();
     const render = (api.columns.find((c: any) => c.label === "命令 / 采集项") as any).cellRenderer;
@@ -436,7 +436,7 @@ describe("导出与列渲染", () => {
     expect(render({ row: { argv: null } })).toBe("-");
     expect(render({ row: { argv: "df -h | sort" } })).toBe("df -h | sort");
     expect(render({ row: { argv: ["/bin/ls", "-l", "a b"] } })).toBe("/bin/ls -l a b");
-    expect(render({ row: { argv: { items: ["cpu", "disk"] } } })).toBe("items: cpu, disk");
+    expect(render({ row: { argv: { items: ["cpu", "disk"] } } })).toBe("采集项: cpu, disk");
     expect(render({ row: { argv: { other: 1 } } })).toBe('{"other":1}');
   });
 

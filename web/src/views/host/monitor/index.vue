@@ -24,6 +24,7 @@ import {
   fileStamp,
   mbText,
   nOr,
+  nowSec,
   numText,
   tsText
 } from "@/utils/kk";
@@ -215,7 +216,7 @@ async function load(silent = false) {
     online.value = data.online;
     alerts.value = data.alerts;
     outdated.value = data.outdated;
-    lastLoadedAt.value = Math.floor(Date.now() / 1000);
+    lastLoadedAt.value = nowSec();
     pollFailed.value = false;
   } catch (e: any) {
     if (!isLatest()) return;

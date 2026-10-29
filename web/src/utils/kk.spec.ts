@@ -11,6 +11,7 @@ import {
 
 import {
   ageText,
+  argvText,
   durText,
   elapsedText,
   errText,
@@ -137,5 +138,24 @@ describe("statusType / statusLabel / upgradeSkipText：状态词汇", () => {
     expect(upgradeSkipText("no_broker")).toBe("服务端未连 Broker");
     expect(upgradeSkipText("weird_reason")).toBe("weird_reason");
     expect(upgradeSkipText(undefined)).toBe("未知原因");
+  });
+});
+
+describe("argvText：命令内容预览的统一出口（QR29-E.2）", () => {
+  it("数组空格连接；items 结构以「采集项:」点名；其余对象 JSON 化", () => {
+    expect(argvText(["/bin/ls", "-l", "a b"])).toBe("/bin/ls -l a b");
+    expect(argvText({ items: ["cpu", "disk"] })).toBe("采集项: cpu, disk");
+    expect(argvText({ other: 1 })).toBe('{"other":1}');
+  });
+
+  it("字符串先试 JSON.parse（D.4 后只剩历史脏数据）：合法 JSON 解析、失败原样、空串兜 -", () => {
+    expect(argvText('["df", "-h"]')).toBe("df -h");
+    expect(argvText("df -h | sort")).toBe("df -h | sort");
+    expect(argvText("")).toBe("-");
+  });
+
+  it("空值族全兜 -：null / undefined / 0 都不该渲染成字符串", () => {
+    expect(argvText(null)).toBe("-");
+    expect(argvText(undefined)).toBe("-");
   });
 });
