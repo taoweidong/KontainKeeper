@@ -43,7 +43,7 @@ bash scripts/quality_gate.sh
 # 后端（仓库根目录；uv run 会去下载 Python 3.12 而失败，务必用 .venv 直调）
 .venv/Scripts/python.exe -m pytest agent/tests -q      # Agent 单测
 .venv/Scripts/python.exe -m pytest server/tests -q      # Server 单测 + 集成
-.venv/Scripts/python.exe -m pytest agent/tests server/tests -q   # 全量 444 条（以 pytest 汇总为准）：Broker 可达时全 passed；不可达时仅 5 条集成用例 skipped
+.venv/Scripts/python.exe -m pytest agent/tests server/tests -q   # 全量 478 条（以 pytest 汇总为准）：Broker 可达时全 passed；不可达时仅 5 条集成用例 skipped
 # 汇总别用 `| tail -3`：失败行在进度条之前，会被截掉（曾因此漏看红灯两轮）。
 # 要看清结果用 --junitxml 再解析 tests/failures/errors/skipped 计数。
 .venv/Scripts/python.exe -m kk_server                   # 起服务端（默认 admin/admin123）

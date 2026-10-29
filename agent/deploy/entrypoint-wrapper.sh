@@ -32,11 +32,12 @@ mkdir -p "$(dirname "$KK_LOG")" 2>/dev/null || true
 # 容器启动时顺手清理 60 分钟前的残留；带存活实例的目录因 mtime 新鲜而得以保留。
 #
 # 同一处顺带清自更新残留（B6.4）：下载中途被 SIGTERM（容器停止的常见形态）会在
-# 二进制目录留下 .kk-agent.update.<pid>。SIGTERM 默认终止进程、**不抛异常**，
-# updater.verify_and_replace 的 except BaseException 兜不住，只能在这里清。
+# 二进制目录留下 .kk-agent.download.<pid>（QR29-A4 流式落盘的临时文件；此前
+# 整包内存路径叫 .kk-agent.update.<pid>）。SIGTERM 默认终止进程、**不抛异常**，
+# updater 的 except BaseException 兜不住，只能在这里清。
 cleanup_stale_mei() {
   find /tmp -maxdepth 1 -name '_MEI*' -type d -mmin +60 -exec rm -rf {} + 2>/dev/null
-  find "$(dirname "$KK_BIN")" -maxdepth 1 -name '.kk-agent.update.*' \
+  find "$(dirname "$KK_BIN")" -maxdepth 1 -name '.kk-agent.download.*' \
     -type f -mmin +60 -exec rm -f {} + 2>/dev/null
   return 0
 }

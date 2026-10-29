@@ -412,7 +412,7 @@ KK_ADVERTISE_IP=10.0.0.15 /opt/kk-agent mqtt://broker.ops.example.com:1883
 | `KK_SERVER` | Broker 地址（`mqtt://` / `mqtts://`，**不含凭据**） | 必填 |
 | `KK_ADVERTISE_IP` | 自报出口 IP 覆盖（多网卡 / NAT 下用） | 自动探测 |
 | `KK_HOST_NAME` | 主机标识（旧名 `KK_POD_NAME` 兼容） | hostname |
-| `KK_TOPIC_PREFIX` | 主题前缀，须与服务端一致 | `kk/v1` |
+| `KK_TOPIC_PREFIX` | 主题前缀，须与服务端一致；含通配符 `+`/`#` 启动即拒（QR29-A11） | `kk/v1` |
 | `KK_INTERVAL` | 心跳/采集间隔（秒，下限 1） | `60` |
 | `KK_DISK_PATHS` | 采集挂载点（逗号分隔；空 = 自动发现全部物理挂载点） | 自动发现 |
 | `KK_HB_ITEMS` | 心跳采集项（白名单子集；千进程主机可去掉 `proc` 降负载） | 全部 8 项 |
@@ -435,10 +435,11 @@ KK_ADVERTISE_IP=10.0.0.15 /opt/kk-agent mqtt://broker.ops.example.com:1883
    `ok:true`、`broker:"connected"`。
 2. **登录管理界面**：浏览器打开 `https://kk-server.ops.example.com`，
    用 `KK_ADMIN_USER` / `KK_ADMIN_PASS` 登录。
-   注意：登录失败按**用户名**与**客户端 IP** 两个维度各自计数，任一维度连续
-   输错 5 次即锁定 300 秒（用户名挡定向爆破，IP 挡用户名枚举）。经反向代理时
-   源 IP 会退化为代理地址（服务端只认直连地址、不读 `X-Forwarded-For`），
-   此场景请改由网关限流。
+   注意：登录失败按**用户名**与**客户端 IP** 两个维度各自计数，任一维度在
+   5 分钟窗口内输错 5 次即锁定 300 秒（用户名挡定向爆破，IP 挡用户名枚举）；
+   失败计数在最后一次失败 300 秒后自动清零，更早的失败不累积（QR29-S7）。
+   经反向代理时源 IP 会退化为代理地址（服务端只认直连地址、不读
+   `X-Forwarded-For`），此场景请改由网关限流。
 3. **启动一台被管理主机**（零凭据：镜像内置见 §7.2，或二进制直接拉起见 §7.3）：
    管理界面「主机总览」应在数十秒内出现该主机（状态 = 在线）。
    **指标要等首帧心跳**（默认 60s 间隔，可临时调小 `KK_INTERVAL` 加速验证），
@@ -495,7 +496,7 @@ curl -H "Authorization: Bearer $TOKEN" -F "version=0.2.0" \
 | 更新窗口可辨 | execv 前 Agent 发一帧 `reason=updating` 并等 PUBACK；主机列表的离线记录显示 `updating`，而非「原因未知」 |
 | 轮询抖动 | `KK_UPDATE_INTERVAL` 上下浮动 ±20%（与心跳同理由），避免 500 台同相启动齐拉二进制 |
 | 失败退避 | 同一版本失败后 5→10→30min 退避，不再重试刷屏；**版本号变化或成功即清零**（上传修好的包立刻生效） |
-| 完整性 | 下载后先比清单 `size` 再比 `sha256`（截断更早暴露）；`.kk-agent.update.*` 残留由 wrapper 启动时清理 |
+| 完整性 | 下载后先比清单 `size` 再比 `sha256`（截断更早暴露）；`.kk-agent.download.*` 下载残留由 wrapper 启动时清理 |
 | execv 失败回滚 | 替换前旧二进制留 `.kkbak`，execv 失败自动还原并按 `exec_error` 回执，不会再「磁盘已是新二进制、下次重启变砖」（QR-A2） |
 | 推送签名 | 推送路径默认要求签名，见下节（QR-P0-1） |
 

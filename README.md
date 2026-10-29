@@ -229,13 +229,13 @@ curl -H "Authorization: Bearer <ADMIN_TOKEN>" \
 uv sync --all-packages
 .venv/Scripts/python.exe -m pytest agent/tests -q     # Agent 单元测试
 .venv/Scripts/python.exe -m pytest server/tests -q    # Server 单测 + 端到端集成
-.venv/Scripts/python.exe -m pytest agent/tests server/tests -q   # 全量 290+ 条（以 pytest 汇总为准）：Broker 可达时全 passed；不可达时仅 4 条集成用例 skipped（集成用例）
+.venv/Scripts/python.exe -m pytest agent/tests server/tests -q   # 全量 478 条（以 pytest 汇总为准）：Broker 可达时全 passed；不可达时仅 5 条集成用例 skipped（集成用例）
 
 cd web && pnpm typecheck && pnpm build                # 前端类型检查与构建
 ```
 
 `agent/tests` 覆盖 MQTT 传输（主题/QoS/retain/离线队列）、psutil 采集、命令执行、
-插件热加载、自更新。`server/tests` 覆盖存储层（含三库方言静态校验）、桥接路由与归属校验、
+插件热加载、自更新。`server/tests` 覆盖存储层（含三库方言静态校验与 SQLite 真执行）、桥接路由与归属校验、
 黑名单、审计、REST 接口契约（ASGI Transport）、以及**真实服务端 + 真实 Agent 线程**的端到端集成
 （需 Broker，端口不可达时自动 skip）。
 

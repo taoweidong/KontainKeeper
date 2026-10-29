@@ -138,7 +138,8 @@ kk_server/
 ├── main.py            # create_app 工厂：装配 M/C/V + lifespan（桥接 + janitor）
 ├── config.py          # KK_* 环境变量解析（Settings），含 COLLECT_ITEMS 白名单
 ├── models/
-│   ├── store.py       # 异步存储：upsert/心跳/命令/审计/会话/聚合/回收
+│   ├── store.py       # 异步存储门面：引擎装配 + 执行原语 + 方言收敛点（_upsert/_ensure_schema）
+│   ├── _store_*.py    # 业务方法六域 Mixin：auth/audit/commands/metrics/hosts/maintenance
 │   ├── tables.py      # 表定义 + _ADD_COLUMNS 迁移清单
 │   └── helpers.py     # 工具
 ├── services/

@@ -18,6 +18,8 @@
 ## 1. 主题布局
 
 前缀默认 `kk/v1`，双端共用同一个环境变量 `KK_TOPIC_PREFIX`（Agent 与 Server 均读取此键）配置，必须一致。
+Agent 启动时校验前缀**不得含 MQTT 通配符 `+` / `#`**（含之即拒绝启动）：含通配符会让本机订阅到
+其他主机的命令主题（QR29-A11）。`/` 是前缀自身的层级分隔，合法。
 
 ```
 kk/v1/{host}/status    Agent → Server   在线状态（retain + LWT）
