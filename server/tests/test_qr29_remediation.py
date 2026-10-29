@@ -258,6 +258,35 @@ async def test_aggregate_hours_catches_up_after_downtime(store):
     assert any(r["hour"] == old_ts // 3600 and r["samples"] == 1 for r in rows), rows
 
 
+# ---- QR29-D.3（第二轮）：hourly.last_metrics 砍写入 ----
+
+async def test_aggregate_hours_stops_writing_last_metrics(store):
+    """hourly.last_metrics 全仓零消费（唯一读方 metrics_series 只取 cpu/mem 均值、
+    统计页只数行数），写入侧的逐主机逐小时 lastm 反查是聚合路径的 N+1。
+
+    砍写入后的语义：聚合行照常产出（cpu/mem 聚合不受影响）；last_metrics 列
+    只留建行时的空串，重复聚合（upsert 走 update_cols）不复活它。未来要消费
+    这个字段，必须先恢复写入并同步更新本锁——否则列里永远只有空串，读了个寂寞。
+    """
+    now = int(time.time())
+    old_ts = now - 5 * 3600
+    await store.upsert_container("pod-lm", "img", "0.1.0", 60)
+    await store.record_hb("pod-lm", {"ts": old_ts, "interval": 60,
+                                     "metrics": {"cpu": 7.5, "mem_mb": 100.0}})
+    assert await store._aggregate_hours(now, raw_days=2) > 0
+    rows = await store._all(select(hourly).where(hourly.c.pod == "pod-lm"))
+    assert rows and all(r["last_metrics"] == "" for r in rows)
+    # 重复聚合走 update 分支：cpu 聚合照常刷新，last_metrics 不被写入
+    await store.record_hb("pod-lm", {"ts": old_ts + 60, "interval": 60,
+                                     "metrics": {"cpu": 15.0, "mem_mb": 120.0}})
+    await store.kv_set("agg_hour", (old_ts // 3600))
+    await store._aggregate_hours(now, raw_days=2)
+    rows = await store._all(select(hourly).where(hourly.c.pod == "pod-lm"))
+    bucket = [r for r in rows if r["hour"] == old_ts // 3600][0]
+    assert bucket["samples"] == 2
+    assert bucket["last_metrics"] == ""
+
+
 # ---- QR29-S12：full 视图缺省封顶 ----
 
 async def test_full_view_without_limit_is_capped(api, monkeypatch):

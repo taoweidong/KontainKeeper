@@ -1067,18 +1067,18 @@ class Store:
                 .where(heartbeats.c.ts >= lo).where(heartbeats.c.ts < hi)
                 .group_by(heartbeats.c.pod))
             for r in rows:
-                lastm = await self._one(select(heartbeats.c.metrics)
-                                        .where(heartbeats.c.pod == r["pod"])
-                                        .where(heartbeats.c.ts >= lo)
-                                        .where(heartbeats.c.ts < hi)
-                                        .order_by(heartbeats.c.ts.desc()).limit(1))
+                # last_metrics 只保留建行时的空串（QR29-D.3，第二轮）：全仓唯一
+                # 读方 metrics_series 只取 cpu/mem 均值，写入侧的逐主机逐小时
+                # lastm 反查是聚合路径的 N+1，纯浪费。列留在 schema（NOT NULL
+                # 无默认，删键会让三库建行都炸）；未来要消费它必须先恢复写入
+                # 并更新 test_qr29_remediation 里的对应锁。
                 await self._upsert(hourly, {
                     "pod": r["pod"], "hour": h, "samples": r["samples"],
                     "cpu_avg": r["cpu_avg"], "cpu_max": r["cpu_max"],
                     "mem_avg": r["mem_avg"], "mem_max": r["mem_max"],
-                    "last_metrics": lastm["metrics"] if lastm else ""},
+                    "last_metrics": ""},
                     ["pod", "hour"],
-                    ["samples", "cpu_avg", "cpu_max", "mem_avg", "mem_max", "last_metrics"])
+                    ["samples", "cpu_avg", "cpu_max", "mem_avg", "mem_max"])
             n += 1
         await self.kv_set("agg_hour", now_hour - 1)
         return n
