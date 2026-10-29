@@ -115,17 +115,41 @@ class Fleet:                      # 抽象：一台主机能对被做的事，�
 
 | 用例动作 | WSL 机队 | wslc 机队 |
 | --- | --- | --- |
-| 断电（RES-01） | `systemctl kill -s KILL` | `wslc kill`（容器退出，Broker 发 LWT） |
-| 优雅退出（RES-05） | `kill -TERM <pid>` | `wslc stop`（SIGTERM 给 PID1） |
-| 重新上线（RES-01/02/05） | `systemd-run` 拉起 | `wslc start`（**同一容器，文件系统保留**） |
+| 断电（RES-01） | `systemctl kill -s KILL` | `wslc kill`（默认 SIGKILL；容器退出，Broker 发 LWT） |
+| 优雅退出（RES-05） | `kill -TERM <pid>` | `wslc stop`（默认 SIGTERM 给 PID1） |
+| 重新上线（RES-01/02/05） | `systemd-run` 拉起 | `wslc start`（同一容器） |
 | 改环境变量（UPG-06） | 改 env 文件 + 重启 | **删除并重建容器**（env 在 create 时固定） |
-| 版本取证 | grep 源码树 | `/proc/1/exe` sha 反查 |
-| 进程身份（RES-03） | MainPID + `/proc/environ` 双确认 | `State.Pid`，取不到则退化为 `State.StartedAt` |
+| 版本取证 | grep 源码树 | 运行中：`wslc exec <c> sha256sum /proc/1/exe`；未运行：返回空串 |
+| 磁盘二进制取证 | `sha256sum <宿主文件>` | 一次性容器读命名卷（见 §4.3） |
+| 进程身份（RES-03） | MainPID + `/proc/environ` 双确认 | `State.Running` + `State.StartedAt`（**实测 `State` 里没有 `Pid` 字段**，只有 ExitCode/FinishedAt/Health/Running/StartedAt/Status） |
 
-**取舍**：`set_env` 在容器侧只能重建，重建 = 文件系统回到镜像初始态。UPG-06 的语义恰好是
-「把这台主机还原成可升级状态」（它随后就断言该主机版本仍是 0.3.0），对得上；RES 模块不依赖
-跨重建的文件系统状态（RES-02 用的是 `wslc start` 保留 FS 的那条路）。这条限制会写进
-`fleet.py` 的 docstring 与运行手册，而不是埋在代码里。
+**取舍**：`set_env` 在容器侧只能重建，因为 env 在 `wslc create` 时就固定了。UPG-06 的语义恰好
+是「把这台主机还原成可升级状态」（它随后就断言该主机版本仍是 0.3.0），对得上。二进制放在
+命名卷里（§4.3），所以**重建不会丢掉已替换的二进制**——这点比「文件在容器层」的做法更贴近
+真实主机（真实主机的 `/usr/local/bin/kk-agent` 也不会因为改环境变量重启服务而回滚）。
+这条限制与结论会写进 `fleet.py` 的 docstring 与运行手册，而不是埋在代码里。
+
+### 4.3 取证通路：待替换的二进制放命名卷，不放容器层
+
+计划期发现的问题：`wslc exec` 只能对**运行中**的容器执行，而 RES-02 恰好要在主机离线时读
+「磁盘上的二进制还没被换掉」这个证据（`disk_offline != sha`）。如果二进制在容器文件系统里，
+容器一停就读不到，用例只能退化成「等它上线再读」——那就不再是离线断言了。
+
+解法：每台主机一个 guest 命名卷挂到 `/opt/kk`，镜像把编译好的 ELF 放在 `/opt/kk-image/kk-agent`，
+`prepare()` 用一次性容器把它拷进卷；Agent 容器的 `ENTRYPOINT` 直接是 `/opt/kk/kk-agent`。
+
+于是三个取证点各自都成立且与容器状态无关：
+
+| 需求 | 实现 | 容器停着时 |
+| --- | --- | --- |
+| `binary_sha(host)`（磁盘真相） | `wslc run --rm -v <vol>:/opt/kk <image> sha256sum /opt/kk/kk-agent` | **可读**（卷独立于容器） |
+| `version(host)`（运行真相） | `wslc exec <c> sha256sum /proc/1/exe` → sha 对照表反查 | 返回空串（用例本就要求进程不存在） |
+| `reset_binary(host, ver)` | 一次性容器 `cp /opt/kk-image/kk-agent <ver>` 进卷 + 重启 | 可用 |
+
+额外收益：`os.replace` + `os.execv` 发生在 guest 文件系统（ext4）上，是**真原子替换**；若把
+二进制放在 bind 挂载进来的 Windows 目录上，跨 9P/DrvFs 的原子改名是不可控的，测试会测到
+「我们根本不支持的形态」。**自更新的目标路径绝不能放在 Windows bind 卷上。**
+Windows 侧只用于**导出** ELF 给服务端上传（一次性 `wslc run -v <artifacts>:/out` 拷出，已实测可行）。
 
 ## 5. 镜像与升级保真度
 
@@ -142,19 +166,21 @@ ARG AGENT_VER=0.3.0
 # [build] extra 一次装齐 psutil/paho-mqtt/loguru + pyinstaller
 RUN python3 -m pip install --no-cache-dir "/build/agent[build]" \
  && sed -i "s/^AGENT_VER = .*/AGENT_VER = \"${AGENT_VER}\"/" /build/agent/src/kk_agent/config.py \
- && mkdir -p /opt/kk \
  && bash /build/agent/build/build_binary.sh \
- && cp /build/agent/dist/kk-agent /opt/kk/kk-agent && chmod 755 /opt/kk/kk-agent
+ && mkdir -p /opt/kk-image /opt/kk \
+ && cp /build/agent/dist/kk-agent /opt/kk-image/kk-agent && chmod 755 /opt/kk-image/kk-agent
+# 入口是**卷里的**路径，不是镜像里的：镜像只提供初始二进制（/opt/kk-image），
+# prepare() 用一次性容器把它拷进命名卷；单独跑这个镜像会失败，这是有意的。
 ENTRYPOINT ["/opt/kk/kk-agent"]
 ```
 
 产两个 tag：`kk-agent-e2e:0.3.0`（4 台容器跑它）与 `kk-agent-e2e:0.4.0`。**两个 tag 的 ELF
 都导出到 Windows**（`0.3.0` 那份不参与上传，只喂给 §4.1 的 sha→版本对照表；`0.4.0` 那份是
-上传给服务端的「新版本二进制」）。导出用已实测可行的 bind 卷：
+上传给服务端的「新版本二进制」）。导出用已实测可行的 bind 卷（`E:/…` 正斜杠形式）：
 
 ```sh
 wslc run --rm -v "E:/…/artifacts-e2e/<run>/wslc:/out" kk-agent-e2e:0.4.0 \
-  sh -c "cp /opt/kk/kk-agent /out/kk-agent-0.4.0"
+  sh -c "cp /opt/kk-image/kk-agent /out/kk-agent-0.4.0"
 ```
 
 **保真度提升是本轮的核心收益**：上一轮升级测的是「`execv` 一个 sh 脚本」，改完是
@@ -190,26 +216,35 @@ wslc run --rm -v "E:/…/artifacts-e2e/<run>/wslc:/out" kk-agent-e2e:0.4.0 \
 
 | 风险 | 处置 |
 | --- | --- |
-| wslc `session.idleTimeout` 默认 30s，空闲会话 VM 被拆 | 4 台常驻容器使会话不空闲；`WslcFleet.ensure_session()` 在每次机队操作前用 `wslc list` 校验，异常即报环境级故障并附 `wslc system info` |
-| wslc 仍在快速演进，`build --output` 这类已声明的选项实际不可用（本轮已遇到一次） | 只依赖实测过的 5 个命令：`build/run/kill/stop/start/inspect/logs`；不可用的选项一律不用，并在 §2 表格留下证据 |
-| `/proc/1/exe` 需要容器内 root | 用 `python:3.12-slim` 默认 root；若改用非 root 镜像，`version()` 会返回空串——用例随即红灯，不会假通过 |
-| PyInstaller 镜像内构建失败（pip 源慢/断） | preflight 不覆盖，但构建失败在 `prepare()` 阶段即环境级中止并附 `image-build.log` 尾部 |
-| 容器 IP 变化导致白名单失效 | 白名单已含 `172.16.0.0/12`；报告记录本轮容器实际子网，便于复核 |
+| wslc `session.idleTimeout` 默认 30s，空闲会话 VM 被拆 | 4 台常驻容器使会话不空闲；每次机队操作前用 `wslc inspect` 校验状态，异常即报环境级故障并附 `wslc system info` |
+| wslc 仍在快速演进，已声明的选项实际不可用：`build --output` 报 usage error、`inspect -f` 只接受字面量 `json`（不支持 Go 模板）、`State` 里**没有 `Pid` 字段**（只有 ExitCode/FinishedAt/Health/Running/StartedAt/Status） | 只依赖实测过的命令与字段：`build/run/kill/stop/start/remove/exec/logs/inspect -f json/volume create`；`instance()` 用 `Running`+`StartedAt`；证据留在 §2 |
+| `/proc/1/exe` 需要容器内 root | 已实测 `python:3.12-slim-bookworm` 默认 uid=0 且 `sha256sum /proc/1/exe` 可用。将来换非 root 镜像时 `version()` 拿不到 sha 只能返回空串——用例随即红灯，不会假通过 |
+| **命名卷残留造成假绿灯**：`--keep` 或上轮中断后，同名卷里可能还躺着上一轮升完的 0.4.0 | `prepare()` **无条件**用镜像内 `/opt/kk-image/kk-agent` 覆盖卷内 `/opt/kk/kk-agent`，并断言之后的 sha 等于本轮 0.3.0；不满足即环境级中止。「开机就是 0.4.0」的机队会让所有升级断言失去意义 |
+| 自更新目标路径落在 Windows bind 卷上 → `os.replace` 跨 9P/DrvFs 的原子性不可控 | 二进制只放 guest 命名卷（ext4）；Windows bind 卷仅用于**导出** ELF 给服务端上传（§4.3） |
+| Git Bash 会把 `/v/marker` 这类 POSIX 绝对路径参数转换成 `V:/marker`（本轮实测踩过） | harness 全部用 `subprocess` 的 argv 列表调用，不经 bash，不受影响；但**手工验证命令一律加 `MSYS_NO_PATHCONV=1`**，这条要写进运行手册的已知坑表 |
+| PyInstaller 镜像内构建失败（pip 源慢/断） | 构建失败在 `prepare()` 阶段即环境级中止，并附 `wslc/image-build.log` 尾部 |
+| 容器 IP 变化导致白名单失效 | 白名单已含 `172.16.0.0/12`；报告记录 `inspect` 里 `NetworkSettings.Networks.bridge.IPAddress` 的实测值，便于复核 |
 
 ## 9. 验收
 
 1. `--fleet wslc`（4 台容器）全量 32 条 PASS，退出码 0；
 2. `--fleet wsl`（3 台）回归 32 条仍 PASS —— 证明抽象没有把行为带偏；
-3. AGENTS.md 门禁照旧：后端 `pytest agent/tests server/tests` failures/errors=0、
-   前端 `pnpm typecheck && pnpm test` 全绿；
-4. `docs/e2e-real-env.md` 增 wslc 章节（含 §2 实测表与 §4.2 映射表），
+3. AGENTS.md 门禁照旧且**新增 `scripts/tests`**：后端
+   `pytest agent/tests server/tests scripts/tests` failures/errors=0（`scripts/tests` 只测纯
+   逻辑，任何机器上都不得 skip——CI 门禁里 `skipped != 0` 直接红），前端
+   `pnpm typecheck && pnpm test` 全绿；AGENTS.md 与 `Jenkinsfile` 的测试命令同步更新；
+4. `docs/e2e-real-env.md` 增 wslc 章节（含 §2 实测表、§4.2 映射表、§4.3 取证通路），
    `.qoder/skills/kk-e2e/SKILL.md` 增「何时用容器机队」与新取证口径。
 
 ## 10. 实现顺序（供 writing-plans 展开）
 
-1. `fleet.py` 抽象 + `WslFleet` 纯平移（不改行为）→ 立即用 `--fleet wsl` 全量回归 32 条；
-2. `resilience_cases.py:208` 改 `term_agent`；用例文本「3 台」动态化；
-3. `WslcFleet` 单点打通：镜像构建 → 1 台容器 → 上报上线 → `version()`/`binary_sha()` 对得上；
-4. 扩到 4 台 + 全量 `--fleet wslc` 跑通（先 API/UI，再 UPG，最后 RES）；
-5. preflight/产物/`--fleet`/`--rebuild-image` 收口；
-6. 文档与 skill 同步。
+1. `fleet.py` 抽象 + `WslFleet` 纯平移（不改行为）+ `Stack` 委派 + `term_agent` 收敛
+   → 立即用 `--fleet wsl` 全量回归 32 条；
+2. 机队规模与用例自述一致（`hosts_for(fleet)`：wsl→3、wslc→4；标题/前置里的「3 台」动态化）；
+3. `wslc.py` 纯函数层（argv 构造、`inspect` 解析、sha→版本对照、Dockerfile 生成、容器 env）
+   + `scripts/tests` 单测；
+4. 镜像构建与 ELF 导出 + 命名卷种子（含「残留即假绿灯」的断言）；
+5. `WslcFleet` 生命周期方法打通 1 台容器：上线 → `version()`/`binary_sha()` 对得上；
+6. 扩到 4 台，按 API → UI → UPG → RES 分段跑通；
+7. preflight/产物/`--fleet`/`--rebuild-image` 收口；
+8. 文档、skill、AGENTS.md 与 Jenkinsfile 门禁同步。
