@@ -86,6 +86,17 @@ flex 链路 + el-card 内部结构这三层上全部失灵，这正是本轮必�
 
 ## 4. 问题清单
 
+> **落地状态（2026-10-30 复测收口）**：P0-1 `e029263`、P0-2 `2776d77`、P1-1/P1-2 `8df7b18`、
+> P2-1 `64f5e0b`。复测口径从「--kk-page-h flex 链全站化」改为「@pureadmin/table adaptive
+> 视口测量」（路线变更声明见 §5）；复测值（playwright-cli 真实浏览器，探针
+> scripts/fe_layout_probe.js）：
+> - monitor 1920×1080：pageScrolls **false**（修前 5469/999 整页滚）、pager.bottom 938≤999、
+>   bandTop 93 常驻、stickyTop **null**（kk-sticky-bar 已退役）；
+> - monitor 1366×768：pageScrolls false、pager.bottom 626≤687；
+> - welcome/detail/system 接入 .kk-page--grow 后 1920 档 pageScrolls:false、
+>   1366×768 档内容超出照常滚（修订口径）且五页 hOverflow 全 false；
+> - kk-fill-table / kk-sticky-bar / kk-batch / kk-pager 四类引用清零后随 `64f5e0b` 退役。
+
 ### P0-1 命令中心双栏坍塌
 
 - **现象**：shell / collect 两页的执行表单与执行历史上下堆叠且等宽。
@@ -149,6 +160,10 @@ flex 链路 + el-card 内部结构这三层上全部失灵，这正是本轮必�
 
 ## 5. 修复方案（按优先级）
 
+> **路线变更（2026-10-28 实施时裁决）**：原计划的「--kk-page-h flex 链全站化」已被
+> 「@pureadmin/table adaptive 视口测量」取代——同一批缺陷用上游 sanctioned 机制修，
+> 不需要自研高度锚点六页同步维护；el-card 的 overflow:hidden 在该机制下失去杀伤力。
+> 以下各条按原样保留作为决策依据，落地形态见 §4 顶部的落地状态。
 > 遵循项目约定：本方案评审通过后再动代码。每条都标注了改动文件与回归口径（§6）。
 
 ### P0-1 `.kk-side` 层叠修复（1 行）
