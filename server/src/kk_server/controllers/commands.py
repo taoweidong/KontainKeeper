@@ -82,6 +82,20 @@ def _build_payload(body: CommandBody):
     return argv
 
 
+def _parse_argv(row: dict) -> dict:
+    """argv 在库里是 JSON 文本；对外统一解析成数组/结构体（QR29-D.4）。
+
+    此前只有单条详情解析、列表回原始文本，前端要同时适配两种形状。
+    解析失败的历史脏数据原样保留字符串——前端 CommandRow.argv 的联合类型
+    仍需容纳 string，不能收窄。
+    """
+    try:
+        row["argv"] = json.loads(row["argv"] or "")
+    except ValueError:
+        pass
+    return row
+
+
 @router.post("/commands")
 async def create_commands(body: CommandBody, request: Request, user: CurrentUser):
     store, bridge = request.app.state.store, request.app.state.bridge
@@ -160,7 +174,8 @@ async def list_commands(request: Request, pod: Optional[str] = None, limit: int 
                             kind=kind or None, keyword=keyword or None),
         store.count_commands(pod=pod or None, batch=batch or None, status=status or None,
                              kind=kind or None, keyword=keyword or None))
-    return {"items": items, "total": total, "offset": offset, "limit": limit}
+    return {"items": [_parse_argv(it) for it in items],
+            "total": total, "offset": offset, "limit": limit}
 
 
 @router.get("/commands/{cid}")
@@ -168,13 +183,9 @@ async def get_command(cid: str, request: Request):
     row = await request.app.state.store.get_command(cid)
     if not row:
         raise HTTPException(status_code=404, detail="命令不存在")
-    try:
-        row["argv"] = json.loads(row["argv"])
-    except ValueError:
-        pass
     # 全量 out_b64 不进响应体：4MB 输出会撑出 5MB JSON。完整输出走 /out
     row["out_tail"] = _b64_tail(row.pop("out_b64", "") or "")
-    return row
+    return _parse_argv(row)
 
 
 @router.get("/commands/{cid}/out")

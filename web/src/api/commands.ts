@@ -15,8 +15,9 @@ export type CommandRow = {
   id: string;
   pod: string;
   kind: string;
-  /** 列表接口不解析 argv，原样返回入库文本：可能是 JSON 文本或原始命令串；
-   *  单条接口（GET /commands/{id}）才 json.loads 成数组/结构体 */
+  /** argv 双端已统一为解析后的形状（QR29-D.4）：shell 无 shell 标记时是数组、
+   *  use_shell/collect 是结构体；仅历史脏数据（JSON 解析失败）仍是入库文本字符串，
+   *  联合类型不能收窄 */
   argv: string | string[] | Record<string, any> | null;
   timeout: number;
   status:

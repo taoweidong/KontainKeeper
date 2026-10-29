@@ -316,7 +316,7 @@ export function useCommandHistory() {
 
   function argvPreview(argv: CommandRow["argv"]): string {
     if (!argv) return "-";
-    // 列表接口不解析 argv：字符串（命令原文或 JSON 文本）直接展示，不再 JSON 化
+    // argv 双端统一解析后（QR29-D.4）：数组/结构体是常态，字符串只剩历史脏数据
     if (typeof argv === "string") return argv;
     if (Array.isArray(argv)) return argv.join(" ");
     if (typeof argv === "object") {

@@ -543,3 +543,32 @@ async def test_logout_revokes_session_and_is_idempotent(api, _clean_login_limite
     assert n_after_first == 1
     assert (await api.client.post("/api/logout", headers=h)).json() == {"ok": True}
     assert len(await api.store.list_audit(action="logout")) == n_after_first
+
+
+# ---- 第二轮 D.4：argv 形状双端统一 ----
+
+async def test_command_list_parses_argv_like_detail(api):
+    """列表与单条的 argv 形状必须一致（QR29-D.4）：都回解析后的数组/结构体。
+
+    三种入库形态各验一遍：无 shell 标记的数组、use_shell 结构体、解析失败的
+    历史脏数据（原样保留字符串，前端联合类型靠它兜底）。导出路径走 store
+    原始行不受影响，不在此处。
+    """
+    store = api.store
+    await store.upsert_container("h1", "img", "0.3.0", 60)
+    ids1, _ = await store.create_commands_batch(["h1"], "shell", ["df", "-h"], 30, "t")
+    ids2, _ = await store.create_commands_batch(
+        ["h1"], "shell", {"argv": ["systemctl status kk"], "use_shell": True}, 30, "t")
+    # 造一条脏数据：绕过 create_commands_batch 直接写原始文本
+    import json as _json
+    ids3, _ = await store.create_commands_batch(["h1"], "shell", "not-json{{", 30, "t")
+
+    rows = (await api.client.get("/api/commands")).json()["items"]
+    by_id = {r["id"]: r for r in rows}
+    assert by_id[ids1[0]]["argv"] == ["df", "-h"]
+    assert by_id[ids2[0]]["argv"] == {"argv": ["systemctl status kk"], "use_shell": True}
+    assert by_id[ids3[0]]["argv"] == "not-json{{"
+
+    detail = (await api.client.get("/api/commands/%s" % ids1[0])).json()
+    assert detail["argv"] == ["df", "-h"]
+    assert _json.dumps(ids3[0]) and "out_b64" not in detail  # 大字段仍不进详情响应
