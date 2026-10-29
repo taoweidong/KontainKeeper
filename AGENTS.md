@@ -37,10 +37,13 @@ web/ Vue3 前端（REST 轮询 + ECharts，构建产物由 kk-server 托管）
 ## 常用命令
 
 ```bash
+# 提交前门禁（唯一入口，口径见文末「协作规范」；be / fe 可只跑一侧）
+bash scripts/quality_gate.sh
+
 # 后端（仓库根目录；uv run 会去下载 Python 3.12 而失败，务必用 .venv 直调）
 .venv/Scripts/python.exe -m pytest agent/tests -q      # Agent 单测
 .venv/Scripts/python.exe -m pytest server/tests -q      # Server 单测 + 集成
-.venv/Scripts/python.exe -m pytest agent/tests server/tests -q   # 全量 290+ 条（以 pytest 汇总为准）：Broker 可达时全 passed；不可达时仅 4 条集成用例 skipped
+.venv/Scripts/python.exe -m pytest agent/tests server/tests -q   # 全量 444 条（以 pytest 汇总为准）：Broker 可达时全 passed；不可达时仅 5 条集成用例 skipped
 # 汇总别用 `| tail -3`：失败行在进度条之前，会被截掉（曾因此漏看红灯两轮）。
 # 要看清结果用 --junitxml 再解析 tests/failures/errors/skipped 计数。
 .venv/Scripts/python.exe -m kk_server                   # 起服务端（默认 admin/admin123）
@@ -48,16 +51,17 @@ web/ Vue3 前端（REST 轮询 + ECharts，构建产物由 kk-server 托管）
 # 前端（web/ 目录）
 pnpm dev         # 开发（VITE_PROXY 代理到后端，默认 http://127.0.0.1:8443；可被 VITE_PROXY 覆盖）
 pnpm typecheck   # TS 类型检查
+pnpm test        # vitest 单测（业务逻辑层：utils/api/store/hook）
 pnpm build       # 产物输出到 web/dist/
 ```
 
-依赖：`uv sync --all-packages`（服务端 + dev）；`--extra postgres` / `--extra mysql` 按需装驱动。前端 `pnpm install`。前端有 typecheck 与 eslint/prettier 配置（`web/eslint.config.js`）。
+依赖：`uv sync --all-packages`（服务端 + dev）；`--extra postgres` / `--extra mysql` 按需装驱动。前端 `pnpm install`。前端有 typecheck、eslint/prettier/stylelint 配置（`web/eslint.config.js`）与 **vitest 单测**（`pnpm test` / `pnpm test:coverage`，用例是 `src/**/*.spec.ts(x)`，配置在 `web/vitest.config.ts`：默认 node 环境，需要浏览器 API 的文件在头部声明 `// @vitest-environment jsdom`）。
 
 ```bash
 # CI/CD（定义在根 Jenkinsfile，节点要求与凭据见 docs/ci-jenkins.md）
 docker run -d --name kk-ci-broker -p 127.0.0.1:18830:1883 \
   -v "$PWD/docker/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" eclipse-mosquitto:2
-KK_IT_MQTT_URL=mqtt://127.0.0.1:18830 .venv/Scripts/python.exe -m pytest agent/tests server/tests -q  # 有 Broker 才是全 passed（无 Broker 时 4 条集成用例 skipped）
+KK_IT_MQTT_URL=mqtt://127.0.0.1:18830 .venv/Scripts/python.exe -m pytest agent/tests server/tests -q  # 有 Broker 才是全 passed（无 Broker 时 5 条集成用例 skipped）
 KK_MQTT_URL=mqtt://127.0.0.1:18830 .venv/Scripts/python.exe scripts/mqtt_e2e.py                      # Broker 语义冒烟（LWT/离线队列）
 docker build -f docker/Dockerfile -t kontainkeeper-server:local .                                    # 上下文必须是仓库根
 bash scripts/ci_smoke.sh kontainkeeper-server:local agent/dist/kk-agent                              # 镜像级部署冒烟
@@ -88,6 +92,17 @@ bash scripts/ci_smoke.sh kontainkeeper-server:local agent/dist/kk-agent         
 ## 协作规范（AI 交互测试门禁，2026-10-29 起生效）
 
 **每一次 AI 交互涉及代码改动时，提交前必须执行前端与后端的单元测试，全部通过后才允许提交代码；测试未通过时不得提交**，需先定位并修复问题，再重新运行验证。禁止「跳过 / 搁置 / 注释掉测试」式的提交；发现既有用例与新行为冲突时，要么证明新行为是正确裁决并同步改锁（在测试 docstring 写明依据），要么改代码——二选一，不许静默绕过。
+
+**唯一入口：`bash scripts/quality_gate.sh`**（可 `be` / `fe` 只跑一侧）。它把下面的判定口径写成了代码——
+以 junitxml 的 `failures/errors/skipped` 计数为准、`skipped > 5` 直接判红——所以不再需要谁记住这段 prose，
+也不再依赖 `| tail`（失败行在进度条之前，会被截掉，本仓两次因此漏看红灯）。
+手工命令与退出码口径见下，二者等价。
+
+> **刻意没有启用 git 钩子**：`web/.husky/pre-commit` 是 husky v8 写法（引用 `_/husky.sh`）而装的是 v9，
+> `.husky/_` 根本不存在，且 `core.hooksPath` 未设——所以它一直是死文件，这是既成事实而非本轮决定。
+> 不去「修好并激活」的理由：`.lintstagedrc` 会让每次提交对暂存文件跑 `prettier --write` + `eslint --fix` +
+> `stylelint --fix`，即**提交时代码被改写**；本仓常有并行会话同时改 `web/src/views/**`，激活它是扩大他人
+> 影响面的动作，需要单独决策。在此之前，门禁靠 `quality_gate.sh` 显式执行。
 
 ```bash
 # 后端（仓库根目录）。有 Broker 时全 passed；无 Broker 时允许恰好 5 条集成用例 skipped，
