@@ -6,5 +6,39 @@
 """
 
 
+import json
+
+from sqlalchemy import select
+
+from .tables import kv
+
+
 class _StoreMaintenanceMixin:
-    pass
+
+    async def kv_get(self, k, default=None):
+        row = await self._one(select(kv.c.v).where(kv.c.k == k))
+        return row["v"] if row else default
+
+    async def kv_set(self, k, v):
+        return await self._upsert(kv, {"k": k, "v": str(v)}, ["k"], ["v"])
+
+    async def set_agent_latest(self, info):
+        await self.kv_set("agent_latest", json.dumps(info, ensure_ascii=False))
+
+    async def get_agent_latest(self):
+        return await self._load_json_kv("agent_latest")
+
+    async def set_agent_prev(self, info):
+        await self.kv_set("agent_prev", json.dumps(info, ensure_ascii=False))
+
+    async def get_agent_prev(self):
+        return await self._load_json_kv("agent_prev")
+
+    async def _load_json_kv(self, key):
+        raw = await self.kv_get(key)
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except ValueError:
+            return None
