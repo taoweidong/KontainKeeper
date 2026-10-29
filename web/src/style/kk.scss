@@ -18,11 +18,10 @@
  * 早期各页写 `calc(100vh - Npx)` 不是因为百分比不可用，而是 N 手算、表单增删一项就失效
  * （命令历史表为扣掉上方表单算过 560）。
  *
- * 收敛方式：需要固定盒子的页面（多卡堆叠的详情/首页/统计页）把高度**只在页面根算一次**，
- * 值集中到 --kk-page-h，页面内部全部 flex，不再出现第二个 calc。列表页改用
- * @pureadmin/table 的 adaptive 视口测量，不再依赖本锚点。
- * 「--kk-page-h 能不能退役」的判断依据就是上面这条实测结论（锚点并非百分比不可用时的
- * 妥协，而是给多卡页一个单点取值处），Task 11 收口时据此裁决，不要复述旧模型。
+ * 收敛方式（Task 11 收口后的终态）：固定高 `.kk-page` 只服务命令中心这一类
+ * 「一屏定形」的双栏页；列表页的表格填高走 @pureadmin/table 的 adaptive 视口测量，
+ * 不依赖本锚点；内容可长可短的多卡页（首页/详情/统计）用 `.kk-page--grow`——
+ * 锚点只当下限，内容超出时整页照常滚（统计页的排障说明不许被压掉）。
  */
 :root {
   /* navbar(48) + tabs(33) + 内容区留白 + 页脚 的合计占用，约 150px 量级。
@@ -58,30 +57,21 @@
   min-height: 0;
 }
 
+/* 多卡堆叠页（首页/详情/统计）的锚点变体：只当下限、允许整页滚。
+ * 固定高的 .kk-page 会把超出视口的内容直接裁掉（统计页 1219px、welcome 窄屏 910px，
+ * 实测都超一屏），这类页面的「填满视口」语义用 min-height 而非 height。 */
+.kk-page--grow {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - var(--kk-page-h));
+}
+
 /* 卡片 / 内容区：占满页面剩余高度 */
 .kk-page__body {
   display: flex;
   flex: 1;
   flex-direction: column;
   min-height: 0;
-}
-
-/* 表格填满卡片剩余空间：替代 height="calc(...)" 的硬编码
-   （迁移期保留：列表页改走 adaptive 后不再新增调用，Task 10 随最后一条引用删除） */
-.kk-fill-table {
-  flex: 1;
-  min-height: 0;
-}
-
-/* 表底批量操作条：吸底常驻（总览页 500 台时不用拉到底才能点）
-   （迁移期保留：由 .kk-select-banner 取代，Task 10 随最后一条引用删除） */
-.kk-sticky-bar {
-  position: sticky;
-  bottom: 0;
-  z-index: 2;
-  padding: 10px 12px;
-  background: var(--el-bg-color);
-  border-top: 1px solid var(--el-border-color-lighter);
 }
 
 /* 命令中心左右栏容器：横向并排 + 栏间距 + 两栏等高。
@@ -138,14 +128,10 @@
   margin-bottom: 12px;
 }
 
-/* 选中横幅：取代 .kk-sticky-bar（sticky 的 scrollport 是 el-card，而它自己不滚，
+/* 选中横幅：取代已退役的 .kk-sticky-bar（sticky 的 scrollport 是 el-card，而它自己不滚，
    10-15 §3.2 实验 2 已证明放开 overflow 才能吸住、而 overflow 承担圆角裁剪）。
-   与 .kk-batch 的边距配对（切页时别让两条 margin 打平/叠加）：
-   - 本条 .kk-select-banner：自带 margin-bottom:8px、顶部无外边距，靠上一条自身的
-     margin-bottom 与之相接（搜索条 .kk-search-form 已给 el-form-item 12px）。
-   - 文件下方 .kk-batch：表底批量条，自带 margin-top:12px、无 margin-bottom。
-   - monitor/index.vue:693、update/index.vue:373 现同挂 "kk-batch kk-sticky-bar"，迁到
-     本横幅时须**摘掉 .kk-batch**：两条同挂会把 12px(顶)+8px(底) 叠在一个元素上、间距翻倍。
+   自带 margin-bottom:8px、顶部无外边距，靠上一块自身的 margin-bottom 与之相接
+   （搜索条 .kk-search-form 已给 el-form-item 12px）。
    height 用 min-height 不用 height：≤1200px 右栏变窄、选中 chip 换行时固定 46px 会裁标签；
    单行渲染高度仍是 46px，换 min-height 安全（1100×800 多 chip 实测不裁剪、单行仍 46px）。 */
 .kk-select-banner {
@@ -271,19 +257,6 @@
   color: var(--el-color-danger) !important;
 }
 
-/* 总览页：表底批量操作条 */
-.kk-batch {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  align-items: center;
-  margin-top: 12px;
-}
-
-.kk-batch .kk-sub:last-child {
-  margin-left: auto;
-}
-
 /* 命令中心：输出查看框 */
 .kk-out {
   padding: 10px;
@@ -295,13 +268,6 @@
   white-space: pre-wrap;
   background: var(--el-fill-color-light);
   border-radius: 4px;
-}
-
-/* 分页条：右对齐 + 与表格留出间距（执行历史 / 审计共用，原各页 scoped 重复定义） */
-.kk-pager {
-  display: flex;
-  justify-content: flex-end;
-  padding-top: 10px;
 }
 
 /* 审计页：明细键值对 */

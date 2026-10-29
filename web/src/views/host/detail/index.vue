@@ -238,7 +238,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div v-loading="loading">
+  <div v-loading="loading" class="kk-page--grow">
     <el-card v-if="detail" shadow="never" class="kk-card">
       <template #header>
         <div class="kk-toolbar">

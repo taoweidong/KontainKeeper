@@ -198,7 +198,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div v-loading="loading" class="welcome">
+  <div v-loading="loading" class="welcome kk-page--grow">
     <!-- 轮询失败只在页头说一次：后端宕机时 10s 一次的 toast 会把真正的告警淹成噪音（W5） -->
     <div v-if="pollFailed" class="kk-sync kk-sync--stale kk-mb">
       刷新失败，下方读数可能已过期

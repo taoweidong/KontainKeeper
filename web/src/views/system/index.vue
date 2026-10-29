@@ -285,7 +285,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div v-loading="loading">
+  <div v-loading="loading" class="kk-page--grow">
     <el-card shadow="never" class="kk-card">
       <template #header>
         <div class="kk-band">
