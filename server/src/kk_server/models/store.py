@@ -5,6 +5,7 @@ Store 是门面（QR29-G 第二轮拆分）：基座只留引擎装配、执行�
 业务方法按域住在 _store_*.py 的 Mixin 里（auth/audit/commands/metrics/hosts/
 maintenance 六域），调用点零改动。
 """
+import os
 from urllib.parse import urlparse
 
 from sqlalchemy import insert, text
@@ -26,6 +27,62 @@ from ._store_metrics import _StoreMetricsMixin
 from ..logsetup import get_logger
 
 log = get_logger("kk.store")
+
+def _engine_kwargs(dialect, url):
+    """各方言的引擎参数（Store.__init__ 的方言汇聚点之一，纯函数可测）。
+
+    PG（asyncpg）：
+    - executemany_mode="values_plus"：executemany 在驱动侧拼成**单条多值语句**
+      （每批 100 行）——批量下发 500 条命令的建行从 500 次 prepared 往返降到
+      5 次；默认模式下 executemany 是逐条执行，批量路径吃不到池化收益；
+    - 连接池：桥接、API 与 janitor 共用，默认 5+10 对 500 台偏小；
+      KK_DB_POOL_SIZE / KK_DB_MAX_OVERFLOW 可调（全部配置走 KK_* 的仓规）；
+    - server_settings.application_name：pg_stat_activity 里能认出这是谁。
+    SQLite：既有 connect_args（QR-S3）原样保留；MySQL：驱动不支持 values_plus
+    形态，维持默认。
+    """
+    kwargs = {"pool_pre_ping": True}
+    if dialect == "postgresql":
+        kwargs["executemany_mode"] = "values_plus"
+        kwargs["pool_size"] = int(os.environ.get("KK_DB_POOL_SIZE") or 10)
+        kwargs["max_overflow"] = int(
+            os.environ.get("KK_DB_MAX_OVERFLOW") or 20)
+        kwargs["connect_args"] = {
+            "server_settings": {"application_name": "kk-server"}}
+    elif dialect == "sqlite":
+        # timeout 是 sqlite3.connect 的 busy timeout（秒）：**每条连接**都生效。
+        # 此前 PRAGMA busy_timeout 只在 setup() 的那一条连接里执行过，池化新建
+        # 连接全部回落 0，并发写下 database is locked 防护形同虚设（QR-S3）。
+        kwargs["connect_args"] = {"check_same_thread": False, "timeout": 5.0}
+        if ":memory:" in url:
+            kwargs["poolclass"] = StaticPool   # 内存库每条新连接都会是空库
+    return kwargs
+
+
+# PG 启动调优（_pg_tune 逐条执行，全部幂等）：
+# - 热表 autovacuum：kk_containers 每秒被心跳 UPDATE 数次（500 台 × 60s 间隔），
+#   默认 scale factor 0.2（20% 死元组才触发）对这种强度近乎永不清理，500 行的表
+#   按比例算更是如此——压到行数级让膨胀可控；kk_heartbeats 是追加+批量删，
+#   批删后的死元组同样要更勤的回收。
+# - BRIN 索引：ts 与写入物理相关，时间范围扫描（cleanup 挑批、聚合窗口）用
+#   KB 级索引替代 btree 的整棵树；CREATE INDEX IF NOT EXISTS 让存量 PG 库
+#   升级即得，无需重建表。
+_PG_TABLE_TUNE = {
+    "kk_containers": ("autovacuum_vacuum_scale_factor = 0.05, "
+                      "autovacuum_analyze_scale_factor = 0.02"),
+    "kk_heartbeats": "autovacuum_vacuum_scale_factor = 0.02",
+    "kk_commands": "autovacuum_vacuum_scale_factor = 0.05",
+}
+
+
+def _pg_tune_stmts():
+    """PG 启动调优语句清单（纯函数，便于 compile 级回归）。"""
+    stmts = ["ALTER TABLE %s SET (%s)" % (t, o)
+             for t, o in _PG_TABLE_TUNE.items()]
+    stmts.append("CREATE INDEX IF NOT EXISTS idx_hb_ts_brin "
+                 "ON kk_heartbeats USING BRIN (ts)")
+    return stmts
+
 
 def _column_ddl(ddl, dialect):
     """补列 DDL 的方言解析：清单允许 `{"mysql": "LONGTEXT", "*": "TEXT"}`。
@@ -53,15 +110,8 @@ class Store(_StoreAuthMixin, _StoreAuditMixin, _StoreCommandsMixin,
         # 允许直接给裸文件路径（旧 KK_DB_PATH 用法），内部规整成 async URL
         self.url = normalize_url(url)
         self.dialect = urlparse(self.url).scheme.split("+")[0]
-        kwargs = {"pool_pre_ping": True}
-        if self.dialect == "sqlite":
-            # timeout 是 sqlite3.connect 的 busy timeout（秒）：**每条连接**都生效。
-            # 此前 PRAGMA busy_timeout 只在 setup() 的那一条连接里执行过，池化新建
-            # 连接全部回落 0，并发写下 database is locked 防护形同虚设（QR-S3）。
-            kwargs["connect_args"] = {"check_same_thread": False, "timeout": 5.0}
-            if ":memory:" in self.url:
-                kwargs["poolclass"] = StaticPool   # 内存库每条新连接都会是空库
-        self.engine = create_async_engine(self.url, **kwargs)
+        self.engine = create_async_engine(
+            self.url, **_engine_kwargs(self.dialect, self.url))
 
     # ---- 建库 ----
     async def setup(self):
@@ -76,6 +126,8 @@ class Store(_StoreAuthMixin, _StoreAuditMixin, _StoreCommandsMixin,
                     await conn.exec_driver_sql("PRAGMA " + pragma)
             await conn.run_sync(MD.create_all)
             await self._ensure_schema(conn)
+            if self.dialect == "postgresql":
+                await self._pg_tune(conn)
         log.info("storage ready: dialect=%s url=%s", self.dialect, self.safe_url())
 
     async def _ensure_schema(self, conn):
@@ -103,6 +155,17 @@ class Store(_StoreAuthMixin, _StoreAuditMixin, _StoreCommandsMixin,
                     "CREATE INDEX %s ON %s (%s)" % (name, table, ", ".join(cols)))
                 log.info("schema migrated: index %s on %s(%s) created",
                          name, table, ", ".join(cols))
+
+    async def _pg_tune(self, conn):
+        """PG 专属的启动调优（方言汇聚点：与 _ensure_schema 同级，仅 PG 执行）。
+
+        全部是幂等的表级 SET / CREATE INDEX IF NOT EXISTS；表属主即可执行
+        （ALTER TABLE SET 不需要超级用户）。失败按迁移语义上抛——调优落不下去
+        说明账号或实例形态有问题，带病上线不如启动即知。
+        """
+        for stmt in _pg_tune_stmts():
+            await conn.exec_driver_sql(stmt)
+        log.info("pg maintenance tuning applied")
 
     async def _table_columns(self, conn, table):
         if self.dialect == "sqlite":

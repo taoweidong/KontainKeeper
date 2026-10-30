@@ -86,8 +86,10 @@ class _StoreMaintenanceMixin:
         """分批挑主键的公共骨架（QR29-S17）：`while True: select...limit(batch)` 的
         收敛判据（空批退出 / 短批收尾）只写一遍。
 
-        前提：**动作必须让行退出 cond**（删掉或改掉标记列），否则死循环——
-        两个调用方（_delete_batched / _purge_outputs）都满足。
+        **现在只剩 MySQL 走这条路**（两段式：先挑回主键再按 IN 动作）——
+        PG / SQLite 支持「子查询内 LIMIT」，在 _delete_batched / _purge_outputs
+        里走单语句变体，每批省一次往返。前提不变：**动作必须让行退出 cond**
+        （删掉或改掉标记列），否则死循环。
         """
         while True:
             rows = await self._all(select(col).where(cond).limit(batch))
@@ -99,24 +101,54 @@ class _StoreMaintenanceMixin:
                 return
 
     async def _delete_batched(self, table, where, pk, batch=5000, extra=None):
-        """按主键分批删除：先挑一批 id 再删，每批各自一个事务。
+        """按主键分批删除，每批各自一个事务。
 
         为什么不用 DELETE ... LIMIT：PostgreSQL 不支持，MySQL 的 LIMIT 又是方言
         专属写法，SQLite 还要编译期开关——选主键是唯一三库通用且不锁全表的做法。
+
+        方言分流（收口在本方法内，别处不许再分叉）：
+        - PG / SQLite：**单语句分批**——`DELETE ... WHERE pk IN (SELECT pk ...
+          LIMIT batch)`，子查询挑批 + 删除一次往返完成（MySQL 明确不支持
+          LIMIT 出现在 IN 子查询里，故两段式仅剩它）；
+        - MySQL：先挑后删的两段式（_key_batches）。
         """
         cond = where if extra is None else and_(where, extra)
+        if self.dialect in ("postgresql", "sqlite"):
+            total = 0
+            while True:
+                n = await self._run(
+                    delete(table).where(
+                        pk.in_(select(pk).where(cond).limit(batch))))
+                total += n
+                if n < batch:
+                    return total
         total = 0
         async for keys in self._key_batches(pk, cond, batch):
             total += await self._run(delete(table).where(pk.in_(keys)))
         return total
 
     async def _purge_outputs(self, now, out_days, batch=2000):
-        """清掉超龄命令的输出文本，保留状态行（id/pod/rc/耗时都还在）。"""
+        """清掉超龄命令的输出文本，保留状态行（id/pod/rc/耗时都还在）。
+
+        方言分流同 _delete_batched：PG / SQLite 单语句（UPDATE ... WHERE id IN
+        (SELECT ... LIMIT batch)），MySQL 两段式。
+        """
         if out_days <= 0:
             return 0
         cutoff = now - out_days * 86400
         cond = and_(commands.c.finished_at.isnot(None), commands.c.finished_at < cutoff,
                     commands.c.out_purged == 0, commands.c.out_b64 != "")
+        if self.dialect in ("postgresql", "sqlite"):
+            total = 0
+            while True:
+                n = await self._run(
+                    update(commands)
+                    .where(commands.c.id.in_(
+                        select(commands.c.id).where(cond).limit(batch)))
+                    .values(out_b64="", out_tail="", out_chunks=0, out_purged=1))
+                total += n
+                if n < batch:
+                    return total
         total = 0
         async for ids in self._key_batches(commands.c.id, cond, batch):
             total += await self._run(update(commands).where(commands.c.id.in_(ids))

@@ -190,6 +190,8 @@ uv run kk-server                            # 监听 0.0.0.0:8443
 | `KK_TOPIC_PREFIX` | 主题前缀（**双端同名，必须一致**） | `kk/v1` |
 | `KK_DB_PATH` | SQLite 文件路径 | `kk-server.db` |
 | `KK_DB_URL` | 选库：`sqlite+aiosqlite:///` / `postgresql+asyncpg://` / `mysql+aiomysql://`，配了优先于 `KK_DB_PATH` | SQLite |
+| `KK_DB_POOL_SIZE` | PG 连接池常驻连接数（桥接/API/janitor 共用）；仅 PG 生效 | 10 |
+| `KK_DB_MAX_OVERFLOW` | PG 连接池允许的超发上限 | 20 |
 | `KK_ADMIN_USER` / `KK_ADMIN_PASS` | 管理员账号 | `admin` / `admin123` |
 | `KK_CMD_BLACKLIST` | 命令黑名单（逗号分隔子串，拦危险命令） | `rm -rf /,mkfs,...` |
 | `KK_HOST` / `KK_PORT` | 监听地址 / 端口 | `0.0.0.0` / `8443` |
@@ -203,10 +205,17 @@ uv run kk-server                            # 监听 0.0.0.0:8443
 
 - **SQLite**（默认）：单文件、零运维，适合 ≤ 数百台规模；数据卷挂 `/data` 即可。
 - **PostgreSQL / MySQL**：设置 `KK_DB_URL`，并在安装时带对应 extras
-  （`--extra postgres` / `--extra mysql`）。三库方言差异已收在代码
-  `Store._upsert` / `_ensure_schema` 两处；CI 夜测已有真库冒烟
+  （`--extra postgres` / `--extra mysql`）。三库方言差异已收在 store 的既定
+  汇聚点（引擎装配 / `_upsert` / `_ensure_schema` / 批删助手）；CI 夜测已有真库冒烟
   （`scripts/db_smoke.py`，Jenkinsfile ⑬ 矩阵跑 PG:16 / MySQL:8）覆盖建表/扩列/基础读写，
   上线前仍建议按真实规模在预发环境验证。
+- **PostgreSQL 专属调优（启动自动生效，无需手工执行）**：
+  引擎侧 `executemany_mode="values_plus"`（批量建命令 500 条 → 5 次往返）与
+  连接池（`KK_DB_POOL_SIZE`/`KK_DB_MAX_OVERFLOW`）；维护侧启动时对三张热表
+  设置行数级 autovacuum scale factor（`kk_containers` 每秒被心跳 UPDATE 数次，
+  默认 0.2 比例近乎永不触发）并补 `kk_heartbeats.ts` 的 BRIN 索引（时间范围
+  扫描用 KB 级索引）；批删在 PG 上走「子查询挑批」的单语句变体，每批省一次
+  往返。表属主账号即可执行（ALTER TABLE SET 不需要超级用户）。
 
 ### 4.7 启用 MQTT 鉴权（可选加固）
 

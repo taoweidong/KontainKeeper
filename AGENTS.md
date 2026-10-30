@@ -73,8 +73,8 @@ bash scripts/ci_smoke.sh kontainkeeper-server:local agent/dist/kk-agent         
 ## 关键约束与陷阱
 
 - **Agent 线程模型**：主循环是单线程事件循环，MQTT socket 只由 paho 的后台网络线程触碰；采集/命令/插件在一次性 daemon 线程跑，结果由工作线程直接经 paho 发帧（paho 发布线程安全，不回主线程）；回调里不要做阻塞操作，重活丢给 worker 线程。
-- **三库方言差异全部收在 `Store._upsert` / `Store._ensure_schema` 两处**，不要在别处再分叉：MySQL 大字段必须 LONGTEXT（TEXT 仅 64KB，命令输出 base64 最大 5.6MB 会静默截断）、主键必须定长 `String(n)`、upsert 是 `INSERT IGNORE`（SQLAlchemy 2.0 无 `.ignore()`，必须 `prefix_with("IGNORE")`）；PG/SQLite 用 `on_conflict_do_nothing`。
-- **分批删按主键 `IN`，不要用 `LIMIT`**：PG 不支持 `DELETE...LIMIT`，MySQL 的是方言专属写法，SQLite 还要编译期开关。
+- **三库方言差异只许出现在 store 的既定汇聚点**（基座引擎装配 `_engine_kwargs` / `Store._upsert` / `Store._ensure_schema`+`_pg_tune` / 批删助手 `_delete_batched`/`_purge_outputs`），不要在别处再分叉：MySQL 大字段必须 LONGTEXT（TEXT 仅 64KB，命令输出 base64 最大 5.6MB 会静默截断）、主键必须定长 `String(n)`、upsert 是 `INSERT IGNORE`（SQLAlchemy 2.0 无 `.ignore()`，必须 `prefix_with("IGNORE")`）；PG/SQLite 用 `on_conflict_do_nothing`；PG 引擎吃 `executemany_mode="values_plus"` 与热表 autovacuum/BRIN 调优（`_pg_tune`，启动幂等执行）。
+- **分批删按主键 `IN`，不要用 `DELETE...LIMIT`**：PG 不支持，MySQL 的是方言专属写法，SQLite 还要编译期开关。PG/SQLite 的批删收口为**单语句变体**（子查询内 LIMIT 挑批，每批一次往返）；MySQL 保留先挑后删的两段式（`_key_batches`）。
 - **`create_all` 只建表不加列**：新增列必须登记 `tables._ADD_COLUMNS`，由 `setup()` 的 `_ensure_schema` 自动 ALTER（SQLite 查 `PRAGMA table_info`，其余查 `information_schema` 且 MySQL 要 `DATABASE()` 限定 schema）。
 - **Windows 开发机兼容**：采集基于 psutil（跨平台，不解析 /proc、不注入 fs_root），`agent/tests` 直接读真机/容器指标即可，无需伪造 /proc 树；命令执行的进程树回收按平台分路——POSIX 用 `os.killpg`、Windows 用 `taskkill /F /T`（`executor.py`）。注：`resource` 模块仅 Unix 有，Agent 已不依赖它。
 - **命令执行语义**：前端 cmdline 恒 `use_shell=true`（整条命令经 `sh -c`，内网灵活优先，管道/重定向/glob 全支持）；argv 数组直 exec 不经 shell。服务端 API 层对 `use_shell=false` 的 cmdline 仍走 shlex.split——Windows 上含空格路径（如 `D:\Program Files\...`）会被拆坏，调 API 时优先 argv 数组。

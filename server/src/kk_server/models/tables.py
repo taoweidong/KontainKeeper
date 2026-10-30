@@ -90,6 +90,10 @@ heartbeats = Table(
     # 小时聚合（_aggregate_hours）只按 ts 范围过滤：前导列是 pod 的唯一索引帮不上，
     # 没有这条索引每个小时桶都是全表扫描（QR-S4）
     Index("idx_hb_ts", "ts"),
+    # PG 专属：ts 与写入物理相关，时间范围扫描（cleanup 挑批 / 聚合窗口）用
+    # KB 级 BRIN 替代整棵 btree；其他方言忽略该 kwargs（标准行为），
+    # 存量 PG 库由 _pg_tune 的 CREATE INDEX IF NOT EXISTS 补齐
+    Index("idx_hb_ts_brin", "ts", postgresql_using="brin"),
 )
 
 hourly = Table(

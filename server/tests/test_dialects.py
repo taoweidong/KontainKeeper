@@ -188,3 +188,71 @@ async def test_sqlite_really_executes_the_upsert_and_offset_paths(tmp_path):
         assert [r["action"] for r in rows] == ["probe"]
     finally:
         await store.close()
+
+
+# ---- PG 性能适配（第二轮）：编译级回归 ----
+
+def test_delete_batched_pg_single_statement():
+    """PG/SQLite 的分批删单语句变体：子查询内 LIMIT 挑批，每批一次往返。
+
+    MySQL 明确不支持 LIMIT 出现在 IN 子查询里（错误 1235），保持先挑后删的
+    两段式——分支只许收口在 _delete_batched / _purge_outputs 内。
+    """
+    from sqlalchemy import delete
+    from kk_server.models.tables import heartbeats
+    cond = heartbeats.c.ts < 100
+    stmt = delete(heartbeats).where(
+        heartbeats.c.id.in_(select(heartbeats.c.id).where(cond).limit(5000)))
+    pg_sql = str(stmt.compile(dialect=DIALECTS["postgresql"],
+                              compile_kwargs={"literal_binds": True}))
+    assert "DELETE FROM" in pg_sql and "LIMIT 5000" in pg_sql
+    # SQLite 同样吃这条形态（store 运行时与 compile 双保险）
+    assert "LIMIT 5000" in str(stmt.compile(dialect=DIALECTS["sqlite"],
+                                            compile_kwargs={"literal_binds": True}))
+    # MySQL 两段式的第一段（挑批）仍然编译成立
+    assert "LIMIT" in str(select(heartbeats.c.id).where(cond).limit(5000)
+                          .compile(dialect=DIALECTS["mysql"]))
+
+
+def test_engine_kwargs_per_dialect(monkeypatch):
+    """引擎参数按方言分流（Store.__init__ 的汇聚点，纯函数直接测）。
+
+    PG：values_plus（批量建命令 500 条 → 5 次往返）+ 池参数（KK_DB_POOL_SIZE
+    可调）+ application_name；SQLite 保持 QR-S3 的 connect_args；
+    两边都不许把对方专属的参数带过去（create_async_engine 对未知 kwargs 会炸）。
+    """
+    from kk_server.models.store import _engine_kwargs
+    monkeypatch.setenv("KK_DB_POOL_SIZE", "13")
+    pg = _engine_kwargs("postgresql", "postgresql+asyncpg://u:p@h/kk")
+    assert pg["executemany_mode"] == "values_plus"
+    assert pg["pool_size"] == 13 and pg["max_overflow"] == 20
+    assert pg["connect_args"]["server_settings"]["application_name"] == "kk-server"
+    monkeypatch.delenv("KK_DB_POOL_SIZE")
+    sq = _engine_kwargs("sqlite", "sqlite+aiosqlite:///x.db")
+    assert sq["connect_args"]["timeout"] == 5.0
+    assert "executemany_mode" not in sq and "pool_size" not in sq
+
+
+def test_pg_tune_stmts_are_idempotent():
+    """PG 启动调优语句：全部幂等形态（表级 SET / IF NOT EXISTS），
+    覆盖三张热表 + BRIN 索引——升级库与新建库都靠启动时执行这一份。"""
+    from kk_server.models.store import _pg_tune_stmts
+    stmts = _pg_tune_stmts()
+    tables = {"kk_containers", "kk_heartbeats", "kk_commands"}
+    assert {x.split()[2] for x in stmts if x.startswith("ALTER")} == tables
+    brin = [x for x in stmts if "BRIN" in x]
+    assert len(brin) == 1 and "IF NOT EXISTS" in brin[0]
+    assert all("IF NOT EXISTS" in x for x in stmts if "CREATE INDEX" in x)
+
+
+def test_heartbeats_brin_index_only_on_pg():
+    """BRIN 是 PG 专属索引形态：PG 渲染 USING BRIN，SQLite/MySQL 忽略该 kwargs
+    （dialect kwarg 的标准行为），三库建表 DDL 都不能炸。"""
+    from sqlalchemy.schema import CreateIndex
+    from kk_server.models.tables import heartbeats
+    brin = [i for i in heartbeats.indexes if i.name == "idx_hb_ts_brin"]
+    assert brin, "模型里必须声明 BRIN 索引"
+    pg_ddl = str(CreateIndex(brin[0]).compile(dialect=DIALECTS["postgresql"]))
+    assert "USING brin" in pg_ddl
+    str(CreateIndex(brin[0]).compile(dialect=DIALECTS["sqlite"]))
+    str(CreateIndex(brin[0]).compile(dialect=DIALECTS["mysql"]))
