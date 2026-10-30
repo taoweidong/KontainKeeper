@@ -398,6 +398,11 @@ export function useMonitor() {
     router.push({ name: "HostDetail", params: { pod } });
   }
 
+  /** 单机趋势页（内存/磁盘百分比 + 告警上限）：从操作列直达 */
+  function gotoTrend(pod: string) {
+    router.push({ name: "HostTrend", params: { pod } });
+  }
+
   /** 跳到「版本与更新」页并把已选主机带过去（D2.4：批量升级是跨页动作）。 */
   function gotoUpgrade() {
     if (!selection.value.length) return;
@@ -582,7 +587,7 @@ export function useMonitor() {
     {
       label: "操作",
       fixed: "right",
-      width: 150,
+      width: 200,
       cellRenderer: ({ row }) => (
         <>
           <el-button
@@ -595,6 +600,16 @@ export function useMonitor() {
             }}
           >
             详情
+          </el-button>
+          <el-button
+            link
+            type="primary"
+            onClick={(e: MouseEvent) => {
+              e.stopPropagation();
+              gotoTrend(row.pod);
+            }}
+          >
+            趋势
           </el-button>
           <el-button
             link
@@ -645,6 +660,7 @@ export function useMonitor() {
     openCollect,
     openCommandCenter,
     gotoUpgrade,
+    gotoTrend,
     onRowClick,
     rowClass,
     onSortChange,

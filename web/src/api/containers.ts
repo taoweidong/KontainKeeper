@@ -75,12 +75,19 @@ export type HostDetail = HostMeta & {
   /** 自定义标签：`{k: v}`，超限时后端整对丢弃并留 `_truncated: true` */
   labels: Record<string, any>;
   commands: Array<Record<string, any>>;
+  /** 单机告警上限（%）：null = 未自定义（磁盘回落全局 85，内存不画线） */
+  mem_limit: number | null;
+  disk_limit: number | null;
 };
 
 export type MetricPoint = {
   ts: number;
   cpu: number | null;
   mem_mb: number | null;
+  /** 内存使用率（%）：采集器原值；null = 该帧没带（老 Agent / 采集被关），画断线 */
+  mem_pct: number | null;
+  /** 磁盘使用率（%）：多挂载点取最大；null 同上。序列形状 raw/hourly 双路统一 */
+  disk_pct: number | null;
 };
 
 export type MetricsResult = {
@@ -89,6 +96,12 @@ export type MetricsResult = {
   /** raw = 24h 内的原始点；hourly = 超出后自动切到小时聚合 */
   source: "raw" | "hourly";
   series: MetricPoint[];
+  /** 内存告警上限（%）：单机覆盖原值，null = 未设置（没有全局口径，图上不画线） */
+  mem_limit: number | null;
+  /** 磁盘告警上限（%）：**有效值**（单机覆盖 ?? 全局 85），画线用 */
+  disk_limit: number;
+  /** 磁盘单机覆盖原值：null = 未自定义——编辑表单要区分「没设过」与「设成 85」 */
+  disk_limit_raw: number | null;
 };
 
 /** v4 机队筛选 / 排序参数，与后端 `deps.host_filter_params` 一一对应。
@@ -136,4 +149,19 @@ export const getHostMetrics = (pod: string, hours = 24) => {
       params: { hours }
     }
   );
+};
+
+/** 单机告警上限（百分比 1–100）；null = 清除自定义、回落全局口径。
+ *  总览页 disk_alert 的全局口径不受影响——这里只服务趋势页的告警线。 */
+export const setHostLimits = (
+  pod: string,
+  body: { mem_limit: number | null; disk_limit: number | null }
+) => {
+  return http.request<{
+    ok: boolean;
+    mem_limit: number | null;
+    disk_limit: number | null;
+  }>("put", `/api/containers/${encodeURIComponent(pod)}/limits`, {
+    data: body
+  });
 };

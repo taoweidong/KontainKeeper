@@ -225,6 +225,11 @@ function gotoCommand() {
   router.push({ name: "CommandShell", query: { pods: pod.value } });
 }
 
+/** 单机使用趋势（内存/磁盘百分比 + 告警上限）：详情的下钻页 */
+function gotoTrend() {
+  router.push({ name: "HostTrend", params: { pod: pod.value } });
+}
+
 onMounted(async () => {
   await load();
   // 详情与图表 30s：曲线不需要秒级新鲜度
@@ -281,6 +286,7 @@ onBeforeUnmount(() => {
             </el-select>
             <el-button @click="load()">刷新</el-button>
             <el-button @click="gotoCommand">在此主机执行命令</el-button>
+            <el-button @click="gotoTrend">使用趋势</el-button>
             <!-- 仅当本机落后于最新版本时显示升级按钮：避免「点了却显示已是最新」的无效路径 -->
             <el-button
               v-if="detail.agent_outdated"

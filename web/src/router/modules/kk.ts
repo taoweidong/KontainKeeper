@@ -33,6 +33,14 @@ export default [
         meta: { title: "主机详情", showLink: false }
       },
       {
+        // 单机使用趋势（内存/磁盘百分比 + 告警上限）：与详情同款的二级页，
+        // 从总览操作列与详情页头进入，不占侧边栏
+        path: "/hosts/trend/:pod",
+        name: "HostTrend",
+        component: () => import("@/views/host/trend/index.vue"),
+        meta: { title: "使用趋势", showLink: false }
+      },
+      {
         // 版本与更新（D2.4）：上传新版本后唯一的入口。与主机总览并列但不嵌在二级下，
         // 让运维点开「主机管理」就能直接看到，不会被「详情」二级页挡住。
         path: "/hosts/update",
