@@ -147,10 +147,26 @@ async def test_contract_container_metrics(api):
     r = await api.client.get("/api/containers/h1/metrics")
     assert r.status_code == 200, r.text
     body = r.json()
-    assert_exact(body, ["pod", "hours", "source", "series"], "GET /metrics 顶层")
+    assert_exact(body, ["pod", "hours", "source", "series",
+                        "mem_limit", "disk_limit", "disk_limit_raw"],
+                 "GET /metrics 顶层")
     assert body["source"] in ("raw", "hourly")
     assert body["series"], "种子心跳必须产出至少一个序列点"
     assert_superset(body["series"][0], "MetricPoint", where="metrics 序列点")
+    # 上限语义：磁盘有效值（未自定义 = 全局 85）、内存原值（未设置 = null）
+    assert body["disk_limit"] == 85 and body["disk_limit_raw"] is None
+    assert body["mem_limit"] is None
+
+
+async def test_contract_host_limits_put(api):
+    """PUT /containers/{pod}/limits：单机告警上限的写入面（趋势页保存按钮）。"""
+    await _seed(api)
+    r = await api.client.put("/api/containers/h1/limits",
+                             json={"mem_limit": 70, "disk_limit": 90})
+    assert r.status_code == 200, r.text
+    assert_exact(r.json(), ["ok", "mem_limit", "disk_limit"], "PUT limits 回执")
+    assert (r.json()["ok"], r.json()["mem_limit"], r.json()["disk_limit"]) == (
+        True, 70, 90)
 
 
 async def test_contract_audit_list(api):

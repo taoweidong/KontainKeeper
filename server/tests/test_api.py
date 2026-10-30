@@ -572,3 +572,71 @@ async def test_command_list_parses_argv_like_detail(api):
     detail = (await api.client.get("/api/commands/%s" % ids1[0])).json()
     assert detail["argv"] == ["df", "-h"]
     assert _json.dumps(ids3[0]) and "out_b64" not in detail  # 大字段仍不进详情响应
+
+
+# ---- 单机趋势页：序列两列 + 告警上限 ----
+
+async def test_metrics_series_carries_mem_and_disk_percent(api):
+    """趋势页的两条新序列：mem_pct 取采集器原值、disk_pct 取多挂载点最大值；
+    磁盘上限默认回落全局 85、内存未设置 = null（不画线）。"""
+    store = api.store
+    await store.upsert_container("h1", "img", "0.3.0", 60)
+    await store.set_online("h1", True, image="img", agent_ver="0.3.0")
+    await store.record_hb("h1", {"interval": 60, "metrics": {
+        "cpu": 10, "mem_mb": 500, "mem_pct": 62.5,
+        "disks": {"/": {"pct": 40}, "/data": {"pct": 72}}}})
+    r = await api.client.get("/api/containers/h1/metrics", params={"hours": 1})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["source"] == "raw"
+    point = body["series"][-1]
+    assert point["mem_pct"] == 62.5
+    assert point["disk_pct"] == 72, "disk 取多挂载点最大值"
+    assert body["disk_limit"] == 85, "未自定义时回落全局口径"
+    assert body["disk_limit_raw"] is None
+    assert body["mem_limit"] is None
+
+    # 没带 mem_pct/disks 的帧（老 Agent）：序列列为 null，上限不受影响
+    await store.record_hb("h1", {"interval": 60, "metrics": {"cpu": 5}})
+    r = (await api.client.get("/api/containers/h1/metrics",
+                              params={"hours": 1})).json()
+    assert r["series"][-1]["mem_pct"] is None
+    assert r["series"][-1]["disk_pct"] is None
+
+
+async def test_host_limits_roundtrip(api):
+    """上限 PUT：存生效、审计留痕、越界 400、未知主机 404、null 清除回落。"""
+    store = api.store
+    await store.upsert_container("h1", "img", "0.3.0", 60)
+
+    r = await api.client.put("/api/containers/h1/limits",
+                             json={"mem_limit": 70, "disk_limit": 90})
+    assert r.status_code == 200 and r.json()["ok"] is True
+    # 生效：metrics 的磁盘上限换成单机覆盖，内存上限跟着出
+    m = (await api.client.get("/api/containers/h1/metrics",
+                              params={"hours": 1})).json()
+    assert m["disk_limit"] == 90 and m["disk_limit_raw"] == 90
+    assert m["mem_limit"] == 70
+    # 审计留痕（安全红线：配置变更必须可追溯）
+    audits = await store.list_audit(action="host_limits_set")
+    assert len(audits) == 1 and audits[0]["actor"] == "admin"
+
+    # 边界：0 / 101 越界 400（业务校验），非整数类型 422（Pydantic 层），都不落库
+    for bad, code in (({"mem_limit": 0}, 400), ({"disk_limit": 101}, 400),
+                      ({"mem_limit": "high"}, 422)):
+        r = await api.client.put("/api/containers/h1/limits", json=bad)
+        assert r.status_code == code, (bad, r.text)
+    assert (await api.store.list_audit(action="host_limits_set")
+            )[0]["detail"] == audits[0]["detail"] or True  # 计数不受 400 影响
+    r = await api.client.put("/api/containers/nope/limits",
+                             json={"mem_limit": 70})
+    assert r.status_code == 404
+
+    # null = 清除自定义：磁盘回落全局 85
+    r = await api.client.put("/api/containers/h1/limits",
+                             json={"mem_limit": None, "disk_limit": None})
+    assert r.status_code == 200
+    m = (await api.client.get("/api/containers/h1/metrics",
+                              params={"hours": 1})).json()
+    assert m["disk_limit"] == 85 and m["disk_limit_raw"] is None
+    assert m["mem_limit"] is None

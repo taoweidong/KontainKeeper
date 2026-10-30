@@ -60,6 +60,11 @@ containers = Table(
     #       排障**，服务端按 caps 拦命令的门禁还没写（现在拦 shell 的是 Agent 侧
     #       allow_shell），别把它当成已经在守的防线
     Column("caps", _long_text(), nullable=False),
+    # mem_limit / disk_limit：单机告警上限（百分比 1–100），NULL = 未自定义——
+    # 磁盘回落全局 DISK_ALERT_PCT（85），内存没有全局口径就不画线。
+    # 只服务趋势页的告警线与状态读数，不改变总览页 disk_alert 的全局口径
+    Column("mem_limit", Integer),
+    Column("disk_limit", Integer),
     # docker_*：Docker 摘要冗余列（v4 后的容器阶段写入，此阶段恒 0）
     Column("docker_total", Integer, nullable=False, server_default="0"),
     Column("docker_running", Integer, nullable=False, server_default="0"),
@@ -75,6 +80,11 @@ heartbeats = Table(
     Column("ts", BigInteger, nullable=False),
     Column("cpu", Float),
     Column("mem_mb", Float),
+    # mem_pct / disk_pct：单机趋势页的两个序列列（cpu/mem_mb 同款写侧摘列）。
+    # disk_pct = 多挂载点最大使用率；NULL = 该帧没带这类数据（老 Agent / 采集被关），
+    # 趋势图上「没读到」与「用到 0%」必须可分（QR-W16 同一口径），所以不给默认值
+    Column("mem_pct", Float),
+    Column("disk_pct", Float),
     Column("metrics", _long_text(), nullable=False),
     Index("idx_hb_pod_ts", "pod", "ts"),
     # 小时聚合（_aggregate_hours）只按 ts 范围过滤：前导列是 pod 的唯一索引帮不上，
@@ -89,6 +99,10 @@ hourly = Table(
     Column("samples", Integer, nullable=False, server_default="0"),
     Column("cpu_avg", Float), Column("cpu_max", Float),
     Column("mem_avg", Float), Column("mem_max", Float),
+    # mem_pct_avg / disk_avg：单机趋势页的小时聚合（disk = 多挂载点最大值的均值）。
+    # 可空：聚合对 NULL 跳过（SQL AVG/MAX 语义），补列前的旧桶自然是 NULL
+    Column("mem_pct_avg", Float),
+    Column("disk_avg", Float),
     Column("last_metrics", _long_text(), nullable=False),
 )
 
@@ -218,7 +232,10 @@ _ADD_COLUMNS = {
                       ("docker_total", "INTEGER DEFAULT 0"),
                       ("docker_running", "INTEGER DEFAULT 0"),
                       ("docker_unhealthy", "INTEGER DEFAULT 0"),
-                      ("proto_ver", "INTEGER DEFAULT 3")],
+                      ("proto_ver", "INTEGER DEFAULT 3"),
+                      # 单机告警上限：NULL = 未自定义（磁盘回落全局 85），可空整数
+                      ("mem_limit", "INTEGER"),
+                      ("disk_limit", "INTEGER")],
     "kk_commands": [("out_purged", "INTEGER DEFAULT 0"),
                     ("last_seq", "INTEGER DEFAULT -1"),
                     # 不带引号：MySQL 严格模式下 'VARCHAR' 被引号包住会解析失败
@@ -226,6 +243,12 @@ _ADD_COLUMNS = {
                     # QR-S1：历史行的 out_tail 为空（不回填——回填要逐行读大字段，
                     # 新写入的命令即时生效）
                     ("out_tail", "VARCHAR(2732) DEFAULT ''")],
+    # 单机趋势页的两个序列列（写侧摘列，与 cpu/mem_mb 同族）；NULL = 该帧未上报，
+    # 聚合与序列查询对 NULL 跳过（SQL AVG/MAX 语义），老行不需要回填
+    "kk_heartbeats": [("mem_pct", "DOUBLE PRECISION"),
+                      ("disk_pct", "DOUBLE PRECISION")],
+    "kk_hourly": [("mem_pct_avg", "DOUBLE PRECISION"),
+                  ("disk_avg", "DOUBLE PRECISION")],
 }
 
 # 既有库补索引清单：create_all 同样不给已存在的表建索引。

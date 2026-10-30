@@ -231,9 +231,20 @@ class _StoreHostsMixin:
         reported_ip = _clip(msg.get("ip"), 64)
         if reported_ip:
             vals["ip"] = reported_ip
+        # 趋势页序列列：mem_pct 取采集器原值；disk 取多挂载点最大值。
+        # 没有挂载数据（老 Agent / 磁盘采集被关）落 NULL 而不是 0——
+        # 趋势图上「没读到」与「用到 0%」必须可分（QR-W16 同一口径），
+        # 所以这里不复用 _summary_of 的 0.0 兜底（那是给列表标量语义的）。
+        disks = m.get("disks") or {}
+        try:
+            pcts = [float((d or {}).get("pct") or 0) for d in disks.values()]
+        except (AttributeError, TypeError, ValueError):
+            pcts = []
         async with self.engine.begin() as conn:
             await conn.execute(insert(heartbeats).values(
                 pod=pod, ts=ts, cpu=_num(m.get("cpu")), mem_mb=_num(m.get("mem_mb")),
+                mem_pct=_num(m.get("mem_pct")),
+                disk_pct=_num(max(pcts)) if pcts else None,
                 metrics=raw))
             await conn.execute(update(containers).where(containers.c.pod == pod)
                                .values(**vals, **summary))
@@ -332,6 +343,11 @@ class _StoreHostsMixin:
 
     async def get_container(self, pod):
         return await self._one(select(containers).where(containers.c.pod == pod))
+
+    async def set_host_limits(self, pod, mem_limit, disk_limit):
+        """单机告警上限（百分比）：None = 清除自定义、回落全局口径。调用方校验取值。"""
+        await self._run(update(containers).where(containers.c.pod == pod)
+                        .values(mem_limit=mem_limit, disk_limit=disk_limit))
 
     async def containers_exist(self, pods):
         """批量下发前的存在性校验：一次 IN 查询取代 N 次单查（500 台一次点击）。"""

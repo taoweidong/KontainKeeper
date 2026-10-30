@@ -1,11 +1,13 @@
-"""主机列表 / 详情 / 指标序列。"""
+"""主机列表 / 详情 / 指标序列 / 单机告警上限。"""
 import asyncio
 import json
 import time
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 
-from .deps import HostFilters, current_user
+from .deps import CurrentUser, HostFilters, current_user
 from ..models.helpers import clamp
 from ..models.store import DISK_ALERT_PCT
 from ..models.tables import ONLINE_GRACE
@@ -67,6 +69,10 @@ def _container_view(row, online_set, latest_ver=""):
         "age_sec": max(0, now - row["last_seen"]),
         # 离线原因（B6.1）：updating = 正在自更新，而非「容器停了」
         "status_reason": row.get("status_reason") or "",
+        # 单机告警上限（百分比）：NULL = 未自定义（磁盘回落全局 85，内存不画线）。
+        # 详情回的是**原始值**——编辑表单的初始态要区分「没设过」与「设成过 85」
+        "mem_limit": row.get("mem_limit"),
+        "disk_limit": row.get("disk_limit"),
         "metrics": metrics,
         "custom": hb.get("custom") or {},
         "disk_alert": _disk_alert(metrics),
@@ -160,5 +166,46 @@ async def container_detail(pod: str, request: Request):
 @router.get("/containers/{pod}/metrics")
 async def container_metrics(pod: str, request: Request, hours: int = 24):
     hours = clamp(hours, 1, 24 * 90)
-    series, source = await request.app.state.store.metrics_series(pod, hours)
-    return {"pod": pod, "hours": hours, "source": source, "series": series}
+    store = request.app.state.store
+    series, source = await store.metrics_series(pod, hours)
+    # 上限语义在服务端算好下发（D1.3 判例：语义不下发就是两套实现各自演化）：
+    # - disk_limit：**有效值**（单机覆盖 ?? 全局 85），趋势图画线用；
+    # - mem_limit：单机覆盖原值（内存没有全局口径，未设置 = null = 不画线）；
+    # - disk_limit_raw：单机覆盖原值，编辑表单的初始态要区分「没设过」与「设成 85」
+    row = await store.get_container(pod)
+    disk_raw = row.get("disk_limit") if row else None
+    return {"pod": pod, "hours": hours, "source": source, "series": series,
+            "mem_limit": row.get("mem_limit") if row else None,
+            "disk_limit": disk_raw if disk_raw is not None else DISK_ALERT_PCT,
+            "disk_limit_raw": disk_raw}
+
+
+class LimitBody(BaseModel):
+    """单机告警上限（百分比 1–100）；None = 清除自定义、回落全局口径。"""
+
+    mem_limit: Optional[int] = None
+    disk_limit: Optional[int] = None
+
+
+def _limit_or_none(v: Optional[int], name: str) -> Optional[int]:
+    if v is None:
+        return None
+    if not 1 <= v <= 100:
+        raise HTTPException(status_code=400, detail="%s 需在 1–100 之间" % name)
+    return v
+
+
+@router.put("/containers/{pod}/limits")
+async def set_host_limits(pod: str, body: LimitBody, request: Request,
+                          user: CurrentUser):
+    """单机内存 / 磁盘告警上限。总览页 disk_alert 的全局口径（85）不受影响——
+    这里只服务趋势页的告警线，改口径不改列表语义。"""
+    store = request.app.state.store
+    if not await store.get_container(pod):
+        raise HTTPException(status_code=404, detail="主机不存在")
+    mem = _limit_or_none(body.mem_limit, "mem_limit")
+    disk = _limit_or_none(body.disk_limit, "disk_limit")
+    await store.set_host_limits(pod, mem, disk)
+    await store.add_audit(user, "host_limits_set", {
+        "pod": pod, "mem_limit": mem, "disk_limit": disk})
+    return {"ok": True, "mem_limit": mem, "disk_limit": disk}

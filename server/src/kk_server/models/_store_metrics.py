@@ -18,16 +18,23 @@ class _StoreMetricsMixin:
 
     async def metrics_series(self, pod, hours=24):
         since = int(time.time()) - hours * 3600
+        # 序列形状双路统一为 {ts, cpu, mem_mb, mem_pct, disk_pct}：
+        # raw = 每帧原值（disk 为多挂载点最大值），hourly = 小时聚合均值。
+        # NULL = 该桶/该帧没数据（老行、采集被关），前端画断线而不是 0。
         if hours <= 24:
             rows = await self._all(select(heartbeats.c.ts, heartbeats.c.cpu,
-                                          heartbeats.c.mem_mb)
+                                          heartbeats.c.mem_mb,
+                                          heartbeats.c.mem_pct,
+                                          heartbeats.c.disk_pct)
                                    .where(heartbeats.c.pod == pod)
                                    .where(heartbeats.c.ts >= since)
                                    .order_by(heartbeats.c.ts))
             return rows, "raw"
         rows = await self._all(select((hourly.c.hour * 3600).label("ts"),
                                       hourly.c.cpu_avg.label("cpu"),
-                                      hourly.c.mem_avg.label("mem_mb"))
+                                      hourly.c.mem_avg.label("mem_mb"),
+                                      hourly.c.mem_pct_avg.label("mem_pct"),
+                                      hourly.c.disk_avg.label("disk_pct"))
                                .where(hourly.c.pod == pod)
                                .where(hourly.c.hour >= since // 3600)
                                .order_by(hourly.c.hour))
@@ -59,7 +66,9 @@ class _StoreMetricsMixin:
                        func.avg(heartbeats.c.cpu).label("cpu_avg"),
                        func.max(heartbeats.c.cpu).label("cpu_max"),
                        func.avg(heartbeats.c.mem_mb).label("mem_avg"),
-                       func.max(heartbeats.c.mem_mb).label("mem_max"))
+                       func.max(heartbeats.c.mem_mb).label("mem_max"),
+                       func.avg(heartbeats.c.mem_pct).label("mem_pct_avg"),
+                       func.avg(heartbeats.c.disk_pct).label("disk_avg"))
                 .where(heartbeats.c.ts >= lo).where(heartbeats.c.ts < hi)
                 .group_by(heartbeats.c.pod))
             for r in rows:
@@ -72,9 +81,11 @@ class _StoreMetricsMixin:
                     "pod": r["pod"], "hour": h, "samples": r["samples"],
                     "cpu_avg": r["cpu_avg"], "cpu_max": r["cpu_max"],
                     "mem_avg": r["mem_avg"], "mem_max": r["mem_max"],
+                    "mem_pct_avg": r["mem_pct_avg"], "disk_avg": r["disk_avg"],
                     "last_metrics": ""},
                     ["pod", "hour"],
-                    ["samples", "cpu_avg", "cpu_max", "mem_avg", "mem_max"])
+                    ["samples", "cpu_avg", "cpu_max", "mem_avg", "mem_max",
+                     "mem_pct_avg", "disk_avg"])
             n += 1
         await self.kv_set("agg_hour", now_hour - 1)
         return n
