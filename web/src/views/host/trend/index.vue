@@ -201,16 +201,18 @@ function gotoDetail() {
   display: grid;
   flex: 1;
   grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  gap: var(--kk-space-lg);
   min-height: 0;
-  margin-top: 12px;
+  margin-top: var(--kk-space-md);
 }
 
 .trend-card {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  padding: 12px 12px 4px;
+
+  /* 横向留白与页头横带（pl-8/pr-8）对齐，两条图表的左右缘与上方读数在同一条线上 */
+  padding: var(--kk-space-md) var(--kk-pad-x) var(--kk-space-sm);
 }
 
 .trend-chart {

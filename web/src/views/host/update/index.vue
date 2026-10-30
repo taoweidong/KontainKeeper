@@ -161,7 +161,7 @@ async function onRollback() {
 <template>
   <div v-loading="loading" class="kk-main">
     <!-- 页头读数条（W5：pollFailed 进这条读数、不弹 toast；与搜索条同构挂 kk-search-form） -->
-    <div class="kk-search-form bg-bg_color w-full overflow-auto pl-8 pt-3 pb-1">
+    <div class="kk-search-form bg-bg_color w-full overflow-auto pl-8 pr-8 pt-3 pb-3">
       <div class="kk-toolbar">
         <div class="kk-stat">
           <span
@@ -197,8 +197,10 @@ async function onRollback() {
 
     <!-- 升级台账（Step 1 裁决：上方、行数少、自然高度 max-height 320 封顶；
          不套 PureTableBar、不开 adaptive——同屏两张表都 adaptive 会互相抢视口高度。
-         「主机/状态」与下方主表同名**不冲突**：列设置唯一性只需在同一 bar 内成立 -->
-    <div class="bg-bg_color w-full mb-2 pl-8 pr-8 pt-3 pb-3">
+         「主机/状态」与下方主表同名**不冲突**：列设置唯一性只需在同一 bar 内成立。
+         mt-2：与页头读数条之间露一条 8px 灰缝（页面背景），对齐 audit 页
+         「搜索条 → 灰缝 → 表格卡」的上下节奏，不再白贴白连成一张大白板 -->
+    <div class="bg-bg_color w-full mt-2 mb-2 pl-8 pr-8 pt-3 pb-3">
       <div class="kk-toolbar">
         <b>升级台账（最近 50 条）</b>
       </div>

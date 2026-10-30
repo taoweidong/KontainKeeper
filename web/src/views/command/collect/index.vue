@@ -107,7 +107,7 @@ onMounted(async () => {
 <template>
   <CommandWorkbench>
     <template #form>
-      <el-form label-width="90px">
+      <el-form label-width="88px">
         <el-form-item label="目标主机">
           <HostPicker
             v-model:pods="collectForm.pods"

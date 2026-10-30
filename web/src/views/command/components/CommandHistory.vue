@@ -56,7 +56,7 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
   <div class="kk-main">
     <el-form
       :inline="true"
-      class="kk-search-form bg-bg_color w-full pl-8 pt-3 overflow-auto"
+      class="kk-search-form bg-bg_color w-full pl-8 pr-8 pt-3 overflow-auto"
     >
       <el-form-item label="关键字：">
         <el-input
@@ -165,10 +165,14 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
                 = innerHeight - 81 ⇒ offsetBottom ≥ 129（108 时 1366×768 实测溢出 +21px）；
              ② 外层 .kk-page 是 calc(100vh - var(--kk-page-h)) 的固定高盒（审计页没有这条），
                 表格越过它整页又开始滚 ⇒ ≥ 119。
-             取 140 = 129 的下界再留 11px 余量。实测（同一份 500 台种子库、pageSize 50）：
-             1920×1080 pager.bottom 988 ≤ client 999、1366×768 pager.bottom 676 ≤ 687、
-             1100×800（媒体查询折叠为上下）pager.bottom 708 ≤ 719，三档 pageScrolls 均 false、
-             表体内部滚动（内容 3190 / 可视 779·467·126）。搜索条或表头读数一改高就复测。 -->
+     取 140 = 129 的下界再留 11px 余量。实测（同一份 500 台种子库、pageSize 50）：
+     1920×1080 pager.bottom 988 ≤ client 999、1366×768 pager.bottom 676 ≤ 687、
+     1100×800（媒体查询折叠为上下）pager.bottom 708 ≤ 719，三档 pageScrolls 均 false、
+     表体内部滚动（内容 3190 / 可视 779·467·126）。搜索条或表头读数一改高就复测。
+     2026-10-31 复核：--kk-page-h 152→112 后约束②放宽到 ≥79（129 仍是最紧的一条，
+     140 不动）；右栏 .kk-main 挂 overflow:auto、各横带 flex-shrink:0（kk.scss /
+     CommandWorkbench），窗口偏矮时内容超出改走栏内滚动，不再把搜索条压扁
+     （1920×937 曾实测表单只剩 12px 缝）。 -->
         <!-- :pagination 上游四页一律写 { ...pagination, size }，这里**必须**直连 reactive：
              @pureadmin/table 对传入的那个对象就地写 currentPage/pageSize，展开成一次性快照
              后写入无人读 → 翻页与条数全废。代价：分页器不吃密度 size（纯观感）。

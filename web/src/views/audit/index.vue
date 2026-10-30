@@ -34,7 +34,7 @@ function onSelectionChange(rows: any[]) {
     <el-form
       :inline="true"
       :model="form"
-      class="kk-search-form bg-bg_color w-full pl-8 pt-3 overflow-auto"
+      class="kk-search-form bg-bg_color w-full pl-8 pr-8 pt-3 overflow-auto"
     >
       <el-form-item label="关键字：" prop="keyword">
         <el-input

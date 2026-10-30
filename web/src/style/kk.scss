@@ -24,9 +24,11 @@
  * 锚点只当下限，内容超出时整页照常滚（统计页的排障说明不许被压掉）。
  */
 :root {
-  /* navbar(48) + tabs(33) + 内容区留白 + 页脚 的合计占用，约 150px 量级。
+  /* 固定页头（navbar 48 + 标签栏 33 = 81）+ 页脚 29 + 2px 防滚动余量 = 112。
+     .kk-page 高度 = 100vh - 112，恰好填到页脚上缘；早期写 152 时页脚上方
+     常驻一条 ~40px 的灰白死空（2026-10-31 实测收口）。
      只在此处维护；业务页不得再写 calc(100vh - N)。 */
-  --kk-page-h: 152px;
+  --kk-page-h: 112px;
 
   /* 抽屉内表格高度锚点：与 --kk-page-h 同族，数值只在这里维护 */
   --kk-drawer-h: 300px;
@@ -47,6 +49,25 @@
   --kk-alert: var(--el-color-danger);
   --kk-stale: var(--el-color-warning);
   --kk-idle: var(--el-text-color-disabled);
+
+  /* ---- 间距尺度（2026-10-30 收敛）：全站只有 4 / 8 / 12 / 16 四档 ----
+   * 原各页散落 10 / 14 / 15 / 18 等不成体系的数值，同一屏里相邻块间距
+   * 忽大忽小。这里把页内间距全部收口到四档，页面只写类名、不再各自拍数：
+   *   --kk-space-sm   紧凑行内（同组标签、计数器之间）         4px
+   *   --kk-space      默认块间距（卡片之间、图表与上下块）      8px
+   *   --kk-space-md   表单字段 / 搜索条纵向留白 / 小节标题     12px
+   *   --kk-space-lg   整块分隔（多卡堆叠、节标题与正文）       16px
+   * 用法：新增间距一律取这四个变量，不写裸像素。 */
+  --kk-space-sm: 4px;
+  --kk-space: 8px;
+  --kk-space-md: 12px;
+  --kk-space-lg: 16px;
+
+  /* ---- 区块内边距：横向留白全站统一 32px，纵向按场景 ----
+   * 列表页的搜索条 / 仪表带左缘曾经是 32px（pl-8）右缘却常常没给（pr-8 漏写），
+   * 于是同一条横带左右不对称、表格顶边也对不齐。横向内边距统一走这两个变量。 */
+  --kk-pad-x: 32px;
+  --kk-pad-y: 12px;
 }
 
 /* 页面根容器：全站唯一的高度锚点 */
@@ -59,10 +80,14 @@
 
 /* 多卡堆叠页（首页/详情/统计）的锚点变体：只当下限、允许整页滚。
  * 固定高的 .kk-page 会把超出视口的内容直接裁掉（统计页 1219px、welcome 窄屏 910px，
- * 实测都超一屏），这类页面的「填满视口」语义用 min-height 而非 height。 */
+ * 实测都超一屏），这类页面的「填满视口」语义用 min-height 而非 height。
+ * 内边距挂在本类而非各页：横向 32px 与列表页横带（pl-8/pr-8）同宽、顶部 12px
+ * 与搜索条/页头横带的 pt-3 同档——welcome 原先自己写 padding、统计页/详情页
+ * 却两边贴边（0px），同一套卡片三种左缘（2026-10-31 收口）。 */
 .kk-page--grow {
   display: flex;
   flex-direction: column;
+  padding: var(--kk-space-md) var(--kk-pad-x) 0;
   min-height: calc(100vh - var(--kk-page-h));
 }
 
@@ -125,7 +150,28 @@
    注意：本文件是全局样式，**不能**用 :deep()——那是 SFC scoped 的专属语法，
    在全局 scss 里会原样编译成无效选择器、静默不生效（10-15 的「安慰剂类名」同族坑）。 */
 .kk-search-form .el-form-item {
-  margin-bottom: 12px;
+  margin-bottom: var(--kk-space-md);
+}
+
+/* ---- 定高 flex 列里的防压缩（2026-10-31）----
+ * .kk-main 在命令中心右栏这类定高 flex 列里是 flex 子项，高度被压到容器高时，
+ * 默认 flex-shrink 会把「软」子项压扁：搜索条曾被压得只剩 padding-top 的 12px
+ * （1920×937 实测，表单字段只剩一条缝——用户截图里那排被拦腰截断的圆角输入框）。
+ * 下面三条给页头横带 / 搜索条 / 选中横幅 / 表格条 flex-shrink:0：内容超出时
+ * 由容器（命令中心右栏挂了 overflow:auto）出滚动条，而不是静默裁掉表单。
+ * 列表页的 .kk-main 高度是 auto（min-height:100%），本规则在那些页无副作用。 */
+.kk-main > .bg-bg_color,
+.kk-select-banner {
+  flex-shrink: 0;
+}
+
+/* 表格条（PureTableBar 根节点）左右内边距对齐搜索条：组件自带 px-2（8px），
+   而搜索条 / 仪表带 / 选中横幅是 32px（pl-8/pr-8、--kk-pad-x），同屏两条横带
+   左右缘错开 24px、表格顶边对不齐搜索条。选择器特异性 (0,2,0) 压过工具类的
+   (0,1,0)，赢在特异度而非源序；搜索条自身也命中本条，但值同为 32px、无视觉变化。 */
+.kk-main > .bg-bg_color {
+  padding-left: var(--kk-pad-x);
+  padding-right: var(--kk-pad-x);
 }
 
 /* 选中横幅：取代已退役的 .kk-sticky-bar（sticky 的 scrollport 是 el-card，而它自己不滚，
@@ -136,11 +182,11 @@
    单行渲染高度仍是 46px，换 min-height 安全（1100×800 多 chip 实测不裁剪、单行仍 46px）。 */
 .kk-select-banner {
   display: flex;
-  gap: 12px;
+  gap: var(--kk-space-md);
   align-items: center;
   min-height: 46px;
-  padding-left: 16px;
-  margin-bottom: 8px;
+  padding: 0 var(--kk-pad-x);
+  margin-bottom: var(--kk-space);
   background: var(--el-fill-color-light);
 }
 
@@ -172,27 +218,36 @@
 }
 
 .kk-mb {
-  margin-bottom: 10px;
+  margin-bottom: var(--kk-space);
 }
 
 /* 主机选择触发区：已选标签横向排列，超过 5 个折叠为 +M */
 .kk-picker {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--kk-space);
   align-items: center;
 }
 
-/* 卡片：同页相邻卡片垂直间距（el-card 默认无 margin） */
+/* 卡片：同页相邻卡片垂直间距（el-card 默认无 margin）
+   原来只写 `.kk-card + .kk-card`，但统计页的多卡是「卡片 → el-row(两栏) →
+   卡片 → 卡片」的交错结构，el-row 夹在中间时前后两张卡片都拿不到间距、
+   视觉上会挤成一团。改为对多卡堆叠页的直接子元素统一给 16px，el-card 与
+   el-row 两种块都覆盖到。 */
+.kk-page--grow > * + * {
+  margin-top: var(--kk-space-lg);
+}
+
+/* 同页相邻卡片垂直间距（el-card 默认无 margin） */
 .kk-card + .kk-card {
-  margin-top: 16px;
+  margin-top: var(--kk-space-lg);
 }
 
 /* 卡片头工具行：左标题右操作，窄屏自动换行 */
 .kk-toolbar {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: var(--kk-space-md);
   align-items: center;
   justify-content: space-between;
 }
@@ -200,7 +255,7 @@
 .kk-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: var(--kk-space-md);
   align-items: center;
 }
 
@@ -212,33 +267,42 @@
 }
 
 .kk-ml {
-  margin-left: 10px;
+  margin-left: var(--kk-space);
 }
 
 .kk-mt {
-  margin-top: 8px;
+  margin-top: var(--kk-space);
 }
 
-/* 详情页小节标题 */
+/* 区块分隔用的上间距（详情页小节之间）：与 .kk-mt 的紧凑 8px 区分开 */
+.kk-mt-lg {
+  margin-top: var(--kk-space-lg);
+}
+
+/* 详情页小节标题。上间距默认 0——它出现在两种位置：卡片首行（统计页、趋势页，
+   上间距由 el-card 的 body padding 负责）与详情页的图表/表格之后（分隔由
+   显式 .kk-mt-lg 承担）。若这里自带上间距，首行场景会多出一大块空白，而详情页
+   的分隔又会与 .kk-mt-lg 叠加成 24px。 */
 .kk-h4 {
-  margin: 12px 0 8px;
+  margin: 0 0 var(--kk-space);
   font-size: 14px;
   color: var(--el-text-color-primary);
 }
 
-/* 详情页：描述列表与图表 */
+/* 详情页：描述列表与图表。分隔全部交给后一块的上间距，避免相邻块各写
+   一半导致 8+16=24 这种拍脑袋值。 */
 .kk-desc {
-  margin-bottom: 8px;
+  margin-bottom: 0;
 }
 
 .kk-chart {
   height: 300px;
-  margin: 16px 0;
+  margin: var(--kk-space-lg) 0 0;
 }
 
 /* 总览页：表头统计数字 */
 .kk-stat span {
-  margin-right: 18px;
+  margin-right: var(--kk-space-lg);
   color: var(--el-text-color-regular);
 }
 
@@ -273,7 +337,7 @@
 /* 审计页：明细键值对 */
 .kk-kv {
   display: inline-block;
-  margin-right: 14px;
+  margin-right: var(--kk-space-lg);
   font-size: 12px;
   color: var(--el-text-color-regular);
 }
@@ -329,7 +393,7 @@
  * 条宽由内联 width 驱动，告警态直接换色，不再额外套一层 tag。 */
 .kk-meter {
   display: flex;
-  gap: 8px;
+  gap: var(--kk-space);
   align-items: center;
 }
 
@@ -403,7 +467,7 @@
 .kk-band__fleet {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 18px;
+  gap: var(--kk-space) var(--kk-space-lg);
   align-items: center;
   min-width: 0;
 }
@@ -429,7 +493,7 @@
 
 .kk-band__readout {
   display: inline-flex;
-  gap: 5px;
+  gap: var(--kk-space-sm);
   align-items: baseline;
   font-size: 12px;
   color: var(--el-text-color-secondary);

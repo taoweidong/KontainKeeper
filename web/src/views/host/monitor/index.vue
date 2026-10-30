@@ -122,10 +122,12 @@ const {
 
     <!-- 筛选条：条件全部下推服务端（QR-S36），列表与「导出清单」读同一份参数。
          类型 / 协议 来自 v4 元信息，只有服务端能筛——
-         关键字同时匹配主机名、镜像、系统与分组。 -->
+         关键字同时匹配主机名、镜像、系统与分组。
+         mt-2：与上方仪表带之间露一条 8px 灰缝（页面背景），与 audit/update 页
+         「白块 → 灰缝 → 白块」的上下节奏一致，不再白贴白连成一张大白板。 -->
     <el-form
       :inline="true"
-      class="kk-search-form bg-bg_color w-full pl-8 pt-3 overflow-auto"
+      class="kk-search-form bg-bg_color w-full mt-2 pl-8 pr-8 pt-3 overflow-auto"
     >
       <el-form-item label="关键字：">
         <el-input

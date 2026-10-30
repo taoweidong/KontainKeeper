@@ -347,7 +347,7 @@ onBeforeUnmount(() => {
       <div ref="chartEl" class="kk-chart" />
 
       <!-- 与总览页同族的响应式栅格（:xs/:lg）：1366 笔记本窄屏不再挤压 -->
-      <el-row :gutter="16">
+      <el-row :gutter="16" class="kk-mt-lg">
         <el-col :xs="24" :lg="12">
           <h4 class="kk-h4">磁盘</h4>
           <el-table :data="disks" size="small" max-height="220">
@@ -390,7 +390,7 @@ onBeforeUnmount(() => {
         </el-col>
       </el-row>
 
-      <el-row :gutter="16" class="kk-mt">
+      <el-row :gutter="16" class="kk-mt-lg">
         <el-col :xs="24" :lg="14">
           <h4 class="kk-h4">Top 进程（按 CPU）</h4>
           <el-table :data="procs" size="small" max-height="260">
@@ -418,7 +418,7 @@ onBeforeUnmount(() => {
         </el-col>
       </el-row>
 
-      <h4 class="kk-h4 kk-mt">最近命令</h4>
+      <h4 class="kk-h4 kk-mt-lg">最近命令</h4>
       <el-table :data="detail.commands" size="small" max-height="240">
         <el-table-column prop="id" label="ID" width="120" />
         <el-table-column prop="kind" label="类型" width="100" />

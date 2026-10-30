@@ -39,6 +39,11 @@ defineOptions({ name: "CommandWorkbench" });
 .kk-workbench__side {
   flex: 1;
   min-height: 0;
+
+  /* 顶部 12px 与右栏搜索条的 pt-3 同档（卡片顶边、搜索条顶边齐平）；
+     左侧 32px 与列表页横带（pl-8/pr-8）同宽——原先卡片 0px 贴死内容区左缘，
+     与同屏右栏的 32px 内缩不在一条线上（2026-10-31 收口）。 */
+  padding: var(--kk-space-md) 0 var(--kk-space-md) var(--kk-pad-x);
 }
 
 /* 左窄右宽：表单字段不长（命令输入框除外），结果表需要横向空间 */
@@ -55,6 +60,14 @@ defineOptions({ name: "CommandWorkbench" });
   flex: 1;
   min-width: 0;
   flex-direction: column;
+}
+
+/* 右栏高度契约（2026-10-31）：.kk-main 高度被压到栏高、且横带们都 flex-shrink:0
+   （kk.scss）时，内容超出必须以滚动条现身，而不是把搜索条压成一条缝——
+   1920×937 实测表单曾被压得只剩 padding-top 的 12px。列表页根部的 .kk-main
+   不受本条影响（那里高度是 auto，本就没得压）。 */
+.kk-col--result :deep(.kk-main) {
+  overflow: auto;
 }
 
 /* 只作用于左栏卡片：让表单卡跟着栏高填满，卡片下方不留空洞 */

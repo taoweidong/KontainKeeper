@@ -435,11 +435,13 @@ onMounted(() => {
 
 <style scoped lang="scss">
 .welcome {
-  padding: 0;
+  /* 横向 32px + 顶部 12px 的页面留白由全局 .kk-page--grow 统一供给
+     （与统计页 / 详情页同源），本页不再自带 padding。 */
 }
 
 .stat-row {
-  margin-bottom: 16px;
+  /* 与下一块的分隔由全局 `.kk-page--grow > * + *` 统一给 16px，
+     这里再写 margin-bottom 会叠成 32px。 */
 }
 
 .stat-card {
@@ -447,7 +449,7 @@ onMounted(() => {
   cursor: default;
 
   :deep(.el-card__body) {
-    padding: 18px 12px;
+    padding: var(--kk-space-lg) var(--kk-space);
   }
 
   &.clickable {
@@ -466,13 +468,13 @@ onMounted(() => {
   }
 
   .stat-label {
-    margin-top: 4px;
+    margin-top: var(--kk-space-sm);
     font-size: 14px;
     color: var(--el-text-color-secondary);
   }
 
   .stat-sub {
-    margin-top: 6px;
+    margin-top: var(--kk-space-sm);
     font-size: 12px;
     color: var(--el-text-color-placeholder);
   }
@@ -483,8 +485,12 @@ onMounted(() => {
 }
 
 // 第二行左右两栏底边对齐：el-row 是 flex，col 拉伸同高（取更高一侧），
-// 左栏卡片撑满列高，右栏纵排卡片用 gap 控距、末卡弹性补齐
+// 左栏卡片撑满列高，右栏纵排卡片用 gap 控距、末卡弹性补齐。
+// flex:1 让这一行吃掉 grow 根（min-height）撑出来的剩余高度：视口富余时
+// 卡片下缘贴到页脚，不再在页脚上方留一条灰白空带（2026-10-31 收口）。
 .content-row {
+  display: flex;
+  flex: 1;
   align-items: stretch;
 }
 
@@ -528,7 +534,7 @@ onMounted(() => {
 }
 
 .all-online {
-  padding: 14px 0;
+  padding: var(--kk-space-md) 0;
   font-size: 13px;
   color: var(--el-text-color-placeholder);
   text-align: center;
@@ -543,17 +549,17 @@ onMounted(() => {
 .quick-links {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: var(--kk-space-md);
 }
 
 .quick-link {
   display: flex;
   flex: 1;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--kk-space-sm);
   align-items: center;
   min-width: 80px;
-  padding: 16px 8px;
+  padding: var(--kk-space-lg) var(--kk-space);
   cursor: pointer;
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 6px;
@@ -572,9 +578,9 @@ onMounted(() => {
 
 .offline-host {
   display: flex;
-  gap: 8px;
+  gap: var(--kk-space);
   align-items: center;
-  padding: 4px 0;
+  padding: var(--kk-space-sm) 0;
   cursor: pointer;
 
   .pod-name {
@@ -589,7 +595,7 @@ onMounted(() => {
 .sys-row {
   display: flex;
   justify-content: space-between;
-  padding: 5px 0;
+  padding: var(--kk-space-sm) 0;
   font-size: 13px;
 
   span:first-child {

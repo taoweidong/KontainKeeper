@@ -475,8 +475,9 @@ onMounted(() => {
 </template>
 
 <style scoped>
-/* 刷新间隔下拉：宽度与其余页一致，但本页不用 el-select 的默认 100% 宽 */
+/* 刷新间隔下拉：宽度与其余页的 120px 档一致（总览/详情/更新页同款），
+   但本页不用 el-select 的默认 100% 宽 */
 .kk-interval {
-  width: 108px;
+  width: 120px;
 }
 </style>
