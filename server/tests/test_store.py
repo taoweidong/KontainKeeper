@@ -7,13 +7,16 @@ from sqlalchemy import insert, select
 
 from kk_server.models.helpers import _PWDF_ITERS, _PWDF_ITERS_LEGACY, _pwdf
 from kk_server.models.store import Store, admins
+from _kk_db import kk_db_url, pg_reset
+
 from kk_server.models.tables import commands, containers, heartbeats, hourly
 
 
 @pytest.fixture
 async def store(tmp_path):
-    st = Store(str(tmp_path / "t.db"))
+    st = Store(kk_db_url(tmp_path))
     await st.setup()
+    await pg_reset(st)
     yield st
     await st.close()
 

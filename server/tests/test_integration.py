@@ -97,6 +97,7 @@ def stack(tmp_path):
     import uvicorn
     from kk_agent import config as kk_config
     from kk_agent import main as agent_main
+    from _kk_db import kk_db_env, kk_db_url, kk_reset_sync
     from kk_server.main import create_app
 
     require_broker()
@@ -105,7 +106,7 @@ def stack(tmp_path):
     prefix = "kk/it%d" % random.randint(1000, 9999)
     host = "it-host-1"
     env = {
-        "KK_DB_PATH": str(tmp_path / "it.db"),
+        **kk_db_env(tmp_path),
         "KK_AGENT_IPS": "127.0.0.1",
         "KK_ADMIN_USER": "admin",
         "KK_ADMIN_PASS": "it-pass-123",
@@ -119,7 +120,11 @@ def stack(tmp_path):
     # logsetup 挂在 uvicorn.* 上的 InterceptHandler；且 log_level 非空时 uvicorn 还会
     # setLevel() 把这些 logger 钉死在显式级别上（级别过滤先于 handler，WARNING 被静默丢）。
     # 两者都是进程内残留，会让其后运行的 test_logsetup 假失败。
-    server = uvicorn.Server(uvicorn.Config(create_app(env), host="127.0.0.1",
+    # 共享 PG（KK_TEST_DB_URL）时的测试间隔离：每个测试一份干净库（truncate +
+    # 重放种子）。用独立 Store/loop 的 kk_reset_sync，绝不碰 app 自己的池。
+    kk_reset_sync(kk_db_url(tmp_path))
+    app = create_app(env)
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1",
                                            port=port, log_config=None))
     st = threading.Thread(target=server.run, daemon=True)
     st.start()
@@ -148,6 +153,10 @@ def stack(tmp_path):
 
     stop.set()
     at.join(timeout=8)
+    # uvicorn 线程也必须停：共享 PG（KK_TEST_DB_URL）时，残留服务端的连接会让
+    # 下一个测试的 _pg_tune ALTER TABLE 锁等待直到超时（server.started 断言失败）
+    server.should_exit = True
+    st.join(timeout=10)
     server.should_exit = True
     st.join(timeout=8)
 

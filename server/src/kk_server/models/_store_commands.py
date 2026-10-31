@@ -115,14 +115,17 @@ class _StoreCommandsMixin:
 
         一条 GROUP BY + 内存聚合，不按批次循环查——500 台规模下批次可能上百个。
         """
+        # ORDER BY 必须落在聚合列上：裸引用 created_at 在 PG 是 GroupingError
+        # （SQL 标准拒绝、SQLite/MySQL 宽容放行——2026-10-31 PG 首跑暴露）
+        latest_at = func.max(commands.c.created_at).label("created_at")
         rows = await self._all(
             select(commands.c.batch_id.label("batch_id"),
                    commands.c.status.label("status"),
                    func.count().label("n"),
-                   func.max(commands.c.created_at).label("created_at"))
+                   latest_at)
             .where(commands.c.batch_id != "")
             .group_by(commands.c.batch_id, commands.c.status)
-            .order_by(commands.c.created_at.desc()))
+            .order_by(latest_at.desc()))
         agg = {}
         for r in rows:
             b = agg.setdefault(r["batch_id"], {"batch_id": r["batch_id"], "total": 0,

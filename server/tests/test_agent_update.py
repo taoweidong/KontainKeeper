@@ -12,6 +12,8 @@ import types
 
 from fastapi.testclient import TestClient
 
+from _kk_db import kk_db_env, kk_db_url, pg_reset
+
 from kk_server.main import create_app
 
 ADMIN_USER = "admin"
@@ -28,7 +30,7 @@ def _make_app(tmp_path, extra_env=None):
         "KK_AGENT_IPS": "127.0.0.1",
         "KK_ADMIN_USER": ADMIN_USER,
         "KK_ADMIN_PASS": ADMIN_PASS,
-        "KK_DB_PATH": str(tmp_path / "au.db"),
+        **kk_db_env(tmp_path),
         "KK_AGENT_BIN_DIR": str(tmp_path / "bin"),
         "KK_UPDATE_MODE": "auto",
     }
@@ -192,7 +194,7 @@ async def test_agent_latest_returns_absolute_url_when_public_url_set(tmp_path):
     from kk_server.main import create_app
 
     app = create_app({
-        "KK_DB_PATH": str(tmp_path / "pub.db"),
+        **kk_db_env(tmp_path),
         "KK_WEB_DIR": str(tmp_path / "noweb"),
         "KK_PUBLIC_URL": "http://10.0.0.1:8443",
         "KK_UPDATE_MODE": "auto",
@@ -257,8 +259,9 @@ async def test_status_reason_recorded_via_bridge(tmp_path):
     from kk_server.services.mqtt_bridge import MqttBridge
 
     app = _make_app(tmp_path)
-    store = Store(str(tmp_path / "reason.db"))
+    store = Store(kk_db_url(tmp_path))
     await store.setup()
+    await pg_reset(store)
     try:
         bridge = MqttBridge(store, app.state.settings, app.state.agent_ips, proto_ver=3)
         bridge.cli = types.SimpleNamespace(
@@ -284,7 +287,7 @@ async def test_agent_latest_relative_url_without_public_url(tmp_path):
     """未配 KK_PUBLIC_URL 时行为不变（相对路径），不破坏既有部署。"""
     from kk_server.main import create_app
 
-    app = create_app({"KK_DB_PATH": str(tmp_path / "nopub.db"),
+    app = create_app({**kk_db_env(tmp_path),
                       "KK_WEB_DIR": str(tmp_path / "noweb"),
                       "KK_UPDATE_MODE": "auto"})
     store = app.state.store

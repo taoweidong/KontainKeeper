@@ -17,6 +17,8 @@ from loguru import logger as _logger
 
 from kk_server import logsetup
 from kk_server.config import load_settings
+from _kk_db import kk_db_env
+
 from kk_server.main import create_app
 
 
@@ -64,7 +66,7 @@ def _capture(level="TRACE"):
 
 async def test_setup_logging_idempotent_across_create_app(fresh_logsetup, tmp_path):
     """create_app 被反复调用，sink 数不得增长（否则日志重复 N 遍）。"""
-    env = {"KK_DB_PATH": str(tmp_path / "idem.db")}
+    env = {**kk_db_env(tmp_path)}
     app1 = create_app(env)
     app2 = None
     try:

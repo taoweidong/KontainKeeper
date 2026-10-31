@@ -14,6 +14,8 @@ import types
 import httpx
 import pytest
 
+from _kk_db import kk_db_env, kk_db_url, pg_reset
+
 from kk_server.config import load_settings, normalize_update_mode
 from kk_server.main import create_app
 from kk_server.models.store import Store
@@ -48,10 +50,11 @@ async def bridge_app(tmp_path):
     bridge，所以建完直接关闭原 store 并把 state 指向**我们的**实例（这样 dispatch 走的
     是我们注入的 FakePublish 客户端，每条发出的帧都能在 `bridge.cli.msgs` 里查到）。
     """
-    store = Store(str(tmp_path / "cu.db"))
+    store = Store(kk_db_url(tmp_path))
     await store.setup()
+    await pg_reset(store)
     settings = load_settings({
-        "KK_DB_PATH": str(tmp_path / "cu.db"),
+        **kk_db_env(tmp_path),
         "KK_MQTT_URL": "mqtt://broker:1883",
         "KK_TOPIC_PREFIX": "kk/v1",
         "KK_MQTT_CLIENT_ID": "kk-server",
@@ -63,7 +66,7 @@ async def bridge_app(tmp_path):
 
     app = create_app({
         "KK_ADMIN_USER": ADMIN, "KK_ADMIN_PASS": PASS,
-        "KK_DB_PATH": str(tmp_path / "cu.db"),
+        **kk_db_env(tmp_path),
         "KK_MQTT_URL": "mqtt://broker:1883",
         "KK_WEB_DIR": str(tmp_path / "noweb"),
     })

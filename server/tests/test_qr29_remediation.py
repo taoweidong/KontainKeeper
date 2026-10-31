@@ -17,6 +17,8 @@ from sqlalchemy import select, update
 import kk_server.controllers.auth as auth_mod
 import kk_server.services.mqtt_bridge as bridge_mod
 from kk_server.config import load_settings
+from _kk_db import kk_db_env, kk_db_url, pg_reset
+
 from kk_server.main import create_app
 from kk_server.models.helpers import _PWDF_ITERS, _PWDF_ITERS_LEGACY, _pwdf
 from kk_server.models.store import Store, admins
@@ -25,8 +27,9 @@ from kk_server.models.tables import hourly
 
 @pytest.fixture
 async def store(tmp_path):
-    st = Store(str(tmp_path / "t.db"))
+    st = Store(kk_db_url(tmp_path))
     await st.setup()
+    await pg_reset(st)
     yield st
     await st.close()
 
@@ -38,11 +41,12 @@ async def api(tmp_path):
     app = create_app({
         "KK_ADMIN_USER": "admin",
         "KK_ADMIN_PASS": "qr29-pass",
-        "KK_DB_PATH": str(tmp_path / "qr29.db"),
+        **kk_db_env(tmp_path),
         "KK_WEB_DIR": str(tmp_path / "noweb"),
     })
     store = app.state.store
     await store.setup()
+    await pg_reset(store)
     token = await store.create_session("admin")
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -333,11 +337,12 @@ async def test_publish_update_treats_bad_rc_as_failure(tmp_path):
     """队列满/未连接（rc 非 0）时升级帧没真正入队：台账要置 failed、
     upgrade_pushed 不得虚高。旧实现只看抛不抛异常，rc 静默吞掉后
     台账卡 pending 30 分钟。"""
-    store = Store(str(tmp_path / "s14.db"))
+    store = Store(kk_db_url(tmp_path))
     await store.setup()
+    await pg_reset(store)
     try:
         settings = load_settings({
-            "KK_DB_PATH": str(tmp_path / "s14.db"),
+            **kk_db_env(tmp_path),
             "KK_MQTT_URL": "mqtt://broker:1883",
             "KK_WEB_DIR": str(tmp_path / "noweb"),
         })
@@ -373,8 +378,9 @@ async def test_online_filter_matches_grace_semantics(store):
     await store.upsert_container("marked-off", "img", "0.1.0", 60)
     await store.set_online("marked-off", False)
     # stale：声称在线但 status_ts 远超宽限（Broker 崩溃没发 LWT 的僵尸在线）
-    await store.exec_sql("UPDATE kk_containers SET status_ts = ? WHERE pod = 'stale'",
-                         (int(time.time()) - 100000,))
+    # :name 绑定三方言通一（qmark 是 sqlite 专属 paramstyle，PG 上语法错误）
+    await store.exec_sql("UPDATE kk_containers SET status_ts = :t WHERE pod = 'stale'",
+                         {"t": int(time.time()) - 100000})
 
     assert await store.online_set() == {"fresh"}
 

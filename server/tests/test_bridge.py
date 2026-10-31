@@ -10,6 +10,8 @@ import types
 
 import pytest
 
+from _kk_db import kk_db_env, kk_db_url, pg_reset
+
 from kk_server.config import load_settings
 from kk_server.models.store import Store
 from kk_server.services.mqtt_bridge import MqttBridge
@@ -34,10 +36,11 @@ class FakePublish:
 @pytest.fixture
 async def wbridge(tmp_path):
     """配了 KK_AGENT_IPS 白名单的桥：白名单闸门（_on_message 入口）的回归锁。"""
-    store = Store(str(tmp_path / "wb.db"))
+    store = Store(kk_db_url(tmp_path))
     await store.setup()
+    await pg_reset(store)
     settings = load_settings({
-        "KK_DB_PATH": str(tmp_path / "wb.db"),
+        **kk_db_env(tmp_path),
         "KK_AGENT_IPS": WHITELIST,
         "KK_MQTT_URL": "mqtt://broker:1883",
         "KK_TOPIC_PREFIX": "kk/v1",
@@ -424,10 +427,11 @@ def hb_frame(host, interval, ip=GOOD_IP):
 
 
 async def _mk_bridge(tmp_path, env_extra=None):
-    store = Store(str(tmp_path / "iv.db"))
+    store = Store(kk_db_url(tmp_path))
     await store.setup()
+    await pg_reset(store)
     env = {
-        "KK_DB_PATH": str(tmp_path / "iv.db"),
+        **kk_db_env(tmp_path),
         "KK_MQTT_URL": "mqtt://broker:1883",
         "KK_WEB_DIR": str(tmp_path / "noweb"),
     }

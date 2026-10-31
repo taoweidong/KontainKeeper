@@ -224,7 +224,9 @@ def test_engine_kwargs_per_dialect(monkeypatch):
     from kk_server.models.store import _engine_kwargs
     monkeypatch.setenv("KK_DB_POOL_SIZE", "13")
     pg = _engine_kwargs("postgresql", "postgresql+asyncpg://u:p@h/kk")
-    assert pg["executemany_mode"] == "values_plus"
+    # asyncpg 不吃 executemany_mode（psycopg 系参数）：批量 INSERT 走 SA 2.0
+    # insertmanyvalues 自动拼单条多值，无需开关（2026-10-31 PG 实测改锁）
+    assert "executemany_mode" not in pg
     assert pg["pool_size"] == 13 and pg["max_overflow"] == 20
     assert pg["connect_args"]["server_settings"]["application_name"] == "kk-server"
     monkeypatch.delenv("KK_DB_POOL_SIZE")
@@ -235,14 +237,23 @@ def test_engine_kwargs_per_dialect(monkeypatch):
 
 def test_pg_tune_stmts_are_idempotent():
     """PG 启动调优语句：全部幂等形态（表级 SET / IF NOT EXISTS），
-    覆盖三张热表 + BRIN 索引——升级库与新建库都靠启动时执行这一份。"""
+    覆盖三张热表 + BRIN 索引 + 在途命令部分索引——升级库与新建库都靠
+    启动时执行这一份。"""
     from kk_server.models.store import _pg_tune_stmts
     stmts = _pg_tune_stmts()
     tables = {"kk_containers", "kk_heartbeats", "kk_commands"}
     assert {x.split()[2] for x in stmts if x.startswith("ALTER")} == tables
     brin = [x for x in stmts if "BRIN" in x]
-    assert len(brin) == 1 and "IF NOT EXISTS" in brin[0]
+    assert len(brin) == 2 and "kk_heartbeats" in brin[0] and "kk_audit" in brin[1]
     assert all("IF NOT EXISTS" in x for x in stmts if "CREATE INDEX" in x)
+    # 部分索引的谓词必须与 sweep_command_timeouts 的在途口径逐字同步：
+    # 谓词一变，索引就不再被清扫查询命中（优化器按谓词蕴含判定）
+    inflight = [x for x in stmts if "idx_cmd_inflight" in x]
+    assert len(inflight) == 1
+    assert "WHERE status IN ('pending', 'sent', 'running')" in inflight[0]
+    # 热更新表给 fillfactor：kk_containers 每帧心跳 upsert，留页内空间让 HOT 生效
+    containers = [x for x in stmts if x.startswith("ALTER TABLE kk_containers")][0]
+    assert "fillfactor = 80" in containers
 
 
 def test_heartbeats_brin_index_only_on_pg():

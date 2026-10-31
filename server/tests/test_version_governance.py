@@ -18,6 +18,8 @@ import pytest
 
 from kk_agent.config import AGENT_VER
 from kk_server import PROTO_VER
+from _kk_db import kk_db_env, pg_reset
+
 from kk_server.main import create_app
 from kk_server.models.version import count_outdated, version_lt
 
@@ -31,11 +33,12 @@ async def api(tmp_path):
     app = create_app({
         "KK_ADMIN_USER": ADMIN,
         "KK_ADMIN_PASS": PASS,
-        "KK_DB_PATH": str(tmp_path / "vg.db"),
+        **kk_db_env(tmp_path),
         "KK_WEB_DIR": str(tmp_path / "noweb"),
     })
     store = app.state.store
     await store.setup()
+    await pg_reset(store)
     token = await store.create_session(ADMIN)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"

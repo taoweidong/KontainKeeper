@@ -9,6 +9,8 @@ import time
 import httpx
 import pytest
 
+from _kk_db import kk_db_env, pg_reset
+
 from kk_server.main import create_app
 
 ADMIN = "admin"
@@ -20,11 +22,12 @@ async def api(tmp_path):
     app = create_app({
         "KK_ADMIN_USER": ADMIN,
         "KK_ADMIN_PASS": PASS,
-        "KK_DB_PATH": str(tmp_path / "api.db"),
+        **kk_db_env(tmp_path),
         "KK_WEB_DIR": str(tmp_path / "noweb"),
     })
     store = app.state.store
     await store.setup()
+    await pg_reset(store)
     # 绕过 lifespan：ASGI Transport 不触发启动事件，这里手工补上等价初始化
     token = await store.create_session(ADMIN)
     async with httpx.AsyncClient(

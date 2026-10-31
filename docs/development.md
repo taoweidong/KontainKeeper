@@ -99,6 +99,52 @@ KK_MQTT_URL=mqtt://127.0.0.1:1883 .venv/Scripts/python.exe -m kk_server
 
 - 默认数据库为当前目录 SQLite（`kk-server.db`），开发无需任何配置。
 
+### 4.1 数据库：本地默认 SQLite，正式环境 PostgreSQL 18（WSL）
+
+本地开发保持 SQLite（零配置）；正式/联调环境用 **PostgreSQL 18**。推荐把 PG 装在
+WSL 里（以 Ubuntu 22.04 为例，全程免管理员权限）：
+
+```bash
+# —— WSL 内：安装 PG18（PGDG 源）+ 建号建库，并注册成 systemd 服务常驻 ——
+apt-get install -y curl ca-certificates
+install -d /usr/share/postgresql-common/pgdg
+curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc   -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt jammy-pgdg main"   > /etc/apt/sources.list.d/pgdg.list
+apt-get update && apt-get install -y postgresql-18
+sudo -u postgres psql -c "CREATE ROLE kk LOGIN PASSWORD 'kk-pg-pass';"
+sudo -u postgres createdb -O kk kontainkeeper
+systemctl enable --now postgresql      # 常驻；WSL 空闲关机后随 systemd 自启
+```
+
+服务端口看 `pg_lsclusters`（本机 5432 被其它 PG 占用时，建簇脚本会自动落到
+5433）。Windows 侧连 WSL 的 PG：**mirrored 网络模式下 Hyper-V 防火墙默认拦
+Windows→WSL 的入站**，放行需要管理员；没有管理员权限就用仓里的用户态转发
+（走 wsl.exe interop stdio 通道，与网络模式无关）：
+
+```bash
+# Windows（仓库根目录）：15432 -> WSL 5433
+.venv/Scripts/python.exe scripts/pg_wsl_relay.py --listen 15432 --pg-port 5433
+
+# 服务端切 PG（连接串走 15432）
+set KK_DB_URL=postgresql://kk:kk-pg-pass@127.0.0.1:15432/kontainkeeper
+.venv/Scripts/python.exe -m kk_server
+```
+
+首次连 PG 启动时，`_pg_tune` 会自动落地 PG 专属优化：热表 autovacuum 调参、
+`kk_containers` fillfactor=80（心跳热更新走 HOT）、心跳/审计 ts 的 BRIN 索引、
+在途命令部分索引（`idx_cmd_inflight`，清扫查询从全表扫变常数命中）。
+
+**测试也可以整套打 PG**：设 `KK_TEST_DB_URL` 后，server/tests 全部夹具改用该库
+（每个测试 TRUNCATE + 重放种子隔离）；不设则维持各用各的 SQLite 文件：
+
+```bash
+set KK_TEST_DB_URL=postgresql://kk:kk-pg-pass@127.0.0.1:15432/kk_test
+.venv/Scripts/python.exe -m pytest server/tests -q
+```
+
+集成测试还需要真 Broker（`KK_IT_MQTT_URL`），无 Broker 时自动跳过（门禁允许
+恰好 5 条）。
+
 ## 5. 前端开发环境
 
 ```bash

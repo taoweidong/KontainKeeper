@@ -17,6 +17,8 @@ for p in (str(SERVER_SRC), str(AGENT_SRC)):
 import pytest
 
 from kk_server.config import load_settings
+from _kk_db import kk_db_env, kk_db_url, pg_reset
+
 from kk_server.models.store import Store
 from kk_server.services.mqtt_bridge import MqttBridge
 
@@ -39,10 +41,11 @@ class FakePublish:
 @pytest.fixture
 async def bridge(tmp_path):
     """默认 `update_mode=manual`、白名单空的桥：聚焦路由与策略门禁。"""
-    store = Store(str(tmp_path / "b.db"))
+    store = Store(kk_db_url(tmp_path))
     await store.setup()
+    await pg_reset(store)
     settings = load_settings({
-        "KK_DB_PATH": str(tmp_path / "b.db"),
+        **kk_db_env(tmp_path),
         "KK_MQTT_URL": "mqtt://broker:1883",
         "KK_TOPIC_PREFIX": "kk/v1",
         "KK_MQTT_CLIENT_ID": "kk-server",

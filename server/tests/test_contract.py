@@ -18,6 +18,8 @@ from pathlib import Path
 import httpx
 import pytest
 
+from _kk_db import kk_db_env, pg_reset
+
 from kk_server.main import create_app
 
 ADMIN = "admin"
@@ -78,11 +80,12 @@ async def api(tmp_path):
     app = create_app({
         "KK_ADMIN_USER": ADMIN,
         "KK_ADMIN_PASS": PASS,
-        "KK_DB_PATH": str(tmp_path / "contract.db"),
+        **kk_db_env(tmp_path),
         "KK_WEB_DIR": str(tmp_path / "noweb"),
     })
     store = app.state.store
     await store.setup()
+    await pg_reset(store)
     # ASGITransport 不触发 lifespan：建表与管理员初始化要手工补齐（同 test_api）
     await store.ensure_admin(ADMIN, PASS)
     token = await store.create_session(ADMIN)

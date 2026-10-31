@@ -33,18 +33,19 @@ def _engine_kwargs(dialect, url):
     """各方言的引擎参数（Store.__init__ 的方言汇聚点之一，纯函数可测）。
 
     PG（asyncpg）：
-    - executemany_mode="values_plus"：executemany 在驱动侧拼成**单条多值语句**
-      （每批 100 行）——批量下发 500 条命令的建行从 500 次 prepared 往返降到
-      5 次；默认模式下 executemany 是逐条执行，批量路径吃不到池化收益；
     - 连接池：桥接、API 与 janitor 共用，默认 5+10 对 500 台偏小；
       KK_DB_POOL_SIZE / KK_DB_MAX_OVERFLOW 可调（全部配置走 KK_* 的仓规）；
     - server_settings.application_name：pg_stat_activity 里能认出这是谁。
+    - **不传 executemany_mode**：values_plus/batch_plus 是 psycopg 系客户端绑参
+      驱动的参数，asyncpg（服务端绑参）create_engine 直接拒绝——2026-10-31
+      首次真跑 PG 全量测试时暴露（此前引擎从未在 PG 上实例化过，误写进了
+      装配注释）。asyncpg 的批量 INSERT 由 SQLAlchemy 2.0 insertmanyvalues
+      自动拼单条多值语句，本就不需要这个开关。
     SQLite：既有 connect_args（QR-S3）原样保留；MySQL：驱动不支持 values_plus
     形态，维持默认。
     """
     kwargs = {"pool_pre_ping": True}
     if dialect == "postgresql":
-        kwargs["executemany_mode"] = "values_plus"
         kwargs["pool_size"] = int(os.environ.get("KK_DB_POOL_SIZE") or 10)
         kwargs["max_overflow"] = int(
             os.environ.get("KK_DB_MAX_OVERFLOW") or 20)
@@ -65,12 +66,21 @@ def _engine_kwargs(dialect, url):
 #   默认 scale factor 0.2（20% 死元组才触发）对这种强度近乎永不清理，500 行的表
 #   按比例算更是如此——压到行数级让膨胀可控；kk_heartbeats 是追加+批量删，
 #   批删后的死元组同样要更勤的回收。
+# - fillfactor：kk_containers 是**更新最热的表**（每帧心跳 upsert 整行摘要），
+#   100 的默认填充率让每行更新必然拆页、HOT（同页更新，免索引维护）几乎不触发；
+#   压到 80 给页内留更新空间，HOT 比例上去后写放大与索引膨胀同步下降。
 # - BRIN 索引：ts 与写入物理相关，时间范围扫描（cleanup 挑批、聚合窗口）用
 #   KB 级索引替代 btree 的整棵树；CREATE INDEX IF NOT EXISTS 让存量 PG 库
-#   升级即得，无需重建表。
+#   升级即得，无需重建表。kk_audit 同型（只追加、ts 物理相关，保留期清理
+#   按批挑 ts < cutoff 的行）。
+# - 部分索引 idx_cmd_inflight：kk_commands 无界增长（500 台 × 每日数千条，
+#   百万行级），而 sweep_command_timeouts 每 30s 扫一遍「在途」子集——
+#   在途行数恒为常数（在途即离开谓词、离开索引），部分索引把它从全表扫
+#   变成常数级命中。谓词必须与 sweep 的 status IN (...) 逐字同步。
 _PG_TABLE_TUNE = {
     "kk_containers": ("autovacuum_vacuum_scale_factor = 0.05, "
-                      "autovacuum_analyze_scale_factor = 0.02"),
+                      "autovacuum_analyze_scale_factor = 0.02, "
+                      "fillfactor = 80"),
     "kk_heartbeats": "autovacuum_vacuum_scale_factor = 0.02",
     "kk_commands": "autovacuum_vacuum_scale_factor = 0.05",
 }
@@ -80,8 +90,14 @@ def _pg_tune_stmts():
     """PG 启动调优语句清单（纯函数，便于 compile 级回归）。"""
     stmts = ["ALTER TABLE %s SET (%s)" % (t, o)
              for t, o in _PG_TABLE_TUNE.items()]
-    stmts.append("CREATE INDEX IF NOT EXISTS idx_hb_ts_brin "
-                 "ON kk_heartbeats USING BRIN (ts)")
+    stmts += [
+        "CREATE INDEX IF NOT EXISTS idx_hb_ts_brin "
+        "ON kk_heartbeats USING BRIN (ts)",
+        "CREATE INDEX IF NOT EXISTS idx_audit_ts_brin "
+        "ON kk_audit USING BRIN (ts)",
+        "CREATE INDEX IF NOT EXISTS idx_cmd_inflight ON kk_commands (created_at) "
+        "WHERE status IN ('pending', 'sent', 'running')",
+    ]
     return stmts
 
 
@@ -226,9 +242,16 @@ class Store(_StoreAuthMixin, _StoreAuditMixin, _StoreCommandsMixin,
             return n
 
     async def exec_sql(self, sql, params=()):
-        """驱动级逃生舱：仅供测试回拨时间与一次性运维，业务代码请用上面的方法。"""
+        """驱动级逃生舱：仅供测试回拨时间与一次性运维，业务代码请用上面的方法。
+
+        参数经 text() 归一后执行（dict 单发 / list[dict] 批发都行）：:name 绑定
+        三方言通吃（asyncpg 翻译成 $n、sqlite3/MySQL 原生 named）。**不能走
+        exec_driver_sql**——那是驱动裸 SQL，paramstyle 各家不同（sqlite3 吃
+        :name，asyncpg 只吃 $n），同一份测试 SQL 无法跨库（2026-10-31 PG
+        首跑暴露）。"""
+        from sqlalchemy import text as _text
         async with self.engine.begin() as conn:
-            r = await conn.exec_driver_sql(sql, params)
+            r = await conn.execute(_text(sql), params)
             return r.rowcount
 
     async def _upsert(self, table, values, conflict_cols, update_cols):
