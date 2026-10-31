@@ -174,6 +174,14 @@
   padding-right: var(--kk-pad-x);
 }
 
+/* 表格条 60px 标题行去掉自带的左右 p-4：根节点已给 32px，再叠 16px 会让
+   「主机总览/审计日志」等标题落在 48px，与上方搜索条内容的 32px 差一档
+   （2026-10-31 逐页截图发现）。只清横向，纵向 16px 保留维持行高节奏。 */
+.kk-main > .bg-bg_color > div:first-child {
+  padding-left: 0;
+  padding-right: 0;
+}
+
 /* 选中横幅：取代已退役的 .kk-sticky-bar（sticky 的 scrollport 是 el-card，而它自己不滚，
    10-15 §3.2 实验 2 已证明放开 overflow 才能吸住、而 overflow 承担圆角裁剪）。
    自带 margin-bottom:8px、顶部无外边距，靠上一块自身的 margin-bottom 与之相接

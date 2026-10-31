@@ -133,10 +133,13 @@ onMounted(async () => {
           </div>
         </el-form-item>
         <el-form-item>
+          <!-- disabled 绑勾选数组 collectForm.items，不是可用清单 items：
+               清单非空但一项没勾时按钮必须灰着（2026-10-31 点击流测试发现，
+               原先绑错对象导致「全不勾仍可点」，只靠 submitCollect 的 toast 兜底）。 -->
           <el-button
             type="primary"
             :loading="submitting"
-            :disabled="!items.length"
+            :disabled="!collectForm.items.length"
             @click="submitCollect"
           >
             下发采集（{{ collectForm.pods.length }} 台）
