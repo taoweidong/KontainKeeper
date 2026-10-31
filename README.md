@@ -148,9 +148,11 @@ docs/                    deployment(生产部署) / development(开发搭建) / 
 uv sync --all-packages          # 安装服务端依赖 + dev 组
 
 # 0. 起一个 MQTT Broker（匿名开放；接入管控由服务端 KK_AGENT_IPS 白名单承担）
+#    生产镜像清单不含 eclipse-mosquitto：Broker 统一基于 ubuntu:latest 自建（kk-broker）
+docker build -f docker/broker/Dockerfile -t kk-broker:latest .
 docker run -d --name mosquitto -p 1883:1883 \
   -v $PWD/docker/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf \
-  eclipse-mosquitto:2
+  kk-broker:latest
 
 # 1. 启动服务端
 .venv/Scripts/python.exe -m kk_server      # 或 uv run kk-server

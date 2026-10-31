@@ -17,7 +17,7 @@
 | ④ | Broker 端到端冒烟 | `scripts/mqtt_e2e.py` | 单测证不到的语义：retain 只落 status、LWT 触发、离线命令由 Broker 排队、大输出分块重组 |
 | ⑤ | 前端构建与产物同步 | `pnpm lint`（棘轮门禁）+ `pnpm typecheck && pnpm build` | 产物同步进 `server/src/kk_server/web/`（镜像靠它带 UI），并检查**产物漂移**；lint 让格式漂移不再攒到无人看见（QR-2.2） |
 | ⑥ | Agent 二进制 | `agent/build/build_binary.sh` | PyInstaller 单文件二进制，供镜像内置与冒烟使用 |
-| ⑦ | 构建服务端镜像 | `docker/Dockerfile` | 构建上下文是仓库根（uv workspace 锁在根），并打上 git 修订标签 |
+| ⑦ | 构建服务端镜像 | `docker/Dockerfile` + `docker/broker/Dockerfile` | 构建上下文是仓库根（uv workspace 锁在根），并打上 git 修订标签；②里已自建 kk-broker（生产镜像清单不含 eclipse-mosquitto） |
 | ⑧ | 镜像部署冒烟 | `scripts/ci_smoke.sh` | **真起容器 + 真跑 Agent 二进制**走完整链路；跑不过就不许推送、不许部署 |
 | ⑨ | 推送镜像 | — | 仅当配了 `IMAGE_REGISTRY`；production 额外推 `latest` |
 | ⑩ | 部署 | `docker/docker-compose.prod.yml` | 目标机 `git reset --hard` 到本次提交 → `pull` → `up -d`；生产需人工确认 |
@@ -48,10 +48,10 @@
 | Docker | ≥ 24，含 `docker compose` 插件 | 起 CI Broker、构建镜像、跑镜像冒烟 |
 | git / curl | 任意新版 | — |
 | python3 | ≥ 3.12 可选 | 有它就用它；没有时 uv 会自行取 3.12（`.python-version` 指定） |
-| Node.js | `^20.19.0 \|\| >=22.13.0`（推荐 22，同 `web/.nvmrc`） | 版本过低流水线直接拒绝，避免产出不可复现的产物 |
+| Node.js | `^20.19.0 \|\| >=22.13.0`（生产镜像清单为 node-20，`web/.nvmrc` 固定 v20.19.0） | 版本过低流水线直接拒绝，避免产出不可复现的产物 |
 | pnpm | ≥ 9 | 缺则 `corepack enable && corepack prepare pnpm@9 --activate` |
-| uv | 不需要预装 | 缺失时流水线自动装进 `$WORKSPACE/.ci-tools`，不写节点全局环境 |
-| 出网 | PyPI / npm / astral.sh / 容器仓库 | 首次构建需要；缓存（`.ci-cache`）在 workspace 内跨构建复用 |
+| uv | 不需要预装 | 缺失时流水线经 pip 源自动装进 `$WORKSPACE/.ci-tools`，不写节点全局环境 |
+| 出网 | pip / npm / apt / 容器仓库 | 首次构建需要（Broker 镜像构建期在 ubuntu 上 apt 装 mosquitto）；缓存（`.ci-cache`）在 workspace 内跨构建复用 |
 
 节点标签由参数 `AGENT_LABEL` 指定（默认 `docker`）。
 
@@ -152,6 +152,7 @@ git add server/src/kk_server/web && git commit -m "chore(web): 同步前端构�
 | `AUTO_APPROVE` | false | 生产部署免人工确认 |
 | `PACK_OFFLINE` | false | 额外打包离线镜像 tar（较慢，拉取全部基础镜像） |
 | `FORCE_NIGHTLY` | false | 强制跑 ⑬ 真库 + 夜测（默认仅 `TimerTrigger` 每日触发，不随普通 push 跑） |
+| `MY_IMAGE` | 空 | MySQL 真库冒烟镜像；生产镜像清单无 MySQL，留空即跳过 MySQL 真连（方言 SQL 仍有编译级用例），节点有镜像时可填如 `mysql:8` |
 
 ## 6. 排障
 
@@ -167,7 +168,7 @@ git add server/src/kk_server/web && git commit -m "chore(web): 同步前端构�
 | ⑨ 失败 | 构建日志 | 仓库凭据错、仓库地址不可达、tag 无推权 |
 | ⑩ 失败 | 构建日志（SSH 输出） | 私钥不对、`DEPLOY_DIR` 不是克隆、目标机连不上仓库、`.env` 缺 `KK_AGENT_IPS`（production 自检会拒绝启动） |
 | ⑪ 失败 | 构建日志 | 服务端没起来、Broker 未连上、口令与目标机 `.env` 不一致 |
-| ⑬ 失败 | 构建日志 | PG/MySQL 真连建表扩列失败（方言缺陷）|
+| ⑬ 失败 | 构建日志 | PG 真连建表扩列失败（方言缺陷）；填了 `MY_IMAGE` 时 MySQL 同理 |
 | ⑬ 失败 | `reports/loadtest.log` | 连接成功率 < 98%、或服务端 `agents_online` < 连接成功数（桥接漏收）——脚本现在返回 1，不再只打印 |
 | ⑬ 失败 | `reports/bench_agent.log` | Agent 常驻 RSS ≥ 40MB、或有 Broker 却采不到内存（读不到=校验失明，同样红）|
 
@@ -251,8 +252,10 @@ ref 解析不到提交时红在 ① 并打印 `GIT_REF 在本仓库解析不到�
 uv sync --all-packages
 
 # 1) 后端测试（带真 Broker，期望 0 failed 0 skipped）
+#    生产镜像清单不含 eclipse-mosquitto：Broker 用 ubuntu 基底自建（同 ② 的做法）
+docker build -f docker/broker/Dockerfile -t kk-broker:latest .
 docker run -d --name kk-ci-broker -p 127.0.0.1:18830:1883 \
-  -v "$PWD/docker/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" eclipse-mosquitto:2
+  -v "$PWD/docker/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" kk-broker:latest
 KK_IT_MQTT_URL=mqtt://127.0.0.1:18830 .venv/bin/python -m pytest agent/tests server/tests -q
 
 # 2) Broker 语义冒烟
@@ -291,7 +294,7 @@ scripts/ci_smoke.sh kontainkeeper-server:local agent/dist/kk-agent
 | 服务端镜像构建与部署 | ✅ 已落地（⑦⑩⑪）——**超出 B5 原范围，属本次新增** |
 | 镜像级部署冒烟 | ✅ 新增（⑧，`scripts/ci_smoke.sh`） |
 | 前端产物漂移检查 | ✅ 新增（⑤） |
-| **真库 job**（PG/MySQL 真连建表扩列，见 ⑬） | ✅ 已落地（`scripts/db_smoke.py` + ⑬ 矩阵跑 PG:16 / MySQL:8） |
+| **真库 job**（PG/MySQL 真连建表扩列，见 ⑬） | ✅ 已落地（`scripts/db_smoke.py` + ⑬；PG 用生产镜像清单的 `postgres:18.6`，MySQL 因清单无对应镜像改为 `MY_IMAGE` 参数按需注入） |
 | **nightly 压测**（500 连接 + Agent RSS 基线，见 ⑬） | ✅ 已落地（`scripts/loadtest.py` / `bench_agent.py`） |
 
 > 真库与压测**已塞进同一条流水线**的 ⑬ 阶段，但用 `triggeredBy 'TimerTrigger'` 与 `FORCE_NIGHTLY`

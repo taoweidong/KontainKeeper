@@ -17,6 +17,8 @@ web/ Vue3 前端（REST 轮询 + ECharts，构建产物由 kk-server 托管）
 
 可靠性（连接/重连/离线排队/在线判定）整体交给 Broker，服务端只做「消息路由到 DB / 命令发布到主题」。
 
+**镜像合规（生产环境清单约束）**：环境可用镜像为 `python-3.12` / `node-20` / `nginx-1.20` / `postgres:18.6` / `redis-7.2.11` / `mongo-8.2.3` / `ubuntu_latest`——不含 eclipse-mosquitto，也没有 ghcr/astral 镜像。因此：Broker 统一由 `docker/broker/Dockerfile` 基于 ubuntu:latest 自建为 `kk-broker:latest`（apt 的 mosquitto 2.0.x，目录约定与 eclipse 镜像一致，compose/离线包/冒烟脚本默认引用它）；服务端镜像 `FROM python:3.12` + pip 装 uv（不再 COPY ghcr.io/astral-sh/uv）；`web/Dockerfile` 用 node:20 + nginx:1.20；CI 真库冒烟用 postgres:18.6。redis 与 mongo 本项目不使用。基础镜像都留了 ARG，内网 registry 命名不同时 `--build-arg` 覆盖。
+
 ## 目录与架构边界
 
 - `agent/src/kk_agent/` — 主机内客户端（**独立 UV 项目**）。**不再是纯标准库**：采集用 `psutil`（跨平台、8 个采集项），传输用 `paho-mqtt`（重连退避/保活/out-queue），可编译为单文件二进制嵌入镜像，常驻 RSS 口径 **25–35MB**。模块：`transport.py`（MQTT，替代已删的 `ws.py`+`conn.py`）、`collector.py`（psutil，含 `collect_items()` 按项采集）、`executor.py`、`updater.py`（自更新 sha256/HMAC）、`main.py`（事件循环）。
@@ -59,12 +61,14 @@ pnpm build       # 产物输出到 web/dist/
 
 ```bash
 # CI/CD（定义在根 Jenkinsfile，节点要求与凭据见 docs/ci-jenkins.md）
+# 生产镜像清单不含 eclipse-mosquitto：Broker 统一由 docker/broker/Dockerfile 基于 ubuntu:latest 自建
+docker build -f docker/broker/Dockerfile -t kk-broker:latest .
 docker run -d --name kk-ci-broker -p 127.0.0.1:18830:1883 \
-  -v "$PWD/docker/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" eclipse-mosquitto:2
+  -v "$PWD/docker/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" kk-broker:latest
 KK_IT_MQTT_URL=mqtt://127.0.0.1:18830 .venv/Scripts/python.exe -m pytest agent/tests server/tests -q  # 有 Broker 才是全 passed（无 Broker 时 5 条集成用例 skipped）
 KK_MQTT_URL=mqtt://127.0.0.1:18830 .venv/Scripts/python.exe scripts/mqtt_e2e.py                      # Broker 语义冒烟（LWT/离线队列）
 docker build -f docker/Dockerfile -t kontainkeeper-server:local .                                    # 上下文必须是仓库根
-bash scripts/ci_smoke.sh kontainkeeper-server:local agent/dist/kk-agent                              # 镜像级部署冒烟
+bash scripts/ci_smoke.sh kontainkeeper-server:local agent/dist/kk-agent                              # 镜像级部署冒烟（Broker 缺失时自动构建 kk-broker）
 ```
 
 > CI 用的临时 Broker 端口是 **18830**（不是 1883），避免与开发机上的 Broker 抢端口；

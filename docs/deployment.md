@@ -49,7 +49,7 @@
 | git | 任意新版 |
 | TLS 证书 | 生产**必须**：管理界面须经 HTTPS 反向代理暴露（见 §6） |
 | 目标主机侧 | 任意能跑 Docker 镜像的主机；制作管理镜像需要该基础镜像的拉取权限 |
-| 出网 | 管理侧构建镜像时需访问 PyPI（uv 安装依赖）；运行期不需要 |
+| 出网 | 管理侧构建镜像时需访问 pip 源（uv 装依赖）与 apt 源（Broker 镜像装 mosquitto）；独立部署前端时另需 npm 源。运行期都不需要 |
 
 ## 2. 获取代码
 
@@ -59,6 +59,12 @@ cd KontainKeeper
 ```
 
 ## 3. 部署 MQTT Broker（Mosquitto）
+
+> **镜像来源（生产镜像清单约束）**：环境提供的镜像为 python-3.12 / node-20 /
+> nginx-1.20 / postgres:18.6 / redis-7.2.11 / mongo-8.2.3 / ubuntu_latest——不含
+> eclipse-mosquitto。Broker 统一由 `docker/broker/Dockerfile` 基于 **ubuntu:latest**
+> 自建（apt 源的 mosquitto 2.0.x，满足架构要求的 2.x 语义），compose 里默认引用
+> `kk-broker:latest`。清单中的 redis / mongo 本项目不使用。
 
 推荐直接使用仓库自带的生产栈（`docker/docker-compose.prod.yml` 里的 `mosquitto` 服务，
 Broker 与 kk-server 一起起）。若 Broker 必须独立部署，参照
@@ -207,7 +213,8 @@ uv run kk-server                            # 监听 0.0.0.0:8443
 - **PostgreSQL / MySQL**：设置 `KK_DB_URL`，并在安装时带对应 extras
   （`--extra postgres` / `--extra mysql`）。三库方言差异已收在 store 的既定
   汇聚点（引擎装配 / `_upsert` / `_ensure_schema` / 批删助手）；CI 夜测已有真库冒烟
-  （`scripts/db_smoke.py`，Jenkinsfile ⑬ 矩阵跑 PG:16 / MySQL:8）覆盖建表/扩列/基础读写，
+  （`scripts/db_smoke.py`，Jenkinsfile ⑬ 跑生产镜像清单的 PG:18.6；MySQL 不在清单内，
+  由 `MY_IMAGE` 参数按需注入）覆盖建表/扩列/基础读写，
   上线前仍建议按真实规模在预发环境验证。
 - **PostgreSQL 专属调优（启动自动生效，无需手工执行）**：
   引擎侧 `executemany_mode="values_plus"`（批量建命令 500 条 → 5 次往返）与
@@ -226,9 +233,9 @@ uv run kk-server                            # 监听 0.0.0.0:8443
    下行 cmd 主题仅服务端账号可发布）：
 
    ```bash
-   docker run --rm -v "$PWD/docker/mosquitto/auth:/auth" eclipse-mosquitto:2 \
+   docker run --rm -v "$PWD/docker/mosquitto/auth:/auth" kk-broker:latest \
      mosquitto_passwd -c /auth/passwd kk-server      # 服务端账号，交互输入口令
-   docker run --rm -v "$PWD/docker/mosquitto/auth:/auth" eclipse-mosquitto:2 \
+   docker run --rm -v "$PWD/docker/mosquitto/auth:/auth" kk-broker:latest \
      mosquitto_passwd -b /auth/passwd kk-agent <AGENT口令>
    ```
 
@@ -263,6 +270,8 @@ cd .. && docker compose -f docker/docker-compose.prod.yml --env-file .env up -d 
 ```
 
 前端构建要求 Node ≥ 20.19（或 ≥ 22.13）、pnpm ≥ 9，且 `web/mock/` 目录存在（空目录即可）。
+生产镜像清单为 node-20，`web/.nvmrc` 固定 v20.19.0；独立前端镜像（`web/Dockerfile`）
+即用 node:20 构建、nginx:1.20 托管。
 
 ## 6. TLS 与反向代理（生产硬约束）
 
@@ -578,9 +587,9 @@ kk-server 可水平扩容，唯一硬性要求：**每实例 `KK_MQTT_CLIENT_ID`
 镜像清单、外网打包、内网加载的完整流程见 [docker/offline/README.md](../docker/offline/README.md)。
 
 要点速览：
-- 最小集合 = `kk-server_latest.tar.gz` + `eclipse-mosquitto_2.tar.gz` + Agent 产物 tar；
+- 最小集合 = `kk-server_latest.tar.gz` + `kk-broker_latest.tar.gz` + Agent 产物 tar；
 - 内网 compose 用 `docker/docker-compose.offline.yml`（与 `docker/docker-compose.prod.yml` 唯一差异：
-  kk-server 用本地 image 引用而非 build 段）；
+  产物镜像只做本地 image 引用而非 build 段）；
 - `docker/offline/manifest.txt` 是单一事实源，新增/删减镜像改这里 + `pack.sh`。
 
 ---

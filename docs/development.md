@@ -26,7 +26,7 @@ server/src/kk_server/  models/(store,tables,version) / services/(mqtt_bridge,sec
 web/src/               api/(业务 API 层) / views/(六个业务页) / router/modules/kk.ts(静态路由)
 proto/messages.md      双端通信协议契约（v3 MQTT：匿名 Broker + IP 白名单），改协议必读
 scripts/               build.sh(管理镜像) / mqtt_e2e.py(Broker 冒烟) / bench_agent.py / loadtest.py
-deploy/mosquitto/      匿名 Broker 配置（mosquitto.conf，开发/生产同源）
+docker/mosquitto/      匿名 Broker 配置（mosquitto.conf，开发/生产同源）+ 自建 Broker 镜像说明
 ```
 
 ## 1. 前置条件
@@ -35,7 +35,7 @@ deploy/mosquitto/      匿名 Broker 配置（mosquitto.conf，开发/生产同�
 |---|---|---|
 | Python | ≥ 3.12 | 后端两个工程的运行时 |
 | [uv](https://docs.astral.sh/uv/) | 最新 | 依赖管理与 workspace |
-| Node.js | ^20.19.0 或 ≥ 22.13.0 | 前端构建（`web/.nvmrc`） |
+| Node.js | ^20.19.0 或 ≥ 22.13.0 | 前端构建；生产镜像清单为 node-20，`web/.nvmrc` 固定 v20.19.0 |
 | pnpm | ≥ 9 | 前端包管理（`preinstall` 强制 only-allow pnpm） |
 | Docker | 任意新版 | 起开发用 Mosquitto；跑集成测试 |
 | git | 任意新版 | — |
@@ -55,12 +55,15 @@ uv sync --all-packages        # 服务端 + Agent + dev 组（pytest/httpx 等�
 
 ## 3. 启动开发用 Mosquitto（匿名，开箱即起）
 
-方式 A：单独跑 Broker（推荐，最轻量）：
+方式 A：单独跑 Broker（推荐，最轻量）。生产镜像清单不含 eclipse-mosquitto，
+Broker 统一用 `docker/broker/Dockerfile` 基于 ubuntu:latest 自建（apt 源的
+mosquitto 2.0.x，目录约定与 eclipse 镜像一致）：
 
 ```bash
+docker build -f docker/broker/Dockerfile -t kk-broker:latest .
 docker run -d --name mosquitto -p 1883:1883 \
-  -v $PWD/deploy/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf \
-  eclipse-mosquitto:2
+  -v $PWD/docker/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf \
+  kk-broker:latest
 ```
 
 方式 B：docker compose 起整套（Broker + 服务端，适合纯体验）：
