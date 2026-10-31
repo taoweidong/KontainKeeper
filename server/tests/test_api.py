@@ -505,9 +505,14 @@ def _clean_login_limiter():
 
 
 async def test_me_returns_session_user(api):
-    """有效 Bearer 会话返回会话主体本身——前端刷新页面的身份恢复读的就是它。"""
+    """有效 Bearer 会话返回会话主体本身——前端刷新页面的身份恢复读的就是它。
+
+    2026-10-31 RBAC：响应增 `roles`（前端受控菜单需要真实角色，此前前端硬编码
+    ["admin"]），同步改锁——契约快照见 test_contract_auth_shapes。
+    """
     r = await api.client.get("/api/me")
-    assert r.status_code == 200 and r.json() == {"username": ADMIN}
+    assert r.status_code == 200 and r.json() == {"username": ADMIN,
+                                                 "roles": ["admin"]}
 
 
 async def test_me_rejects_absent_or_bogus_credentials(api):

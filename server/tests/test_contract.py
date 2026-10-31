@@ -237,14 +237,19 @@ async def test_contract_health_and_stats(api):
 
 
 async def test_contract_auth_shapes(api):
-    """login/me 是前端会话模型的根：形状漂移=全站登录炸，精确快照。"""
+    """login/me 是前端会话模型的根：形状漂移=全站登录炸，精确快照。
+
+    2026-10-31 RBAC：login 增 `roles`、me 增 `roles` —— 前端用户 store 需要
+    真实角色渲染受控菜单（此前前端硬编码 ["admin"]）；这是有意识的破坏性
+    变更裁决，同步改锁。范围与口径见 models/_store_rbac.py 的模块注释。
+    """
     app_client = api.app.state  # noqa: F841 (占位说明：login 不带旧会话头，新开 client)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=api.app), base_url="http://test"
     ) as bare:
         r = await bare.post("/api/login", json={"username": ADMIN, "password": PASS})
         assert r.status_code == 200, r.text
-        assert_exact(r.json(), ["token", "username"], "POST /login")
+        assert_exact(r.json(), ["token", "username", "roles"], "POST /login")
         r = await bare.get("/api/me", headers={"Authorization": "Bearer " + r.json()["token"]})
         assert r.status_code == 200, r.text
-        assert_exact(r.json(), ["username"], "GET /me")
+        assert_exact(r.json(), ["username", "roles"], "GET /me")

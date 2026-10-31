@@ -126,9 +126,16 @@ async def login(body: LoginBody, request: Request):
         await store.add_audit(username, "login_fail",
                               {"fails": _LOGIN_FAILS.get(ukey, 0), "ip": ip})
         raise HTTPException(status_code=401, detail="用户名或密码错误")
+    # RBAC：禁用账号口令再对也拒绝（禁用校验放在口令之后，不向未持有口令者
+    # 泄露账号状态）；禁用路径的会话已在 user_update(enabled=False) 吊销
+    user = await store.get_user(username)
+    if user and not user["enabled"]:
+        await store.add_audit(username, "login_disabled", {"ip": ip})
+        raise HTTPException(status_code=403, detail="账号已被禁用")
     token = await store.create_session(username)
     await store.add_audit(username, "login_ok", {})
-    return {"token": token, "username": username}
+    return {"token": token, "username": username,
+            "roles": [user["role"] if user else "admin"]}
 
 
 @router.post("/logout")
@@ -149,6 +156,7 @@ async def logout(request: Request):
 
 
 @router.get("/me")
-async def me(user: CurrentUser):
+async def me(user: CurrentUser, request: Request):
     """会话身份：鉴权走 CurrentUser 依赖（QR-S2），漏配路由级依赖也会被参数兜住。"""
-    return {"username": user}
+    role = await request.app.state.store.get_user_role(user)
+    return {"username": user, "roles": [role or "admin"]}

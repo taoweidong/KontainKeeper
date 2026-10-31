@@ -38,6 +38,22 @@ CurrentUser = Annotated[str, Depends(current_user)]
 AgentIp = Annotated[str, Depends(agent_ip_auth)]
 
 
+async def require_admin(request: Request) -> str:
+    """RBAC 管理接口的门槛：登录 + admin 角色（权限范围=菜单控制，见 _store_rbac）。
+
+    角色判定读的是**当前库里的角色**而非登录时刻的快照——管理员被降级/禁用后，
+    手里的旧 token 立刻失去管理能力（禁用路径另有会话吊销，双保险）。
+    """
+    user = await current_user(request)
+    role = await request.app.state.store.get_user_role(user)
+    if role != "admin":
+        raise HTTPException(status_code=403, detail="requires admin role")
+    return user
+
+
+AdminUser = Annotated[str, Depends(require_admin)]
+
+
 # ---- v4 主机筛选参数（/api/containers 与 /api/export/hosts 共用同一套）----
 
 _TRUEISH = ("1", "true", "yes", "on")

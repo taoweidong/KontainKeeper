@@ -24,6 +24,7 @@ from ._store_commands import _StoreCommandsMixin
 from ._store_hosts import DISK_ALERT_PCT, _StoreHostsMixin
 from ._store_maintenance import _StoreMaintenanceMixin
 from ._store_metrics import _StoreMetricsMixin
+from ._store_rbac import _StoreRbacMixin
 from ..logsetup import get_logger
 
 log = get_logger("kk.store")
@@ -96,7 +97,8 @@ def _column_ddl(ddl, dialect):
 
 
 class Store(_StoreAuthMixin, _StoreAuditMixin, _StoreCommandsMixin,
-            _StoreMetricsMixin, _StoreHostsMixin, _StoreMaintenanceMixin):
+            _StoreMetricsMixin, _StoreHostsMixin, _StoreMaintenanceMixin,
+            _StoreRbacMixin):
     """异步存储门面（QR29-G 第二轮拆分）。
 
     基座只留三样东西：引擎装配（__init__/setup/close）、执行原语（_all/_one/
@@ -128,6 +130,8 @@ class Store(_StoreAuthMixin, _StoreAuditMixin, _StoreCommandsMixin,
             await self._ensure_schema(conn)
             if self.dialect == "postgresql":
                 await self._pg_tune(conn)
+        # RBAC 种子（幂等）：内置角色/菜单缺则补，管理员改过的授权不重置
+        await self.seed_rbac()
         log.info("storage ready: dialect=%s url=%s", self.dialect, self.safe_url())
 
     async def _ensure_schema(self, conn):

@@ -186,6 +186,42 @@ admins = Table(
     Column("salt", String(64), nullable=False),
     Column("pw_hash", String(128), nullable=False),
     Column("created", BigInteger, nullable=False),
+    # ---- RBAC（2026-10-31）：单角色口径（roles.name），权限只控菜单 ----
+    # enabled：禁用后登录 403 且会话即时吊销；存量行由 _ensure_schema 回落 1
+    Column("role", String(32), nullable=False, server_default="admin"),
+    Column("enabled", Integer, nullable=False, server_default="1"),
+)
+
+# 角色：name 是前端与 role_menus 的关联键；built_in 角色不可删，admin 角色的
+# 菜单集固定为全量（防止管理员把自己菜单改没后无从恢复——恢复手段只剩改库）。
+roles = Table(
+    "kk_roles", MD,
+    Column("name", String(32), primary_key=True),
+    Column("label", String(64), nullable=False),
+    Column("remark", String(200), nullable=False, server_default=""),
+    Column("built_in", Integer, nullable=False, server_default="0"),
+    Column("created", BigInteger, nullable=False),
+)
+
+# 菜单：与前端静态路由的 name 一一对应（页面集合固定，不支持新建路由型菜单——
+# 菜单管理只编辑展示元数据与启停，见 controllers/rbac.py 的模块注释）。
+menus = Table(
+    "kk_menus", MD,
+    Column("name", String(64), primary_key=True),
+    Column("parent", String(64), nullable=False, server_default=""),
+    Column("title", String(64), nullable=False),
+    Column("icon", String(64), nullable=False, server_default=""),
+    Column("rank", Integer, nullable=False, server_default="99"),
+    Column("show_link", Integer, nullable=False, server_default="1"),
+    Column("enabled", Integer, nullable=False, server_default="1"),
+    Column("built_in", Integer, nullable=False, server_default="0"),
+)
+
+# 角色↔菜单多对多；admin 角色不落行（allowed_menus 对 admin 直通全量）。
+role_menus = Table(
+    "kk_role_menus", MD,
+    Column("role", String(32), primary_key=True),
+    Column("menu", String(64), primary_key=True),
 )
 
 sessions = Table(
@@ -253,6 +289,9 @@ _ADD_COLUMNS = {
                       ("disk_pct", "DOUBLE PRECISION")],
     "kk_hourly": [("mem_pct_avg", "DOUBLE PRECISION"),
                   ("disk_avg", "DOUBLE PRECISION")],
+    # RBAC：存量管理员回落 admin 角色且保持启用（升级前后行为不变）
+    "kk_admins": [("role", "VARCHAR(32) DEFAULT 'admin'"),
+                  ("enabled", "INTEGER DEFAULT 1")],
 }
 
 # 既有库补索引清单：create_all 同样不给已存在的表建索引。
