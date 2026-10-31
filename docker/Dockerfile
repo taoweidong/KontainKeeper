@@ -1,16 +1,21 @@
 # KontainKeeper 服务端镜像
 #
+# 基础镜像对齐生产环境镜像清单（python-3.12 → python:3.12）；内网 registry 命名
+# 不同时用 --build-arg PYTHON_BASE=<内网镜像> 覆盖。
+#
 # 修 P2-14：改用 uv 安装，与仓库根 uv.lock 对齐（不再 pip 手装依赖导致与锁文件脱节）。
 #
 # 仓库是 uv workspace（根 pyproject.toml 声明 members=[server, agent]，锁在根 uv.lock），
 # 因此构建上下文必须是仓库根（docker-compose 里 dockerfile: docker/Dockerfile，context: .），
 # .dockerignore 已把前端 / node_modules 等大目录排除，上下文很小。
-FROM python:3.12-slim
+ARG PYTHON_BASE=python:3.12
+FROM ${PYTHON_BASE}
 
-# 装入 uv 官方静态二进制（无需联网安装 uv 本身）。
+# uv 经 pip 安装（pip 源可达）。不再用 ghcr.io/astral-sh/uv 的 COPY --from——
+# 那是对镜像清单之外第三方仓库的网络依赖，受限环境里构建会直接失败。
 # 注意：必须放进 PATH 标准目录——曾用「COPY 到 /uv + ENV PATH=/uv:...」，
 # wslc 构建器不吃多行 ENV 续行，RUN 阶段会 uv: not found。
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+RUN pip install --no-cache-dir uv
 # 镜像自带 python3.12，禁止 uv 再下载 Python
 ENV UV_PYTHON_DOWNLOADS=never
 

@@ -8,20 +8,26 @@
 | 镜像 | 级别 | 用途 | 官方地址 |
 |---|---|---|---|
 | `kk-server:latest`（构建产物） | core | 服务端（含前端托管产物） | 外网机 `docker build -f docker/Dockerfile` 产出，无公共地址 |
-| `eclipse-mosquitto:2` | core | MQTT Broker | https://hub.docker.com/_/eclipse-mosquitto |
+| `kk-broker:latest`（构建产物） | core | MQTT Broker（ubuntu:latest 基底 + apt mosquitto 2.0.x） | 外网机 `docker build -f docker/broker/Dockerfile` 产出，无公共地址 |
 | `<KK_AGENT_IMAGE>`（构建产物） | core | 叠加了 kk-agent 二进制的 vscode-server 镜像 | 基于私有基础镜像经 `scripts/build.sh` 产出，无公共地址 |
-| `python:3.12-slim` | build | kk-server 镜像的构建基础 | https://hub.docker.com/_/python |
-| `ghcr.io/astral-sh/uv:latest` | build | kk-server 构建期 `COPY --from` 取 uv 二进制 | https://github.com/astral-sh/uv/pkgs/container/uv |
-| `node:20-alpine` / `nginx:stable-alpine` | opt | 仅 `web/Dockerfile` 独立部署前端时才需要（默认不需要，前端产物由服务端镜像托管） | https://hub.docker.com/_/node · https://hub.docker.com/_/nginx |
+| `python:3.12` | build | kk-server 镜像的构建基础（docker/Dockerfile 的 `ARG PYTHON_BASE`） | https://hub.docker.com/_/python |
+| `ubuntu:latest` | build | kk-broker 镜像的构建基础（docker/broker/Dockerfile 的 `ARG UBUNTU_BASE`） | https://hub.docker.com/_/ubuntu |
+| `node:20` / `nginx:1.20` | opt | 仅 `web/Dockerfile` 独立部署前端时才需要（默认不需要，前端产物由服务端镜像托管） | https://hub.docker.com/_/node · https://hub.docker.com/_/nginx |
 
 **级别说明**：`core` 是内网运行必需；`build` 仅外网构建机需要（产物 tar 已包含其内容，
 内网不重建就不需要）；`opt` 非常规场景。
 
-> 内网最小集合 = `kk-server_latest.tar.gz` + `eclipse-mosquitto_2.tar.gz` + agent 产物 tar。
+> 生产镜像清单（python-3.12 / node-20 / nginx-1.20 / postgres:18.6 / redis-7.2.11 /
+> mongo-8.2.3 / ubuntu_latest）不含 eclipse-mosquitto，Broker 统一用 ubuntu 基底自建；
+> 清单中的 redis / mongo 本项目不使用。内网 registry 命名不同时，构建期用
+> `--build-arg PYTHON_BASE/UBUNTU_BASE/NODE_BASE/NGINX_BASE` 覆盖基础镜像引用。
+>
+> 内网最小集合 = `kk-server_latest.tar.gz` + `kk-broker_latest.tar.gz` + agent 产物 tar。
 
 ## 2. 外网打包（有网机器，一次执行）
 
-前置：外网机装好 Docker，能访问 Docker Hub 与 GHCR；仓库源码已 checkout。
+前置：外网机装好 Docker，能访问容器镜像仓库、pip 源与 apt 源（kk-broker 构建期
+在 ubuntu 上 apt 安装 mosquitto）；仓库源码已 checkout。
 
 ```bash
 # 1) 构建 agent 叠加产物镜像（基础镜像为你的私有 vscode-server 镜像）
@@ -35,8 +41,8 @@ KK_AGENT_IMAGE=kk-vscode-server:2026-09 ./docker/offline/pack.sh
 产物在 `docker/offline/images/`：`*.tar.gz` + `SHA256SUMS`。
 
 无 Docker 的外网机备选：用 [skopeo](https://github.com/containers/skopeo)
-`skopeo copy docker://eclipse-mosquitto:2 docker-archive:eclipse-mosquitto_2.tar:eclipse-mosquitto:2`
-拉单镜像（产物镜像仍必须有 Docker 构建）。
+`skopeo copy docker://ubuntu:latest docker-archive:ubuntu_latest.tar:ubuntu:latest`
+拉基础镜像（kk-server / kk-broker 两个产物镜像仍必须有 Docker 构建）。
 
 ## 3. 归档入库
 

@@ -12,7 +12,14 @@
 
 services:
   mosquitto:
-    image: eclipse-mosquitto:2
+    # 生产镜像清单不含 eclipse-mosquitto：Broker 统一由 docker/broker/Dockerfile
+    # 基于 ubuntu:latest 自建（apt 的 mosquitto 2.0.x），配置/数据卷挂载路径不变。
+    image: ${BROKER_IMAGE:-kk-broker:latest}
+    build:
+      context: .
+      dockerfile: docker/broker/Dockerfile
+      args:
+        UBUNTU_BASE: ${KK_UBUNTU_BASE:-ubuntu:latest}
     ports:
       - "1883:1883"
     volumes:
@@ -24,6 +31,8 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
+      args:
+        PYTHON_BASE: ${KK_PYTHON_BASE:-python:3.12}
     # 开发用：匿名 Broker + 未配 KK_AGENT_IPS（白名单为空 = 允许所有上报）
     environment:
       KK_MQTT_URL: mqtt://mosquitto:1883

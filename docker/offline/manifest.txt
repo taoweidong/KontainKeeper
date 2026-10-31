@@ -6,16 +6,22 @@
 #   opt   = 可选（仅「独立部署前端镜像」等非常规场景需要）
 #
 # 注意：tag 必须与引用处保持一致——
-#   eclipse-mosquitto:2 对应 docker-compose.prod.yml / docker-compose.offline.yml；
-#   python:3.12-slim、ghcr.io/astral-sh/uv:latest 对应 docker/Dockerfile；
-#   node:20-alpine、nginx:stable-alpine 对应 web/Dockerfile（默认不走该文件，产物由服务端托管）。
+#   kk-broker:latest 对应 docker-compose.prod.yml / docker-compose.offline.yml 的 mosquitto 服务，
+#     由 docker/broker/Dockerfile 基于 ubuntu:latest 构建（生产镜像清单不含 eclipse-mosquitto）；
+#   python:3.12 对应 docker/Dockerfile（ARG PYTHON_BASE 默认值）；
+#   ubuntu:latest 对应 docker/broker/Dockerfile（ARG UBUNTU_BASE 默认值）；
+#   node:20、nginx:1.20 对应 web/Dockerfile（默认不走该文件，产物由服务端托管）。
+#
+# 镜像清单对齐（生产环境可用镜像）：python-3.12 → python:3.12；node-20 → node:20；
+#   nginx-1.20 → nginx:1.20；postgres:18.6 / redis-7.2.11 / mongo-8.2.3 / ubuntu_latest 为
+#   环境提供的其余基础镜像——redis 与 mongo 本项目不使用。
 
-eclipse-mosquitto:2|eclipse-mosquitto_2.tar.gz|core
+kk-broker:latest|kk-broker_latest.tar.gz|core
 kk-server:latest|kk-server_latest.tar.gz|core
-python:3.12-slim|python_3.12-slim.tar.gz|build
-ghcr.io/astral-sh/uv:latest|astral-sh_uv_latest.tar.gz|build
-node:20-alpine|node_20-alpine.tar.gz|opt
-nginx:stable-alpine|nginx_stable-alpine.tar.gz|opt
+python:3.12|python_3.12.tar.gz|build
+ubuntu:latest|ubuntu_latest.tar.gz|build
+node:20|node_20.tar.gz|opt
+nginx:1.20|nginx_1.20.tar.gz|opt
 
 # agent 叠加产物镜像（基础镜像为私有 vscode-server 镜像，无公共地址）：
 # 由 scripts/build.sh 在外网机构建，打包时用环境变量注入 tag，例如：

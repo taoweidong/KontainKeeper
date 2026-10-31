@@ -14,9 +14,11 @@ cd "$(dirname "$0")/../.."
 OUT="docker/offline/images"
 mkdir -p "$OUT"
 
-# 1. 构建服务端产物镜像（core）
+# 1. 构建产物镜像（core）：服务端 + Broker
 echo "== build kk-server:latest =="
 docker build -f docker/Dockerfile -t kk-server:latest .
+echo "== build kk-broker:latest（ubuntu:latest 基底 + apt mosquitto，构建期需 apt 源可达）=="
+docker build -f docker/broker/Dockerfile -t kk-broker:latest .
 
 # 2. 按 manifest 拉取外部镜像并保存
 save_one() {  # $1=image  $2=file  $3=level
@@ -26,7 +28,8 @@ save_one() {  # $1=image  $2=file  $3=level
     *) echo "!! 未知级别 $3（$1）"; exit 1 ;;
   esac
   echo "== pull & save $1 =="
-  if [ "$1" != "kk-server:latest" ]; then
+  # 产物镜像（kk-server / kk-broker）本地刚构建过，不走 docker pull
+  if [ "$1" != "kk-server:latest" ] && [ "$1" != "kk-broker:latest" ]; then
     docker pull --platform linux/amd64 "$1"
   fi
   docker save "$1" | gzip > "$OUT/$2"

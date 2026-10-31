@@ -9,7 +9,9 @@
 
 services:
   mosquitto:
-    image: eclipse-mosquitto:2
+    # kk-broker:latest 由外网构建机经 pack.sh 打进离线包（ubuntu:latest 基底 + apt mosquitto），
+    # load.sh 导入后直接引用，内网不做任何构建。
+    image: kk-broker:latest
     ports:
       - "1883:1883"
     volumes:

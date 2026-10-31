@@ -2,6 +2,18 @@
 
 KontainKeeper 把「连接可靠性 / 离线排队 / 在线判定」整体交给 Mosquitto 2.x。
 
+## Broker 镜像来源
+
+生产镜像清单（python-3.12 / node-20 / nginx-1.20 / postgres:18.6 / redis-7.2.11 /
+mongo-8.2.3 / ubuntu_latest）不含 eclipse-mosquitto，Broker 统一用 `docker/broker/Dockerfile`
+基于 **ubuntu:latest** 自建：apt 源的 mosquitto 2.0.x，满足所需的 2.x 语义
+（匿名开放 / LWT / retain 持久化 / QoS1 离线队列），目录约定与 eclipse 镜像一致，
+compose 只引用 `kk-broker:latest`：
+
+```bash
+docker build -f docker/broker/Dockerfile -t kk-broker:latest .
+```
+
 ## 单一配置
 
 `mosquitto.conf` 同时用于开发与生产（`docker-compose.yml` / `docker-compose.prod.yml`
