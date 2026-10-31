@@ -68,6 +68,8 @@ pipeline {
                description: '额外打包离线镜像 tar（内网无网部署用，会拉取全部基础镜像，较慢）')
         booleanParam(name: 'FORCE_NIGHTLY', defaultValue: false,
                description: '强制跑 ⑬ 真库 + 夜测（默认仅 TimerTrigger 每日触发，不随普通 push 跑）')
+        string(name: 'MY_IMAGE', defaultValue: '',
+               description: 'MySQL 真库冒烟镜像。生产镜像清单无 MySQL：留空即跳过 MySQL 真连冒烟（方言 SQL 仍有编译级用例覆盖）；节点确有 MySQL 镜像时可填如 mysql:8')
     }
 
     environment {
@@ -83,7 +85,9 @@ pipeline {
         IMAGE_NAME         = 'kontainkeeper-server'
         // 与 docker/offline/pack.sh、docker/docker-compose.offline.yml 约定的本地标签保持一致
         OFFLINE_IMAGE      = 'kk-server:latest'
-        BROKER_IMAGE       = 'eclipse-mosquitto:2'
+        // 生产镜像清单不含 eclipse-mosquitto：Broker 统一由 docker/broker/Dockerfile
+        // 基于 ubuntu:latest 自建（②里构建），与 compose 的默认引用一致
+        BROKER_IMAGE       = 'kk-broker:latest'
         BROKER_CT          = 'kk-ci-broker'
         CI_MQTT_PORT       = "${params.CI_MQTT_PORT}"
         CI_MQTT_URL        = "mqtt://127.0.0.1:${params.CI_MQTT_PORT}"
@@ -184,16 +188,30 @@ fi
 
 node_major="$(node -p 'process.versions.node.split(".")[0]')"
 if [ "$node_major" -lt 20 ]; then
-  echo "!! node 版本过低：$(node --version)（前端要求 ^20.19 || >=22.13，推荐 22，与 web/.nvmrc 一致）"
+  echo "!! node 版本过低：$(node --version)（前端要求 ^20.19 || >=22.13；生产镜像清单为 node-20，web/.nvmrc 固定 v20.19.0）"
   exit 1
 fi
 
-# uv 缺失就装进 workspace（不写节点全局环境）：Astral 官方安装脚本
+# uv 缺失就装进 workspace（不写节点全局环境）：优先经 pip 源安装——
+# 不再直接走 astral.sh 安装脚本（少一个清单外网络依赖）；pip/venv 不可用时才回退脚本
 if ! command -v uv >/dev/null 2>&1; then
-  echo ">> 节点无 uv，装入 $CI_TOOLS"
+  echo ">> 节点无 uv，装入 $CI_TOOLS（优先 pip 源）"
   mkdir -p "$CI_TOOLS"
-  UV_INSTALL_DIR="$CI_TOOLS" UV_NO_MODIFY_PATH=1 \
-    bash -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'
+  if python3 -m venv "$CI_TOOLS/uv-venv" 2>/dev/null \
+     && "$CI_TOOLS/uv-venv/bin/pip" install --quiet uv; then
+    ln -sf "$CI_TOOLS/uv-venv/bin/uv" "$CI_TOOLS/uv"
+  else
+    echo ">> python3 缺 venv/pip，退回 Astral 安装脚本"
+    UV_INSTALL_DIR="$CI_TOOLS" UV_NO_MODIFY_PATH=1 \
+      bash -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'
+  fi
+fi
+
+# Broker 镜像：生产镜像清单不含 eclipse-mosquitto，按 docker/broker/Dockerfile
+# 基于 ubuntu:latest 自建（apt 源装 mosquitto 2.0.x）；②只建一次，③④⑧⑬复用
+if ! docker image inspect "$BROKER_IMAGE" >/dev/null 2>&1; then
+  echo ">> 节点没有 $BROKER_IMAGE，从 docker/broker/Dockerfile 构建"
+  docker build -f docker/broker/Dockerfile -t "$BROKER_IMAGE" .
 fi
 
 echo ">> docker  : $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo unknown)"
@@ -422,12 +440,18 @@ scripts/ci_smoke.sh "$FULL_IMAGE" "$AGENT_BIN_PATH" \
 set -euo pipefail
 printf '%s' "$REG_PASS" | docker login "$REGISTRY_HOST" -u "$REG_USER" --password-stdin
 docker push "$FULL_IMAGE"
+# Broker 镜像与 kk-server 配对推送（生产镜像清单无 mosquitto，目标机不会自己有 kk-broker）
+BROKER_FULL="${REGISTRY}/kk-broker:${IMAGE_TAG}"
+docker tag "$BROKER_IMAGE" "$BROKER_FULL"
+docker push "$BROKER_FULL"
 if [ "$ENVIRONMENT" = "production" ]; then
   docker tag "$FULL_IMAGE" "${REGISTRY}/${IMAGE_NAME}:latest"
   docker push "${REGISTRY}/${IMAGE_NAME}:latest"
+  docker tag "$BROKER_IMAGE" "${REGISTRY}/kk-broker:latest"
+  docker push "${REGISTRY}/kk-broker:latest"
 fi
 docker logout "$REGISTRY_HOST" >/dev/null 2>&1 || true
-echo ">> 已推送 $FULL_IMAGE"
+echo ">> 已推送 $FULL_IMAGE 与 $BROKER_FULL"
 '''
                 }
             }
@@ -459,8 +483,12 @@ remote() { ssh $SSH_OPTS -i "$DEPLOY_KEY" "$TARGET" "$@"; }
   printf 'KK_ADMIN_USER=%s\n' "$ADMIN_USER"
   printf 'KK_ADMIN_PASS=%s\n' "$KK_ADMIN_PASS_VAL"
   printf 'KK_TOPIC_PREFIX=%s\n' "$TOPIC_PREFIX"
-  # 用镜像仓库时必须显式指定待部署镜像（prod compose 的 image 支持该变量）
-  [ -n "$REGISTRY" ] && printf 'KK_SERVER_IMAGE=%s\n' "$FULL_IMAGE"
+  # 用镜像仓库时必须显式指定待部署镜像（prod compose 的 image 支持该变量）：
+  # 服务端 + Broker 成对下发，目标机 pull 即可，不依赖目标机有 ubuntu/apt 能力
+  if [ -n "$REGISTRY" ]; then
+    printf 'KK_SERVER_IMAGE=%s\n' "$FULL_IMAGE"
+    printf 'BROKER_IMAGE=%s\n' "${REGISTRY}/kk-broker:${IMAGE_TAG}"
+  fi
 } | remote "umask 077; mkdir -p '$DEPLOY_DIR'; cat > '$DEPLOY_DIR/.env'"
 echo ">> 已写入目标机 .env（未回显内容）"
 '''
@@ -574,22 +602,30 @@ ls -lh docker/offline/images
             steps {
                 sh '''#!/usr/bin/env bash
 set -euo pipefail
-# 真库验证：test_dialects 只编译 SQL 不连库，PG/MySQL 的排序规则、标识符折叠
-# 只在真连时才暴露。这里起两个真实实例，跑 scripts/db_smoke.py 真连一次。
-# dialects 矩阵可能一次跑出若干真实缺陷，预留修复余量，别指望「配个 job 就绿」。
+# 真库验证：test_dialects 只编译 SQL 不连库，排序规则、标识符折叠只在真连时才暴露。
+# 这里起真实实例，跑 scripts/db_smoke.py 真连一次。
+# PG 用生产镜像清单的 postgres:18.6；MySQL 不在清单内——MY_IMAGE 留空即跳过
+# （方言差异仍由 test_dialects 编译级用例覆盖），节点有 MySQL 镜像时填入即恢复矩阵。
 PG_CT="kk-ci-pg"; MY_CT="kk-ci-my"
 docker rm -f "$PG_CT" "$MY_CT" >/dev/null 2>&1 || true
-docker run -d --name "$PG_CT" -p 127.0.0.1:15432:5432 -e POSTGRES_PASSWORD=kk -e POSTGRES_DB=kk postgres:16 >/dev/null
-docker run -d --name "$MY_CT" -p 127.0.0.1:13306:3306 -e MYSQL_ROOT_PASSWORD=kk -e MYSQL_DATABASE=kk -e MYSQL_USER=kk -e MYSQL_PASSWORD=kk mysql:8 >/dev/null
+docker run -d --name "$PG_CT" -p 127.0.0.1:15432:5432 -e POSTGRES_PASSWORD=kk -e POSTGRES_DB=kk postgres:18.6 >/dev/null
+PORTS="15432"
+if [ -n "${MY_IMAGE:-}" ]; then
+  docker run -d --name "$MY_CT" -p 127.0.0.1:13306:3306 -e MYSQL_ROOT_PASSWORD=kk -e MYSQL_DATABASE=kk -e MYSQL_USER=kk -e MYSQL_PASSWORD=kk "$MY_IMAGE" >/dev/null
+  PORTS="$PORTS 13306"
+fi
 for _ in $(seq 1 90); do
-  python3 -c "import socket;[socket.create_connection(('127.0.0.1',p),2) for p in (15432,13306)]" 2>/dev/null && break
+  python3 -c "import socket;[socket.create_connection(('127.0.0.1',p),2) for p in ($PORTS)]" 2>/dev/null && break
   sleep 1
 done
 
 uv sync --all-packages --extra postgres --extra mysql
-for url in \\
-  "postgresql+asyncpg://kk:kk@127.0.0.1:15432/kk" \\
-  "mysql+aiomysql://kk:kk@127.0.0.1:13306/kk" ; do
+URLS="postgresql+asyncpg://kk:kk@127.0.0.1:15432/kk"
+if [ -n "${MY_IMAGE:-}" ]; then
+  URLS="$URLS
+mysql+aiomysql://kk:kk@127.0.0.1:13306/kk"
+fi
+for url in $URLS; do
   # 库口令不进构建日志（仓库红线：日志不得含凭据），这里只打印掩码后的 URL
   echo ">> dialects smoke: $(printf '%s' "$url" | sed -E 's|//[^@]*@|//***@|')"
   KK_DB_URL="$url" .venv/bin/python scripts/db_smoke.py

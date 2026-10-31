@@ -4,7 +4,7 @@ v3 模型（匿名 Broker + 服务端白名单）：模拟 Agent 只发 status �
 服务端未配 KK_AGENT_IPS 时放行全部。
 
 前置：
-  1) 本机 1883 端口有 Mosquitto（docker run -d -p 1883:1883 eclipse-mosquitto:2）
+  1) 本机 1883 端口有 Mosquitto（kk-broker:latest，见 docker/broker/Dockerfile）
   2) 先起服务端: KK_MQTT_URL=mqtt://127.0.0.1:1883 python -m kk_server
 
 用法:

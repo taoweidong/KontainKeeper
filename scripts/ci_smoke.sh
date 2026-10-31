@@ -13,7 +13,9 @@
 #   SMOKE_HTTP_PORT / SMOKE_MQTT_PORT  宿主机映射端口（默认各取一个空闲端口，避免与开发中的服务撞车）
 #   SMOKE_ADMIN_PASS                   冒烟管理员口令（默认随机；**不能**是默认 admin123）
 #   SMOKE_TIMEOUT                      单步等待超时秒数（默认 90）
-#   BROKER_IMAGE                       Broker 镜像（默认 eclipse-mosquitto:2）
+#   BROKER_IMAGE                       Broker 镜像（默认 kk-broker:latest = docker/broker/Dockerfile
+#                                      基于 ubuntu:latest 自建；本地没有会自动构建。生产镜像清单
+#                                      不含 eclipse-mosquitto；有私有 mosquitto 镜像时可覆盖）
 #   SMOKE_KEEP=1                       保留容器与网络便于排查（默认自动清理）
 #
 # 退出码：0 = 全链路通过；非 0 = 有断言失败（清单已打印，容器日志已贴）。
@@ -26,7 +28,7 @@ AGENT_BIN="${2:-}"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-BROKER_IMAGE="${BROKER_IMAGE:-eclipse-mosquitto:2}"
+BROKER_IMAGE="${BROKER_IMAGE:-kk-broker:latest}"
 SMOKE_TIMEOUT="${SMOKE_TIMEOUT:-90}"
 SMOKE_ADMIN_USER="admin"
 SMOKE_ADMIN_PASS="${SMOKE_ADMIN_PASS:-kk-smoke-${RANDOM}${RANDOM}}"
@@ -194,6 +196,17 @@ trap cleanup EXIT INT TERM
 echo ">> 冒烟目标镜像：$IMAGE"
 docker image inspect "$IMAGE" >/dev/null 2>&1 || { echo "!! 镜像不存在：$IMAGE" >&2; exit 2; }
 echo ">> 端口：HTTP=$SMOKE_HTTP_PORT MQTT=$SMOKE_MQTT_PORT（均只绑 127.0.0.1）"
+
+# ---- 0. Broker 镜像：默认 kk-broker:latest，本地没有就现场构建 ----
+# 仅对默认值自动构建；显式指定的 BROKER_IMAGE 不存在直接报错，避免构建出错误标签。
+if ! docker image inspect "$BROKER_IMAGE" >/dev/null 2>&1; then
+  if [ "$BROKER_IMAGE" != "kk-broker:latest" ]; then
+    echo "!! Broker 镜像不存在：$BROKER_IMAGE" >&2
+    exit 2
+  fi
+  echo ">> 本地没有 kk-broker:latest，按 docker/broker/Dockerfile 构建（ubuntu:latest 基底 + apt mosquitto，需 apt 源可达）"
+  docker build -f docker/broker/Dockerfile -t kk-broker:latest .
+fi
 
 # ---- 1. 网络 + Broker ----
 docker network create "$NET" >/dev/null
