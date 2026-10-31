@@ -9,6 +9,9 @@ import {
   filterNoPermissionTree,
   formatFlatteningRoutes
 } from "../utils";
+import { cloneDeep } from "@pureadmin/utils";
+import { applyMenuMeta, filterMenusByAllowed } from "@/utils/kkMenu";
+import { useUserStoreHook } from "./user";
 import { useMultiTagsStoreHook } from "./multiTags";
 
 export const usePermissionStore = defineStore("pure-permission", {
@@ -23,13 +26,28 @@ export const usePermissionStore = defineStore("pure-permission", {
     cachePageList: []
   }),
   actions: {
-    /** 组装整体路由生成的菜单 */
+    /** 组装整体路由生成的菜单。
+     *
+     * 2026-10-31 RBAC：业务路由仍来自静态声明（constantMenus，组件真实引用），
+     * 但**可见性以后端允许集合为准**（user store 的 menus，initRouter 时拉取）——
+     * 先按允许集过滤、再把后端展示元数据（标题/图标/排序/显隐）合并进静态对象。
+     * menusLoaded=false（尚未拉到）时不过滤：这是「登录前/装配前」的瞬态，
+     * 路由守卫会在拉取完成后再做拦截，不会漏放行（见 router/index.ts）。
+     */
     handleWholeMenus(routes: any[]) {
+      const userStore = useUserStoreHook();
+      let source: any[] = this.constantMenus as any[];
+      if (userStore.menusLoaded) {
+        source = applyMenuMeta(
+          filterMenusByAllowed(cloneDeep(source) as any[], userStore.allowedMenuNames()),
+          userStore.menus
+        ) as any[];
+      }
       this.wholeMenus = filterNoPermissionTree(
-        filterTree(ascending(this.constantMenus.concat(routes)))
+        filterTree(ascending(source.concat(routes)))
       );
       this.flatteningRoutes = formatFlatteningRoutes(
-        this.constantMenus.concat(routes) as any
+        source.concat(routes) as any
       );
     },
     /** 监听缓存页面是否存在于标签页，不存在则删除 */

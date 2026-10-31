@@ -36,13 +36,15 @@ export type RefreshTokenResult = {
 
 /**
  * 登录：对接 KontainKeeper 后端 POST /api/login
- * 后端返回 {token, username}，这里适配成 pure-admin 期望的 {success, data: {...}}
+ * 后端返回 {token, username, roles}，这里适配成 pure-admin 期望的 {success, data: {...}}
  */
 export const getLogin = (data?: object) => {
   return http
-    .request<{ token: string; username: string }>("post", "/api/login", {
-      data
-    })
+    .request<{ token: string; username: string; roles?: Array<string> }>(
+      "post",
+      "/api/login",
+      { data }
+    )
     .then(res => {
       const expires = new Date(Date.now() + 12 * 3600 * 1000);
       return {
@@ -51,7 +53,8 @@ export const getLogin = (data?: object) => {
           avatar: "",
           username: res.username,
           nickname: res.username,
-          roles: ["admin"] as string[],
+          // RBAC（2026-10-31）：真实角色来自后端；旧后端无此字段时按 admin 兜底
+          roles: res.roles ?? (["admin"] as string[]),
           permissions: ["*:*:*"] as string[],
           accessToken: res.token,
           refreshToken: res.token,

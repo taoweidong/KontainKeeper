@@ -2,6 +2,9 @@ import Cookies from "js-cookie";
 import { getConfig } from "@/config";
 import NProgress from "@/utils/progress";
 import { buildHierarchyTree } from "@/utils/tree";
+import { collectRouteNames } from "@/utils/kkMenu";
+import { getAsyncRoutes } from "@/api/routes";
+import { useUserStoreHook } from "@/store/modules/user";
 import remainingRouter from "./modules/remaining";
 import { useMultiTagsStoreHook } from "@/store/modules/multiTags";
 import { usePermissionStoreHook } from "@/store/modules/permission";
@@ -117,6 +120,38 @@ export function resetRouter() {
 const whiteList = ["/login"];
 
 const { VITE_HIDE_HOME } = import.meta.env;
+
+/** RBAC 受控路由名集合（2026-10-31）：modules/*.ts 声明的业务路由。
+ *  后端菜单表与这些 name 一一对应；不在这个集合里的（登录/错误/重定向等
+ *  remaining 路由）不参与菜单控制，守卫直接放行。 */
+const managedRouteNames = collectRouteNames(routes.flat(Infinity) as any[]);
+
+/** 菜单级 RBAC 守卫（先于主守卫执行）：
+ *  - menusLoaded=false（尚未拉取）时先拉一次允许集合再判——硬刷新时主守卫
+ *    的装配分支随后仍会走自己的 initRouter/handleWholeMenus，这里只补「判」
+ *    所需的数据，不代替装配（保住刷新时主守卫里的标签页恢复逻辑）；
+ *  - 集合之外的业务路由一律 403（fail-closed：拉取失败 = 空集合 = 全拦）；
+ *  - /login 与未登录状态不拦（未登录由主守卫送去登录页）。
+ */
+router.beforeEach(async (to: ToRouteType, _from, next) => {
+  const userInfo = storageLocal().getItem<DataInfo<number>>(userKey);
+  if (!userInfo || to.path === "/login") {
+    next();
+    return;
+  }
+  const userStore = useUserStoreHook();
+  if (!userStore.menusLoaded) {
+    await getAsyncRoutes();
+  }
+  if (
+    managedRouteNames.has(to.name as string) &&
+    !userStore.allowedMenuNames().has(to.name as string)
+  ) {
+    next({ path: "/access-denied" });
+    return;
+  }
+  next();
+});
 
 router.beforeEach((to: ToRouteType, _from, next) => {
   to.meta.loaded = loadedPaths.has(to.path);

@@ -1,10 +1,11 @@
-/** KontainKeeper 业务路由：全部页面静态声明（6 个业务页 + 系统统计）。
-
-为什么把 `getAsyncRoutes` 改成返回空数组：服务端没有下发菜单的接口，
-dev 阶段靠 vite-plugin-fake-server + mock/asyncRoutes.ts 兜底，prod 打包后
-那个 fake server 不存在，会变成菜单渲染源（wholeMenus）为空、整页空白。
-改为静态后 dev 与 prod 行为一致——菜单来自这些 modules/*.ts。
-*/
+/** KontainKeeper 业务路由：页面组件全部静态声明（组件真实引用、含 params 路由）。
+ *
+ * 2026-10-31 RBAC：路由注册仍是静态的（不把后端数据当路由源），但**菜单可见性
+ * 来自后端**——/api/auth/menus 下发当前用户的允许集合（菜单表与这里的 name
+ * 一一对应，种子见 models/_store_rbac.py），permission store 据此过滤侧边栏、
+ * 路由守卫据此拦直连 URL（router/index.ts 的菜单级守卫）。
+ * 因此：这里的 name 改名必须同步 _store_rbac.py 的内置菜单种子。
+ */
 const Layout = () => import("@/layout/index.vue");
 
 export default [
@@ -114,6 +115,39 @@ export default [
         name: "SystemStats",
         component: () => import("@/views/system/index.vue"),
         meta: { title: "系统统计" }
+      }
+    ]
+  },
+  {
+    // 系统管理（RBAC，rank 5）：仅 admin 角色可见（菜单表种子不含 operator）。
+    // 用户/角色/菜单三页的接口服务端都挂 AdminUser 依赖，前端只是入口。
+    path: "/rbac",
+    name: "Rbac",
+    component: Layout,
+    redirect: "/rbac/users",
+    meta: {
+      icon: "ep/setting",
+      title: "系统管理",
+      rank: 5
+    },
+    children: [
+      {
+        path: "/rbac/users",
+        name: "SysUser",
+        component: () => import("@/views/system/user/index.vue"),
+        meta: { title: "用户管理" }
+      },
+      {
+        path: "/rbac/roles",
+        name: "SysRole",
+        component: () => import("@/views/system/role/index.vue"),
+        meta: { title: "角色管理" }
+      },
+      {
+        path: "/rbac/menus",
+        name: "SysMenu",
+        component: () => import("@/views/system/menu/index.vue"),
+        meta: { title: "菜单管理" }
       }
     ]
   }

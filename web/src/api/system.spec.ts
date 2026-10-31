@@ -1,14 +1,45 @@
-/** api/system.ts 与 api/routes.ts 的单元测试：健康/统计端点 + 静态菜单契约。
+/** api/system.ts 与 api/routes.ts 的单元测试：健康/统计端点 + RBAC 菜单装配契约。
  *
  *  锁住的语义：
  *  - `/api/health` 与 `/api/system/stats` 是无参 GET（欢迎页与系统页的唯一读数来源）；
  *  - `null`（后端明确说不知道）与 `0`（真读数）是两种语义，api 层一律不兜底（QR-W16）；
- *  - `getAsyncRoutes()` 恒返回空数组且不打后端——菜单完全静态是 prod 下不白屏的前提。
+ *  - 2026-10-31 RBAC（改锁依据）：getAsyncRoutes 从「恒空数组不打后端」改为
+ *    **拉取 /api/auth/menus 的允许集合**并写入 user store——路由记录仍返回空数组
+ *    （组件不来自后端），失败时 fail-closed（空集合），401 交给拦截器登出不拦。
+ *    旧语义（菜单完全静态）已由 RBAC 需求推翻，见 api/routes.ts 模块注释。
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const httpMock = vi.hoisted(() => ({ request: vi.fn() }));
 vi.mock("@/utils/http", () => ({ http: httpMock }));
+
+const userStore = vi.hoisted(() => {
+  const state = { menus: [] as any[], menusLoaded: false, roles: [] as string[] };
+  return {
+    state,
+    hook: () => ({
+      get menus() {
+        return state.menus;
+      },
+      get menusLoaded() {
+        return state.menusLoaded;
+      },
+      get roles() {
+        return state.roles;
+      },
+      SET_MENUS(m: any[]) {
+        state.menus = m;
+        state.menusLoaded = true;
+      },
+      SET_ROLES(r: string[]) {
+        state.roles = r;
+      }
+    })
+  };
+});
+vi.mock("@/store/modules/user", () => ({
+  useUserStoreHook: userStore.hook
+}));
 
 import { getHealth, getStats } from "./system";
 import { getAsyncRoutes } from "./routes";
@@ -16,6 +47,9 @@ import { getAsyncRoutes } from "./routes";
 beforeEach(() => {
   httpMock.request.mockReset();
   httpMock.request.mockResolvedValue({});
+  userStore.state.menus = [];
+  userStore.state.menusLoaded = false;
+  userStore.state.roles = [];
 });
 
 describe("getHealth", () => {
@@ -73,13 +107,37 @@ describe("getStats", () => {
   });
 });
 
-describe("getAsyncRoutes：菜单完全静态", () => {
-  it("同步返回 {success:true, data:[]}，不发任何请求（多次调用形状一致）", async () => {
-    const a = await getAsyncRoutes();
-    const b = await getAsyncRoutes();
+describe("getAsyncRoutes：RBAC 菜单装配", () => {
+  const menus = [
+    { name: "Home", title: "首页", icon: "ep/home-filled", rank: 0, show_link: true },
+    { name: "Hosts", title: "主机管理", icon: "ep/monitor", rank: 1, show_link: true }
+  ];
 
-    expect(a).toEqual({ success: true, data: [] });
-    expect(b).toEqual({ success: true, data: [] });
-    expect(httpMock.request).not.toHaveBeenCalled();
+  it("拉取 /api/auth/menus 写入 user store，路由记录仍返回空数组（组件不来自后端）", async () => {
+    httpMock.request.mockResolvedValue({ roles: ["operator"], menus });
+    const res = await getAsyncRoutes();
+
+    expect(res).toEqual({ success: true, data: [] });
+    expect(httpMock.request).toHaveBeenCalledWith("get", "/api/auth/menus");
+    expect(userStore.state.roles).toEqual(["operator"]);
+    expect(userStore.state.menus).toEqual(menus);
+    expect(userStore.state.menusLoaded).toBe(true);
+  });
+
+  it("非 401 失败 → fail-closed：置空允许集合并照常 resolve（不炸路由装配）", async () => {
+    httpMock.request.mockRejectedValue({ response: { status: 500 } });
+    const res = await getAsyncRoutes();
+
+    expect(res).toEqual({ success: true, data: [] });
+    expect(userStore.state.menus).toEqual([]);
+    expect(userStore.state.menusLoaded).toBe(true);
+  });
+
+  it("401 = 会话过期：不置 menusLoaded（交给拦截器登出跳登录），不做 fail-closed", async () => {
+    httpMock.request.mockRejectedValue({ response: { status: 401 } });
+    const res = await getAsyncRoutes();
+
+    expect(res).toEqual({ success: true, data: [] });
+    expect(userStore.state.menusLoaded).toBe(false);
   });
 });
