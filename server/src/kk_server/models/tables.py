@@ -203,8 +203,11 @@ roles = Table(
     Column("created", BigInteger, nullable=False),
 )
 
-# 菜单：与前端静态路由的 name 一一对应（页面集合固定，不支持新建路由型菜单——
-# 菜单管理只编辑展示元数据与启停，见 controllers/rbac.py 的模块注释）。
+# 菜单：**菜单树由数据库下发**（2026-10-31 RBAC 二阶段）——路由注册数据
+# （path / component）也在库里，前端 addAsyncRoutes 按 component 字符串走
+# glob 解析组件（分组固定 "Layout"）；name 是前后端关联主键。菜单管理仍只改
+# 展示元数据与启停，path/component 只读——改它们等于改路由契约，必须与
+# 前端 views 目录同步，不是运行期可编辑的东西（见 controllers/rbac.py）。
 menus = Table(
     "kk_menus", MD,
     Column("name", String(64), primary_key=True),
@@ -212,6 +215,9 @@ menus = Table(
     Column("title", String(64), nullable=False),
     Column("icon", String(64), nullable=False, server_default=""),
     Column("rank", Integer, nullable=False, server_default="99"),
+    Column("path", String(120), nullable=False, server_default=""),
+    # 组件视图路径（glob key，如 /src/views/host/monitor/index.vue）；分组为 Layout
+    Column("component", String(120), nullable=False, server_default=""),
     Column("show_link", Integer, nullable=False, server_default="1"),
     Column("enabled", Integer, nullable=False, server_default="1"),
     Column("built_in", Integer, nullable=False, server_default="0"),
@@ -292,6 +298,9 @@ _ADD_COLUMNS = {
     # RBAC：存量管理员回落 admin 角色且保持启用（升级前后行为不变）
     "kk_admins": [("role", "VARCHAR(32) DEFAULT 'admin'"),
                   ("enabled", "INTEGER DEFAULT 1")],
+    # 菜单表二阶段补列（路由注册数据）；存量行的空值由 seed_rbac 按内置种子回填
+    "kk_menus": [("path", "VARCHAR(120) DEFAULT ''"),
+                 ("component", "VARCHAR(120) DEFAULT ''")],
 }
 
 # 既有库补索引清单：create_all 同样不给已存在的表建索引。

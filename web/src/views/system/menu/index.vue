@@ -46,8 +46,8 @@ const menuTree = computed(() => {
   return build("");
 });
 
-const editingBuiltIn = computed(
-  () => menus.value.find(m => m.name === dialog.target)?.built_in ?? false
+const editingComponent = computed(
+  () => menus.value.find(m => m.name === dialog.target)?.component ?? ""
 );
 
 async function load() {
@@ -128,9 +128,10 @@ onMounted(load);
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="name" label="标识（路由 name）" min-width="160" />
-        <el-table-column prop="icon" label="图标" width="140" />
-        <el-table-column prop="rank" label="排序" width="80" />
+        <el-table-column prop="name" label="标识（路由 name）" min-width="140" />
+        <el-table-column prop="path" label="路由路径" min-width="150" />
+        <el-table-column prop="component" label="组件" min-width="180" show-overflow-tooltip />
+        <el-table-column prop="rank" label="排序" width="70" />
         <el-table-column label="操作" width="100">
           <template #default="{ row }">
             <el-button link type="primary" @click="openEdit(row as RbacMenu)"
@@ -156,6 +157,13 @@ onMounted(load);
       :close-on-click-modal="false"
     >
       <el-form label-width="110px">
+        <el-form-item label="标识 / 路径">
+          <el-input :model-value="dialog.target" disabled />
+        </el-form-item>
+        <el-form-item label="组件">
+          <!-- 只读：path/component 是路由契约，改它们必须与前端 views 同步 -->
+          <el-input :model-value="editingComponent" disabled />
+        </el-form-item>
         <el-form-item label="标题">
           <el-input v-model="form.title" />
         </el-form-item>

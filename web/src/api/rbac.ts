@@ -5,16 +5,24 @@ import { http } from "@/utils/http";
  *  角色，前端只做展示控制（403 由 http 拦截器统一提示）。 */
 
 export type KkMenuMeta = {
-  /** 对应前端静态路由的 name */
+  /** 对应前端路由的 name（前后端关联主键） */
   name: string;
+  /** 父菜单 name（顶级为空串） */
+  parent: string;
   title: string;
   icon: string;
   rank: number;
+  /** 路由 path（含 params 形态，如 /hosts/detail/:pod） */
+  path: string;
+  /** 组件视图 glob key（如 /src/views/host/monitor/index.vue）；分组为 "Layout" */
+  component: string;
+  /** 是否在侧边栏显示（false 的页面仍注册路由，如详情/趋势） */
   show_link: boolean;
 };
 
 export type AuthMenusResult = {
   roles: Array<string>;
+  /** 当前角色可见的启用菜单（平表，按 parent 组树；未授权的菜单根本不下发） */
   menus: Array<KkMenuMeta>;
 };
 
@@ -87,6 +95,8 @@ export type RbacMenu = {
   title: string;
   icon: string;
   rank: number;
+  path: string;
+  component: string;
   show_link: boolean;
   enabled: boolean;
   built_in: boolean;

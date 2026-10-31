@@ -22,26 +22,31 @@ from .tables import admins, menus, role_menus, roles, sessions
 
 
 # ---- 内置种子（name 与 web/src/router/modules/*.ts 的路由 name 逐字对应）----
+# 组件视图路径：glob key 逐字对应 /src/views/**；分组固定 "Layout"（前端特判）。
+_V = "/src/views"
 _BUILTIN_MENUS = [
-    # (name, parent, title, icon, rank, show_link)
-    ("Home", "", "首页", "ep/home-filled", 0, 1),
-    ("Welcome", "Home", "首页", "", 1, 1),
-    ("Hosts", "", "主机管理", "ep/monitor", 1, 1),
-    ("HostMonitor", "Hosts", "主机总览", "", 1, 1),
-    ("HostDetail", "Hosts", "主机详情", "", 2, 0),
-    ("HostTrend", "Hosts", "使用趋势", "", 3, 0),
-    ("HostUpdate", "Hosts", "版本与更新", "", 4, 1),
-    ("CommandCenter", "", "命令中心", "ep/operation", 2, 1),
-    ("CommandShell", "CommandCenter", "命令面板", "", 1, 1),
-    ("CommandCollect", "CommandCenter", "采集面板", "", 2, 1),
-    ("Audit", "", "审计日志", "ep/document", 3, 1),
-    ("AuditIndex", "Audit", "审计日志", "", 1, 1),
-    ("System", "", "系统统计", "ep/odometer", 4, 1),
-    ("SystemStats", "System", "系统统计", "", 1, 1),
-    ("Rbac", "", "系统管理", "ep/setting", 5, 1),
-    ("SysUser", "Rbac", "用户管理", "", 1, 1),
-    ("SysRole", "Rbac", "角色管理", "", 2, 1),
-    ("SysMenu", "Rbac", "菜单管理", "", 3, 1),
+    # (name, parent, title, icon, rank, path, component, show_link)
+    # Home 组的 path 刻意给 /home 而不是 /：前端注册了一个隐藏的 Root 容器
+    # （path /，remaining 语义之外的全部动态路由挂在它下面记账），组自身
+    # 从不被导航（单子项折叠为「首页」一个菜单项），路径唯一即可。
+    ("Home", "", "首页", "ep/home-filled", 0, "/home", "Layout", 1),
+    ("Welcome", "Home", "首页", "", 1, "/welcome", f"{_V}/welcome/index.vue", 1),
+    ("Hosts", "", "主机管理", "ep/monitor", 1, "/hosts", "Layout", 1),
+    ("HostMonitor", "Hosts", "主机总览", "", 1, "/hosts/monitor", f"{_V}/host/monitor/index.vue", 1),
+    ("HostDetail", "Hosts", "主机详情", "", 2, "/hosts/detail/:pod", f"{_V}/host/detail/index.vue", 0),
+    ("HostTrend", "Hosts", "使用趋势", "", 3, "/hosts/trend/:pod", f"{_V}/host/trend/index.vue", 0),
+    ("HostUpdate", "Hosts", "版本与更新", "", 4, "/hosts/update", f"{_V}/host/update/index.vue", 1),
+    ("CommandCenter", "", "命令中心", "ep/operation", 2, "/command", "Layout", 1),
+    ("CommandShell", "CommandCenter", "命令面板", "", 1, "/command/shell", f"{_V}/command/shell/index.vue", 1),
+    ("CommandCollect", "CommandCenter", "采集面板", "", 2, "/command/collect", f"{_V}/command/collect/index.vue", 1),
+    ("Audit", "", "审计日志", "ep/document", 3, "/audit", "Layout", 1),
+    ("AuditIndex", "Audit", "审计日志", "", 1, "/audit/index", f"{_V}/audit/index.vue", 1),
+    ("System", "", "系统统计", "ep/odometer", 4, "/system", "Layout", 1),
+    ("SystemStats", "System", "系统统计", "", 1, "/system/index", f"{_V}/system/index.vue", 1),
+    ("Rbac", "", "系统管理", "ep/setting", 5, "/rbac", "Layout", 1),
+    ("SysUser", "Rbac", "用户管理", "", 1, "/rbac/users", f"{_V}/system/user/index.vue", 1),
+    ("SysRole", "Rbac", "角色管理", "", 2, "/rbac/roles", f"{_V}/system/role/index.vue", 1),
+    ("SysMenu", "Rbac", "菜单管理", "", 3, "/rbac/menus", f"{_V}/system/menu/index.vue", 1),
 ]
 
 _BUILTIN_ROLES = [
@@ -75,12 +80,19 @@ class _StoreRbacMixin:
     #      管理员改过的授权不会被启动重置）----
     async def seed_rbac(self):
         now = int(time.time())
-        for name, parent, title, icon, rank, show in _BUILTIN_MENUS:
-            await self._upsert(menus,
-                               dict(name=name, parent=parent, title=title,
-                                    icon=icon, rank=rank, show_link=show,
-                                    enabled=1, built_in=1),
-                               ["name"], None)
+        for name, parent, title, icon, rank, path, comp, show in _BUILTIN_MENUS:
+            row = await self._one(select(menus).where(menus.c.name == name))
+            if row is None:
+                await self._run(insert(menus).values(
+                    name=name, parent=parent, title=title, icon=icon,
+                    rank=rank, path=path, component=comp,
+                    show_link=show, enabled=1, built_in=1))
+            elif not row["path"] or not row["component"]:
+                # 一阶段升级库（只有展示元数据列）：回填路由注册数据。
+                # 只回填 built_in 行——内置行的 path/component 从不可编辑，
+                # 用户改过的标题/图标/排序/显隐都保留。
+                await self._run(update(menus).where(menus.c.name == name)
+                                .values(path=path, component=comp))
         for name, label, remark, built_in in _BUILTIN_ROLES:
             row = await self._one(select(roles.c.name).where(roles.c.name == name))
             if row is None:

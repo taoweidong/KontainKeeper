@@ -3,53 +3,22 @@
  *  锁住的语义：
  *  - `/api/health` 与 `/api/system/stats` 是无参 GET（欢迎页与系统页的唯一读数来源）；
  *  - `null`（后端明确说不知道）与 `0`（真读数）是两种语义，api 层一律不兜底（QR-W16）；
- *  - 2026-10-31 RBAC（改锁依据）：getAsyncRoutes 从「恒空数组不打后端」改为
- *    **拉取 /api/auth/menus 的允许集合**并写入 user store——路由记录仍返回空数组
- *    （组件不来自后端），失败时 fail-closed（空集合），401 交给拦截器登出不拦。
- *    旧语义（菜单完全静态）已由 RBAC 需求推翻，见 api/routes.ts 模块注释。
+ *  - 2026-10-31 RBAC 二阶段（改锁依据）：菜单树完全由数据库下发——getAsyncRoutes
+ *    拉 /api/auth/menus（平表）组树后放进 data，交给 pure-admin 的
+ *    handleAsyncRoutes 动态注册；未授权的菜单后端根本不下发（不加载）。
+ *    失败 fail-closed（空树）。一阶段的「前端过滤静态路由」已被本方案取代。
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const httpMock = vi.hoisted(() => ({ request: vi.fn() }));
 vi.mock("@/utils/http", () => ({ http: httpMock }));
 
-const userStore = vi.hoisted(() => {
-  const state = { menus: [] as any[], menusLoaded: false, roles: [] as string[] };
-  return {
-    state,
-    hook: () => ({
-      get menus() {
-        return state.menus;
-      },
-      get menusLoaded() {
-        return state.menusLoaded;
-      },
-      get roles() {
-        return state.roles;
-      },
-      SET_MENUS(m: any[]) {
-        state.menus = m;
-        state.menusLoaded = true;
-      },
-      SET_ROLES(r: string[]) {
-        state.roles = r;
-      }
-    })
-  };
-});
-vi.mock("@/store/modules/user", () => ({
-  useUserStoreHook: userStore.hook
-}));
-
 import { getHealth, getStats } from "./system";
-import { getAsyncRoutes } from "./routes";
+import { buildMenuTree, getAsyncRoutes } from "./routes";
 
 beforeEach(() => {
   httpMock.request.mockReset();
   httpMock.request.mockResolvedValue({});
-  userStore.state.menus = [];
-  userStore.state.menusLoaded = false;
-  userStore.state.roles = [];
 });
 
 describe("getHealth", () => {
@@ -107,37 +76,54 @@ describe("getStats", () => {
   });
 });
 
-describe("getAsyncRoutes：RBAC 菜单装配", () => {
-  const menus = [
-    { name: "Home", title: "首页", icon: "ep/home-filled", rank: 0, show_link: true },
-    { name: "Hosts", title: "主机管理", icon: "ep/monitor", rank: 1, show_link: true }
+describe("getAsyncRoutes / buildMenuTree：数据库菜单装配", () => {
+  const rows = [
+    { name: "Hosts", parent: "", title: "主机管理", icon: "ep/monitor", rank: 1, path: "/hosts", component: "Layout", show_link: true },
+    { name: "HostUpdate", parent: "Hosts", title: "版本与更新", icon: "", rank: 4, path: "/hosts/update", component: "/src/views/host/update/index.vue", show_link: true },
+    { name: "HostMonitor", parent: "Hosts", title: "主机总览", icon: "", rank: 1, path: "/hosts/monitor", component: "/src/views/host/monitor/index.vue", show_link: true },
+    { name: "HostDetail", parent: "Hosts", title: "主机详情", icon: "", rank: 2, path: "/hosts/detail/:pod", component: "/src/views/host/detail/index.vue", show_link: false },
+    { name: "Home", parent: "", title: "首页", icon: "ep/home-filled", rank: 0, path: "/home", component: "Layout", show_link: true },
+    { name: "Welcome", parent: "Home", title: "首页", icon: "", rank: 1, path: "/welcome", component: "/src/views/welcome/index.vue", show_link: true }
   ];
 
-  it("拉取 /api/auth/menus 写入 user store，路由记录仍返回空数组（组件不来自后端）", async () => {
-    httpMock.request.mockResolvedValue({ roles: ["operator"], menus });
+  it("拉取 /api/auth/menus 平表组树：兄弟按 rank 排序，component 字符串透传", async () => {
+    httpMock.request.mockResolvedValue({ roles: ["operator"], menus: rows });
     const res = await getAsyncRoutes();
 
-    expect(res).toEqual({ success: true, data: [] });
     expect(httpMock.request).toHaveBeenCalledWith("get", "/api/auth/menus");
-    expect(userStore.state.roles).toEqual(["operator"]);
-    expect(userStore.state.menus).toEqual(menus);
-    expect(userStore.state.menusLoaded).toBe(true);
+    const tree = res.data;
+    expect(tree.map((n: any) => n.name)).toEqual(["Home", "Hosts"]);
+    const hosts = tree[1];
+    expect(hosts.component).toBe("Layout");
+    // 子级按 rank 排序；show_link=false 的详情页仍在树里（注册路由、不出侧边栏）
+    expect(hosts.children.map((c: any) => c.name)).toEqual([
+      "HostMonitor", "HostDetail", "HostUpdate"
+    ]);
+    expect(hosts.children[1].path).toBe("/hosts/detail/:pod");
+    expect(hosts.children[1].meta.showLink).toBe(false);
   });
 
-  it("非 401 失败 → fail-closed：置空允许集合并照常 resolve（不炸路由装配）", async () => {
+  it("buildMenuTree：乱序输入也按 rank + name 稳定组树", () => {
+    const tree = buildMenuTree([...rows].reverse());
+    expect(tree.map((n: any) => n.name)).toEqual(["Home", "Hosts"]);
+    expect(tree[1].children[0].name).toBe("HostMonitor");
+  });
+
+  it("后端没下发的菜单不会出现在树里（未授权 = 不加载）", () => {
+    const tree = buildMenuTree([rows[0], rows[3]]);
+    expect(tree.map((n: any) => n.name)).toEqual(["Hosts"]);
+    expect(tree[0].children.map((c: any) => c.name)).toEqual(["HostDetail"]);
+  });
+
+  it("非 401 失败 → fail-closed：空树照常 resolve（业务路由不注册，直连 404）", async () => {
     httpMock.request.mockRejectedValue({ response: { status: 500 } });
     const res = await getAsyncRoutes();
-
     expect(res).toEqual({ success: true, data: [] });
-    expect(userStore.state.menus).toEqual([]);
-    expect(userStore.state.menusLoaded).toBe(true);
   });
 
-  it("401 = 会话过期：不置 menusLoaded（交给拦截器登出跳登录），不做 fail-closed", async () => {
+  it("401 = 会话过期：同样返回空树（拦截器已在走登出跳登录）", async () => {
     httpMock.request.mockRejectedValue({ response: { status: 401 } });
     const res = await getAsyncRoutes();
-
     expect(res).toEqual({ success: true, data: [] });
-    expect(userStore.state.menusLoaded).toBe(false);
   });
 });

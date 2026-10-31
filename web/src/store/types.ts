@@ -1,7 +1,5 @@
 import type { RouteRecordName } from "vue-router";
 
-import type { KkMenuMeta } from "@/utils/kkMenu";
-
 export type cacheType = {
   mode: string;
   name?: RouteRecordName;
@@ -44,9 +42,6 @@ export type userType = {
   nickname?: string;
   roles?: Array<string>;
   permissions?: Array<string>;
-  /** RBAC 允许菜单（后端 /api/auth/menus 下发），不持久化 */
-  menus?: Array<KkMenuMeta>;
-  menusLoaded?: boolean;
   isRemembered?: boolean;
   loginDay?: number;
 };

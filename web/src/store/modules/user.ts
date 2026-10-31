@@ -15,7 +15,6 @@ import {
   logoutApi,
   refreshTokenApi
 } from "@/api/user";
-import type { KkMenuMeta } from "@/utils/kkMenu";
 import { useMultiTagsStoreHook } from "./multiTags";
 import { type DataInfo, setToken, removeToken, userKey } from "@/utils/auth";
 
@@ -32,12 +31,6 @@ export const useUserStore = defineStore("pure-user", {
     // 按钮级别权限
     permissions:
       storageLocal().getItem<DataInfo<number>>(userKey)?.permissions ?? [],
-    // RBAC 允许菜单（2026-10-31）：后端 /api/auth/menus 下发的允许集合。
-    // 不持久化——每次 initRouter（登录/硬刷新）重新拉取，服务端改授权即时生效；
-    // menusLoaded=false 表示尚未拉取，路由守卫在拉取前不做拦截（拉取本身
-    // 由 api/routes.ts 的 getAsyncRoutes 完成，失败也置 loaded=true + 空集合）。
-    menus: [] as Array<KkMenuMeta>,
-    menusLoaded: false,
     // 是否勾选了登录页的免登录
     isRemembered: false,
     // 登录页的免登录存储几天，默认7天
@@ -63,15 +56,6 @@ export const useUserStore = defineStore("pure-user", {
     /** 存储按钮级别权限 */
     SET_PERMS(permissions: Array<string>) {
       this.permissions = permissions;
-    },
-    /** 存储 RBAC 允许菜单集合（空数组 = 一个都不给，fail-closed） */
-    SET_MENUS(menus: Array<KkMenuMeta>) {
-      this.menus = menus;
-      this.menusLoaded = true;
-    },
-    /** 允许菜单的 name 集合（守卫与过滤共用同一口径） */
-    allowedMenuNames(): Set<string> {
-      return new Set(this.menus.map(m => m.name));
     },
     /** 存储是否勾选了登录页的免登录 */
     SET_ISREMEMBERED(bool: boolean) {
@@ -102,9 +86,6 @@ export const useUserStore = defineStore("pure-user", {
       this.username = "";
       this.roles = [];
       this.permissions = [];
-      // RBAC 允许集合随会话作废：下次登录重新拉取
-      this.menus = [];
-      this.menusLoaded = false;
       removeToken();
       useMultiTagsStoreHook().handleTags("equal", [...routerArrays]);
       resetRouter();

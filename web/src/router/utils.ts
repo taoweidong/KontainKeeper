@@ -23,6 +23,8 @@ import { type menuType, routerArrays } from "@/layout/types";
 import { useMultiTagsStoreHook } from "@/store/modules/multiTags";
 import { usePermissionStoreHook } from "@/store/modules/permission";
 const IFrame = () => import("@/layout/frame.vue");
+// 分组路由的组件：数据库菜单里 component="Layout"（见 models/_store_rbac.py 种子）
+const Layout = () => import("@/layout/index.vue");
 // https://cn.vitejs.dev/guide/features.html#glob-import
 // *.spec.tsx 是 vitest 用例，不路由也**不该进产物**：globs 把它们扫进模块图后，
 // rollup 会把 spec 连同 vue-test-utils / magic-string 一起打成线上 chunk
@@ -324,6 +326,10 @@ function addAsyncRoutes(arrRoutes: Array<RouteRecordRaw>) {
       v.name = (v.children[0].name as string) + "Parent";
     if (v.meta?.frameSrc) {
       v.component = IFrame;
+    } else if (typeof v.component === "string" && v.component === "Layout") {
+      // RBAC 分组：数据库只存 "Layout" 字面量，glob 里没有这个 key，
+      // 必须在 include 匹配前接住，否则 index=-1 会把 component 覆盖成 undefined
+      v.component = Layout;
     } else {
       // 对后端传component组件路径和不传做兼容（如果后端传component组件路径，那么path可以随便写，如果不传，component组件路径会跟path保持一致）
       const index = v?.component

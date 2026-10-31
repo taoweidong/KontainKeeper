@@ -64,6 +64,14 @@ async def test_seed_and_auth_menus(api):
     assert {"Welcome", "Home", "Hosts", "HostMonitor", "CommandShell",
             "AuditIndex", "SystemStats", "Rbac", "SysUser", "SysRole",
             "SysMenu"} <= names
+    # 二阶段：路由注册数据（path/component）随菜单下发，前端据此动态注册
+    by_name = {m["name"]: m for m in body["menus"]}
+    assert by_name["Welcome"]["path"] == "/welcome"
+    assert by_name["Welcome"]["component"] == "/src/views/welcome/index.vue"
+    assert by_name["Home"]["path"] == "/home"
+    assert by_name["Home"]["component"] == "Layout"
+    assert by_name["HostDetail"]["path"] == "/hosts/detail/:pod"
+    assert by_name["HostDetail"]["show_link"] is False
 
     ops_h = await _make_user(api, "ops1")
     r = await api.client.get("/api/auth/menus", headers=ops_h)
