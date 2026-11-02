@@ -36,8 +36,9 @@ WRAPPERS = {"sudo", "doas", "env", "nice", "nohup", "timeout", "xargs", "command
 # shell 解释器（QR-P0-2）：prog 命中且下一 token 是 -c 时，载荷才是**真正的命令**，
 # 必须按 shell 语义递归校验。不处理的话 `argv=["sh","-c","rm -r -f /usr"]`
 # （use_shell=false 的 argv 数组形态）结构校验整体失效——prog=sh 不命中任何
-# 危险集合，参数拆写又躲过子串兜底。
-_SHELLS = {"sh", "bash", "dash", "zsh", "ksh", "ash"}
+# 危险集合，参数拆写又躲过子串兜底。su -c 的载荷同理（su 不吃脚本文件形态以外
+# 的选项冲突：`su - user` 的 rest[0] 不是旗标，_script_payload 自然判非内联）。
+_SHELLS = {"sh", "bash", "dash", "zsh", "ksh", "ash", "su"}
 # 脚本解释器：`-c`(python) / `-e`(perl/ruby/node) 后面是**代码载荷**（QR-S25）。
 # 代码不是 shell 语义，无法靠结构切分可靠还原命令，故对这类载荷额外做危险程序名扫描。
 _INTERP_CODE_FLAGS = {
@@ -98,11 +99,54 @@ def _script_payload(prog, rest):
     return None, False
 
 
-def _check_tokens(tokens, _depth=0):
-    """对一段命令做结构校验：跳过包装前缀后取程序名 + 参数集合。"""
+# 包装器自己吃值的旗标：跳过旗标后**紧跟的一个 token 是旗标的值**，不是程序名
+# （sudo -u root dd … 的 root）。刻意只收「各包装器语义一致」的少数几个：-u/-g 在
+# sudo/env/doas 里都取值；-n/-p 这类在 sudo（无值）与 xargs（无值）之间语义冲突，
+# 不进集合——否则 `sudo -n dd …` 反而会把 dd 当值吞掉（QR-S41）。
+_WRAP_VALUE_FLAGS = {"-u", "-g", "--user", "--group", "--priority",
+                     "--adjustment", "--chdir"}
+# env 的 KEY=VALUE 赋值与 timeout/nice 的裸数字/时长：都是包装层参数，不是程序名
+_WRAP_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_WRAP_DUR = re.compile(r"^\d+(?:\.\d+)?[a-z]?$")
+
+
+def _skip_wrapper_prefix(tokens):
+    """返回程序名的下标：连续跳过包装层前缀——wrapper 本体、它的选项、已知取值
+    旗标的值、KEY=VALUE 赋值、裸数字/时长。
+
+    缺陷 QR-S41：旧实现跳过 wrapper 后**默认下一个 token 就是程序名**，wrapper
+    自己的参数被当成程序名，`env FOO=1 rm -r -f /usr`（prog=foo=1）、
+    `sudo -u root dd …`（prog=-u）、`timeout 10 rm -rf /`（prog=10）整条绕过
+    结构层，子串兜底也接不住（连写形才命中）。误判方向刻意偏向多拦：落到
+    程序名前多跳一个良性 token 的代价是偶发误拦，漏掉真程序名的代价是放行。
+    裸数字/时长只在**出现过 wrapper 之后**才跳（timeout/nice 的数值参数）：
+    `7z x …` 这类数字开头的真实程序名不能被吞。
+    """
     i = 0
-    while i < len(tokens) and tokens[i].lower() in WRAPPERS:
-        i += 1
+    n = len(tokens)
+    take_value = False   # 上一个 token 是取值旗标：本 token 是它的值，跳过
+    in_wrap = False      # 见过至少一个 wrapper：之后的裸数字按包装层参数处理
+    while i < n:
+        t = tokens[i].lower()
+        if take_value:
+            take_value = False
+            i += 1
+            continue
+        if t in WRAPPERS:
+            in_wrap = True
+            i += 1
+            continue
+        if t.startswith("-") or _WRAP_ASSIGN.match(t) or (in_wrap and _WRAP_DUR.match(t)):
+            take_value = t in _WRAP_VALUE_FLAGS
+            i += 1
+            continue
+        break
+    return i
+
+
+def _check_tokens(tokens, _depth=0):
+    """对一段命令做结构校验：跳过包装层前缀后取程序名 + 参数集合。"""
+    i = _skip_wrapper_prefix(tokens)
     if i >= len(tokens):
         return False
     prog = os.path.basename(tokens[i]).lower()

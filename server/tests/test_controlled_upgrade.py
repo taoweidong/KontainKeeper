@@ -53,6 +53,9 @@ async def bridge_app(tmp_path):
     store = Store(kk_db_url(tmp_path))
     await store.setup()
     await pg_reset(store)
+    # QR-S42：升级端点现挂 AdminUser（实时查库里角色），替换进 app 的 store 必须
+    # 与生产现实一致地有 admin 角色行——原夹具从未建用户，靠「无角色校验」蒙混。
+    await store.ensure_admin(ADMIN, PASS)
     settings = load_settings({
         **kk_db_env(tmp_path),
         "KK_MQTT_URL": "mqtt://broker:1883",

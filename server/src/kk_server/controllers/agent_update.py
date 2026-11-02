@@ -7,7 +7,11 @@
 - GET  /api/system/agent/download Agent 下载二进制（流式）
 
 安全（v3）：
-- 上传需管理员会话；下载/查询按请求方真实源 IP 校验 KK_AGENT_IPS 白名单
+- 上传/回滚/批量升级需 admin 会话（QR-S42）：这三个写端点是「向全网主机分发
+  可执行代码」级特权操作，router 级 current_user 只保证登录、不保证角色——
+  operator 可直达等于把 RCE 入口开放给全部会话。GET /agent/current 与
+  GET /updates 是只读台账，保持登录会话可读（operator 的「版本与更新」页要展示）。
+- 下载/查询按请求方真实源 IP 校验 KK_AGENT_IPS 白名单
 - 服务端记录 sha256，Agent 端下载后校验一致才替换，防损坏/篡改
 - 二进制按平台单槽位（kk-agent），多架构需另行扩展
 """
@@ -23,7 +27,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from .deps import AgentIp, CurrentUser, agent_ip_auth, current_user
+from .deps import AgentIp, AdminUser, agent_ip_auth, current_user
 from ..models.helpers import clamp
 from ..models.tables import ONLINE_GRACE
 from ..models.version import count_outdated, version_lt
@@ -50,7 +54,7 @@ def _bin_path(request: Request):
 
 
 @router.post("/agent")
-async def upload_agent(request: Request, user: CurrentUser,
+async def upload_agent(request: Request, user: AdminUser,
                        file: UploadFile = File(...), version: str = Form(...)):
     if not version or not version[0].isdigit():
         raise HTTPException(status_code=400, detail="version 非法")
@@ -123,7 +127,7 @@ async def upload_agent(request: Request, user: CurrentUser,
 
 
 @router.post("/agent/rollback")
-async def rollback_agent(request: Request, user: CurrentUser):
+async def rollback_agent(request: Request, user: AdminUser):
     """把服务端**待分发**的 Agent 二进制回滚到上一版（B2 / P2-7）。
 
     语义边界（不说清就会被当成「一键回滚全网」）：
@@ -271,7 +275,7 @@ class UpgradeBody(BaseModel):
 
 
 @router.post("/agent/upgrade")
-async def upgrade_hosts(body: UpgradeBody, request: Request, user: CurrentUser):
+async def upgrade_hosts(body: UpgradeBody, request: Request, user: AdminUser):
     """受控批量升级（D2.2）：把选中的主机升到服务端当前最新版本。
 
     需求②的落地：原先只有「Agent 自己轮询」与「服务端在 status 帧无差别推送」两条路，

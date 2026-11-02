@@ -185,3 +185,43 @@ def test_coverage_gaps_currently_pass_by_policy():
     assert is_blacklisted(["find", "/", "-delete"], DEFAULT) is False
     assert is_blacklisted(["systemctl", "stop", "kk-agent"], DEFAULT) is False
     assert is_blacklisted(["kill", "-9", "1"], DEFAULT) is False
+
+
+# ---- QR-S41：wrapper 前缀自身的参数不得被当成程序名 ----
+# 旧实现跳过 wrapper 后默认下一 token 即程序名，三条真实绕过串：
+#   ["env","FOO=1","rm","-r","-f","/usr"]   prog=foo=1，两层全放
+#   ["sudo","-u","root","dd",...]           prog=-u，dd 藏在包装层参数后面
+#   ["timeout","10","rm","-rf","/data"]     prog=10
+# 全部以 patterns=[] 断言：结构层独立拦住，不依赖子串兜底。
+
+@pytest.mark.parametrize("argv", [
+    ["env", "FOO=1", "rm", "-r", "-f", "/usr"],
+    ["sudo", "-u", "root", "dd", "if=/dev/zero", "of=/dev/sda"],
+    ["sudo", "-u", "root", "rm", "-r", "-f", "/usr"],
+    ["timeout", "10", "rm", "-rf", "/data"],
+    ["timeout", "5m", "dd", "if=/dev/zero", "of=/dev/sda"],
+    ["nice", "-n", "10", "dd", "if=/dev/zero", "of=/dev/sda"],
+    ["sudo", "-n", "dd", "if=/dev/zero", "of=/dev/sda"],
+    ["xargs", "-p", "rm", "-rf", "/"],
+    ["env", "-u", "HOME", "wipefs", "-a", "/dev/sda"],
+    ["su", "-c", "dd if=/dev/zero of=/dev/sda", "root"],
+])
+def test_wrapper_own_arguments_not_progname(argv):
+    assert is_blacklisted(argv, []) is True
+    assert is_blacklisted(" ".join(argv), [], use_shell=True) is True
+
+
+def test_wrapper_benign_commands_still_pass():
+    """加固不许误伤正当的包装层用法：取值旗标的值、赋值、时长都不是程序名。"""
+    for argv in (
+        ["env", "FOO=1", "python", "app.py"],
+        ["sudo", "-u", "postgres", "pg_dump", "mydb"],
+        ["sudo", "-n", "ls", "-la"],
+        ["timeout", "30", "curl", "http://example.com"],
+        ["nice", "-n", "10", "make", "build"],
+        ["env", "-u", "FOO", "python", "-c", "print(1)"],
+        ["7z", "x", "archive.zip"],   # 数字开头的真实程序名不是 wrapper 数值参数
+        ["grep", "dd", "access.log"],  # 参数位置出现危险词不算命中（prog 语义）
+        ["touch", "reboot"],
+    ):
+        assert is_blacklisted(argv, []) is False, argv

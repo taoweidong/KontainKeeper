@@ -377,3 +377,33 @@ def test_upload_rejects_empty_binary(tmp_path):
         r = _upload(client, token, b"", "0.3.0")
         assert r.status_code == 400, r.text
         assert not os.path.exists(os.path.join(str(tmp_path / "bin"), "kk-agent"))
+
+
+def test_privileged_write_endpoints_require_admin(tmp_path):
+    """QR-S42：上传/回滚/批量升级是「向全网主机分发可执行代码」级特权操作，
+    必须挂 admin 角色——旧实现只挂 current_user，operator 会话可直达（与模块
+    docstring「上传需管理员会话」的承诺矛盾）。GET /agent/current 是只读台账，
+    operator 的「版本与更新」页要展示，保持登录会话可读。"""
+    with TestClient(_make_app(tmp_path), client=GOOD_CLIENT) as client:
+        admin_h = {"Authorization": "Bearer %s" % _admin_token(client)}
+        r = client.post("/api/system/users", headers=admin_h,
+                        json={"username": "ops1", "password": "ops-pass-1",
+                              "role": "operator"})
+        assert r.status_code == 200, r.text
+        r = client.post("/api/login",
+                        json={"username": "ops1", "password": "ops-pass-1"})
+        assert r.status_code == 200, r.text
+        ops_h = {"Authorization": "Bearer %s" % r.json()["token"]}
+        assert r.json()["roles"] == ["operator"]
+
+        assert client.post("/api/system/agent", headers=ops_h,
+                           files={"file": ("kk-agent", b"\x7fELF-x")},
+                           data={"version": "0.3.0"}).status_code == 403
+        assert client.post("/api/system/agent/rollback",
+                           headers=ops_h).status_code == 403
+        assert client.post("/api/system/agent/upgrade", headers=ops_h,
+                           json={"hosts": ["h1"]}).status_code == 403
+
+        # 只读端点不受影响
+        assert client.get("/api/system/agent/current", headers=ops_h).status_code == 200
+        assert client.get("/api/system/agent/current", headers=admin_h).status_code == 200
