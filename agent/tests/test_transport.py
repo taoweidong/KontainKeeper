@@ -538,3 +538,12 @@ def test_on_message_dispatches_valid_dict_and_swallows_handler_errors(monkeypatc
 
     tr.on_cmd = boom
     tr._on_message(None, None, _frame(b'{"id": "c-2"}'))  # 处理器异常不外溢到网络线程
+
+
+def test_parse_broker_rejects_bad_port():
+    """QR-A12：坏端口走 TransportError 通道，而不是裸 ValueError 崩溃。
+
+    main.run 只接 TransportError 做干净报错；旧实现 int(port) 的 ValueError
+    会以 traceback 形式逃出启动流程。"""
+    with pytest.raises(tp.TransportError, match="端口非法"):
+        tp.parse_broker("mqtt://h:abc")

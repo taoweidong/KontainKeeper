@@ -82,9 +82,15 @@ def parse_broker(url, default_port=1883):
     host = host.strip("[]")
     if not host:
         raise TransportError("KK_SERVER 缺少主机名：%r" % url)
+    try:
+        # QR-A12：坏端口与缺主机名/内嵌凭据走同一错误通道——main.run 只接
+        # TransportError，裸 ValueError 会以 traceback 崩溃而非干净报错。
+        port_i = int(port or (8883 if secure else default_port))
+    except ValueError:
+        raise TransportError("KK_SERVER 端口非法：%r" % url)
     return {
         "host": host,
-        "port": int(port or (8883 if secure else default_port)),
+        "port": port_i,
         "secure": secure,
     }
 

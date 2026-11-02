@@ -2,7 +2,9 @@
 
 - 每次心跳前扫描目录，按 mtime 变化热加载，无需重启 Agent
 - 单个插件加载/执行失败只跳过该插件，绝不影响主循环
-- 插件输出必须是 JSON 可序列化对象，随心跳 custom 字段上报
+- 插件输出必须是 JSON 可序列化对象，随心跳 custom 字段上报；不可序列化的输出
+  在 collect 出口即按失败隔离（QR-A11）——序列化发生在 transport.publish_hb 的
+  json.dumps，放到那里才失败会让整帧心跳（含全部采集项）每个周期一起丢
 - collect() 带超时保护（资源评审 P2）：Python 无法强杀线程，插件卡死时
   该插件被**隔离**（quarantine）——直到文件 mtime 变化（作者修改重载）
   才重新放行；否则每个心跳周期都会泄漏一个卡死的执行线程，心跳停摆。
@@ -11,6 +13,7 @@
   卡死的加载线程同样留作 daemon 自生自灭。
 """
 import importlib.util
+import json
 import os
 import threading
 import traceback
@@ -139,6 +142,19 @@ def collect_all(plugin_dir, log=None, timeout=5.0):
                 log.warning("plugin %s collect failed: %s", name, exc)
             continue
         if data is not None:
+            # QR-A11：序列化边界前移到 collect 出口。transport.publish_hb 的
+            # json.dumps 抛 TypeError 会杀死整帧心跳（含全部采集项），而隔离
+            # 机制只覆盖 collect 抛异常/卡死，够不着那里——坏输出按 collect
+            # 失败同款隔离，作者改文件重载后自动放行。
+            try:
+                json.dumps(data)
+            except (TypeError, ValueError):
+                with _lock:
+                    _loaded[name] = (cur_mtime, mod, True)
+                if log:
+                    log.warning("plugin %s output is not JSON-serializable, "
+                                "quarantined until reload", name)
+                continue
             out[name] = data
     return out
 

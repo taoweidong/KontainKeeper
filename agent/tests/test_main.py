@@ -157,6 +157,18 @@ def test_dispatch_rejects_unknown_kind():
     assert tr.frames[-1]["rc"] == 127 and b"unknown command kind" in decode(tr.frames)
 
 
+def test_dispatch_unknown_non_str_kind_still_replies():
+    """QR-A12：畸形帧带非 str kind 时也必须回 127 回执。
+
+    旧实现 kind.encode() 对 int 抛 AttributeError 且不发任何帧，命令在服务端
+    挂到超时清扫。"""
+    tr = FakeTransport()
+    dispatch = build_runner(tr)
+    dispatch({"id": "c-int", "kind": 123})
+    assert tr.frames and tr.frames[-1]["rc"] == 127
+    assert b"unknown command kind" in decode(tr.frames)
+
+
 def test_dispatch_ignores_frame_without_id():
     tr = FakeTransport()
     dispatch = build_runner(tr)

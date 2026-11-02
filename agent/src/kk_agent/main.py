@@ -166,7 +166,10 @@ def make_dispatcher(tr, runner, cfg, log, state_box):
 
     def dispatch(cmd):
         cid = cmd.get("id")
-        kind = cmd.get("kind") or "shell"
+        # 归一成 str（QR-A12）：畸形帧带非 str kind 时，下方 unknown 分支的
+        # kind.encode() 会抛 AttributeError 且**不发任何回执**，命令在服务端
+        # 挂到超时清扫；归一后恒走 127 回执。
+        kind = str(cmd.get("kind") or "shell")
         if not cid:
             return
         if cid in seen_cids:

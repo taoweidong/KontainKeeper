@@ -129,3 +129,27 @@ def test_load_failure_leaves_no_half_initialized_module(tmp_path):
     assert "loadfail" not in pl.loaded_names(), "失败的加载不能进入已加载表"
     _write(f, GOOD)
     assert pl.collect_all(str(d), timeout=5) == {"loadfail": {"v": 1}}
+
+
+def test_unserializable_output_quarantines_plugin(tmp_path):
+    """QR-A11：插件输出不可 JSON 序列化时按 collect 失败同款隔离。
+
+    序列化发生在 transport.publish_hb 的 json.dumps——若放行到那里才失败，
+    整帧心跳（含全部采集项）会每个周期一起丢，与「单插件失败不影响 Agent」
+    的承诺矛盾。隔离后同 mtime 不再执行；作者改文件重载后自动放行。
+    """
+    d = tmp_path / "plugins"
+    d.mkdir()
+    f = d / "badout.py"
+    _write(f, "def collect():\n    return {1, 2}\n")   # set 不可 JSON 序列化
+    _write(d / "good.py", GOOD)
+
+    out = pl.collect_all(str(d))
+    assert out == {"good": {"v": 1}}          # 坏输出被丢、好插件照常上报
+
+    out = pl.collect_all(str(d))
+    assert out == {"good": {"v": 1}}          # 隔离生效：同 mtime 不再执行
+
+    time.sleep(0.01)
+    _write(f, GOOD)
+    assert pl.collect_all(str(d)) == {"badout": {"v": 1}, "good": {"v": 1}}
