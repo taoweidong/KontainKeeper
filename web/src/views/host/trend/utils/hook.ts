@@ -168,11 +168,18 @@ export function useHostTrend() {
       metrics.value = data;
       read.value = true;
       pollFailed.value = false;
-      memInput.value = data.mem_limit;
-      diskInput.value = data.disk_limit_raw;
+      if (!silent) {
+        // QR-W17：静默轮询不回填输入框——运维正在改告警上限时，30s 轮询会把
+        // 编辑中的值打回原值，极易点出「以为保存了新值、实际保存旧值」的操作。
+        // 非静默加载（初始/切时间窗/保存后重载）才是输入框的同步时机。
+        memInput.value = data.mem_limit;
+        diskInput.value = data.disk_limit_raw;
+      }
     } catch (e: any) {
       if (!isLatest()) return;
-      pollFailed.value = silent;
+      // 失败恒变冷（QR-W17，与 system/welcome 口径一致）：手动刷新失败时
+      // 页头不得继续显示绿色「已同步」。
+      pollFailed.value = true;
       if (!silent)
         message("加载趋势数据失败：" + errText(e), { type: "error" });
     } finally {
@@ -185,6 +192,13 @@ export function useHostTrend() {
   }
 
   watch(hours, () => load());
+
+  // QR-W17：同组件路由复用（详情↔趋势之间带参跳转）不会重新挂载，
+  // 必须显式重取，否则页面停留在上一台主机的曲线与上限表单。
+  watch(pod, () => {
+    read.value = false;
+    load();
+  });
 
   onMounted(async () => {
     await load();

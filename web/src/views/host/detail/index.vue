@@ -147,7 +147,9 @@ async function loadMetrics(silent = false) {
     pollFailed.value = false;
   } catch (e: any) {
     if (!isLatest()) return;
-    pollFailed.value = silent;
+    // 手动刷新失败同样要变冷（QR-W17，与 system/welcome 口径一致）——
+    // 这台主机挂着看曲线，绿色「已同步」会把旧数据谎报成新鲜读数。
+    pollFailed.value = true;
     if (!silent) ElMessage.error("加载指标序列失败：" + errText(e));
   }
 }

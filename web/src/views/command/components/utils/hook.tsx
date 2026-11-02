@@ -284,8 +284,13 @@ export function useCommandHistory() {
     }
   }
 
-  /** 下载单条完整输出：复用导出工具，不新增依赖 */
+  /** 下载单条完整输出：复用导出工具，不新增依赖。
+   *  在途守卫（QR-W17）：连点会并发两路请求、弹两次下载，与 showOut 的
+   *  beginOut 守卫对称。 */
+  let outDownloading = false;
   async function downloadOut() {
+    if (outDownloading) return;
+    outDownloading = true;
     try {
       const text = await getCommandOut(out.id);
       downloadBlob(
@@ -294,6 +299,8 @@ export function useCommandHistory() {
       );
     } catch (e: any) {
       message("下载输出失败：" + errText(e), { type: "error" });
+    } finally {
+      outDownloading = false;
     }
   }
 

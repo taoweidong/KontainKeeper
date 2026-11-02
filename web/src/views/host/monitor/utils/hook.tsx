@@ -274,7 +274,9 @@ export function useMonitor() {
       if (!isLatest()) return;
       // 自动轮询失败只在表头的同步读数上如实说明：后端宕机时每 10s 弹一次
       // message 会把真正的错误淹成噪音（W5）。
-      pollFailed.value = silent;
+      // 手动刷新失败同样要变冷（QR-W17，与 system/welcome 口径一致）——
+      // 数据确实过期了，绿色「已同步」是对读数的谎报。
+      pollFailed.value = true;
       if (!silent)
         message("加载主机列表失败：" + errText(e), { type: "error" });
     } finally {

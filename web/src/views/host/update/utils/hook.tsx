@@ -322,7 +322,9 @@ export function useHostUpdate() {
       }
     } catch (e: any) {
       if (!isLatest()) return;
-      pollFailed.value = silent;
+      // 手动刷新失败同样要变冷（QR-W17，与 system/welcome 口径一致）——
+      // 升级页的落后清单就是操作依据，旧清单被标成「已同步」会误导下发。
+      pollFailed.value = true;
       if (!silent)
         message("加载升级信息失败：" + errText(e), { type: "error" });
     } finally {
