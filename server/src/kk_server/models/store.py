@@ -8,7 +8,7 @@ maintenance 六域），调用点零改动。
 import os
 from urllib.parse import urlparse
 
-from sqlalchemy import insert, text
+from sqlalchemy import text
 from sqlalchemy.dialects import mysql, postgresql, sqlite
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import StaticPool

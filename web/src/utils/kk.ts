@@ -1,3 +1,5 @@
+import type { HostSummary } from "@/api/containers";
+
 /** KontainKeeper 业务页共用的格式化与状态映射。
 
 后端所有时间字段都是秒级 Unix 时间戳（int），这里统一成中文可读格式。
@@ -170,4 +172,25 @@ export function argvText(raw: unknown): string {
     return JSON.stringify(argv);
   }
   return "-";
+}
+
+/** 离线要把服务端记的原因说出来：updating 是设计内的自更新窗口，不是故障，
+ *  运维看到它不该去重启 Agent（B6 的语义此前在 UI 上完全丢失）。
+ *  取值集合只有 online / updating / LWT 空，其余一律按「离线」呈现。 */
+export const OFFLINE_REASON_LABEL: Record<string, string> = {
+  updating: "更新中"
+};
+
+/** 在线/离线状态：空心点 = 离线（含自更新窗口的方点变体），实心 = 在线。
+ *  monitor 总览与 update 升级页共用同一映射（QR-W19：两份实现已收敛到此）。 */
+export function hostStateClass(row: HostSummary): string {
+  if (row.online) return "kk-state";
+  return row.status_reason === "updating"
+    ? "kk-state kk-state--updating"
+    : "kk-state kk-state--idle";
+}
+
+export function hostStateText(row: HostSummary): string {
+  if (row.online) return "在线";
+  return OFFLINE_REASON_LABEL[row.status_reason || ""] || "离线";
 }

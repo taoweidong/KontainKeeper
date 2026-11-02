@@ -10,8 +10,7 @@ import time
 
 from sqlalchemy import func, select
 
-from .helpers import shards
-from .tables import heartbeats, hourly, kv
+from .tables import heartbeats, hourly
 
 
 class _StoreMetricsMixin:

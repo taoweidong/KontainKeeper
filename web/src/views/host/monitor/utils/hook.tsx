@@ -14,16 +14,23 @@ import {
   type HostFilters,
   type HostSummary
 } from "@/api/containers";
-import { createCommand, listCollectItems } from "@/api/commands";
+import {
+  createCommand,
+  DEFAULT_COLLECT_ITEMS,
+  listCollectItems
+} from "@/api/commands";
 import { exportHosts } from "@/api/exporting";
 import {
   ageText,
   downloadBlob,
   errText,
   fileStamp,
+  hostStateClass,
+  hostStateText,
   mbText,
   nowSec,
-  numText
+  numText,
+  OFFLINE_REASON_LABEL
 } from "@/utils/kk";
 import { usePolls, useSeq } from "@/utils/kkPoll";
 
@@ -52,13 +59,6 @@ export const HOST_TYPE_LABEL: Record<string, string> = {
   container: "容器"
 };
 
-/** 离线要把服务端记的原因说出来：updating 是设计内的自更新窗口，不是故障，
- *  运维看到它不该去重启 Agent（B6 的语义此前在 UI 上完全丢失）。
- *  取值集合只有 online / updating / LWT 空，其余一律按「离线」呈现。 */
-export const OFFLINE_REASON_LABEL: Record<string, string> = {
-  updating: "更新中"
-};
-
 /** 计量条填充：钳到 0–100，坏值不画出越界的条。
  *  NaN/Infinity 必须显式挡掉（QR29-W5）：Math.min/max 会透传 NaN，
  *  界面会渲染出字面 NaN，插件写坏指标即可触发。 */
@@ -76,19 +76,6 @@ export function tickState(row: HostSummary): { n: number; cls: string } {
   if (age <= 120) return { n: 2, cls: "kk-ticks--mid" };
   if (age <= 600) return { n: 1, cls: "kk-ticks--low" };
   return { n: 0, cls: "" };
-}
-
-/** 在线/离线状态：空心点 = 离线（含自更新窗口的方点变体），实心 = 在线 */
-export function stateClass(row: HostSummary): string {
-  if (row.online) return "kk-state";
-  return row.status_reason === "updating"
-    ? "kk-state kk-state--updating"
-    : "kk-state kk-state--idle";
-}
-
-export function stateText(row: HostSummary): string {
-  if (row.online) return "在线";
-  return OFFLINE_REASON_LABEL[row.status_reason || ""] || "离线";
 }
 
 export function useMonitor() {
@@ -332,14 +319,13 @@ export function useMonitor() {
     }
   }
 
-  /** 默认预勾的三项：只在后端确实支持时才预勾，不硬塞采集项清单 */
-  const DEFAULT_ITEMS = ["cpu", "mem", "disk"];
-
   /** 打开采集弹窗。目标由调用方给定：批量=当前勾选，行级=这一台。 */
   async function openCollectDialog(targets: HostSummary[]) {
     if (!(await ensureCollectItems())) return;
     collectTargets.value = targets;
-    dialog.items = DEFAULT_ITEMS.filter(i => collectItems.value.includes(i));
+    dialog.items = DEFAULT_COLLECT_ITEMS.filter(i =>
+      collectItems.value.includes(i)
+    );
     dialog.visible = true;
   }
 
@@ -469,7 +455,7 @@ export function useMonitor() {
       label: "状态",
       width: 92,
       cellRenderer: ({ row }) => (
-        <span class={stateClass(row)}>{stateText(row)}</span>
+        <span class={hostStateClass(row)}>{hostStateText(row)}</span>
       )
     },
     {

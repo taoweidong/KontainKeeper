@@ -163,3 +163,39 @@ describe("argvText：命令内容预览的统一出口（QR29-E.2）", () => {
     expect(argvText(undefined)).toBe("-");
   });
 });
+
+// ---- 状态映射（QR-W19：monitor/update 两页收敛到 utils/kk 的唯一实现）----
+
+import {
+  OFFLINE_REASON_LABEL,
+  hostStateClass,
+  hostStateText
+} from "@/utils/kk";
+import type { HostSummary } from "@/api/containers";
+
+const host = (over: Record<string, unknown> = {}): HostSummary =>
+  ({ online: true, status_reason: "", ...over } as HostSummary);
+
+describe("hostStateClass/hostStateText：B6 的 updating 方点不能丢", () => {
+  it("在线 = 默认实心绿点；自更新窗口 = 方点变体 + 「更新中」；其余离线 = 空心「离线」", () => {
+    expect(hostStateClass(host())).toBe("kk-state");
+    expect(hostStateText(host())).toBe("在线");
+
+    expect(hostStateClass(host({ online: false, status_reason: "updating" }))).toBe(
+      "kk-state kk-state--updating"
+    );
+    expect(hostStateText(host({ online: false, status_reason: "updating" }))).toBe(
+      "更新中"
+    );
+
+    expect(hostStateClass(host({ online: false }))).toBe("kk-state kk-state--idle");
+    expect(hostStateText(host({ online: false }))).toBe("离线");
+    expect(hostStateText(host({ online: false, status_reason: "weird" }))).toBe(
+      "离线"
+    );
+  });
+
+  it("离线原因词表只认 updating：未知原因一律呈现为「离线」", () => {
+    expect(OFFLINE_REASON_LABEL).toEqual({ updating: "更新中" });
+  });
+});

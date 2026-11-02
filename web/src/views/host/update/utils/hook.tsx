@@ -14,6 +14,8 @@ import {
 import {
   ageText,
   errText,
+  hostStateClass,
+  hostStateText,
   statusLabel,
   statusType,
   tsText,
@@ -52,18 +54,6 @@ import { usePolls, useSeq } from "@/utils/kkPoll";
  * 三档都比色块更可扫读；`kk-warn` 不在这里出现——它专指「版本号落后于待分发版本」，
  * 那个语义给「当前版本」列的文字色用（见下）。
  */
-const hostStateClass = (row: HostSummary): string => {
-  if (row.online) return "kk-state";
-  if (row.status_reason === "updating") return "kk-state kk-state--updating";
-  return "kk-state kk-state--idle";
-};
-
-const hostStateText = (row: HostSummary): string => {
-  if (row.online) return "在线";
-  if (row.status_reason === "updating") return "更新中";
-  return "离线";
-};
-
 /**
  * 台账状态列的严重度分档：**逐档照搬 `@/utils/kk` 的 `statusType` 返回值**
  * （与 command/components/utils/hook.tsx 同一张映射表，L1-5 评审锁死的口径）：

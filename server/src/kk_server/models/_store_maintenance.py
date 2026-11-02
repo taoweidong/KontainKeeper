@@ -9,11 +9,10 @@
 import json
 import time
 
-from sqlalchemy import and_, case, delete, func, select, update
+from sqlalchemy import and_, delete, func, select, update
 
-from .helpers import shards
-from .tables import (ONLINE_GRACE, audit, commands, containers, heartbeats,
-                     hourly, kv, sessions, updates)
+from .tables import (audit, commands, containers, heartbeats, hourly, kv,
+                     sessions, updates)
 
 
 class _StoreMaintenanceMixin:

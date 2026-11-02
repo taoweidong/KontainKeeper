@@ -18,7 +18,6 @@
 import asyncio
 import hashlib
 import hmac
-import json
 import os
 import time
 from typing import List
@@ -28,7 +27,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from .deps import AgentIp, AdminUser, agent_ip_auth, current_user
-from ..models.helpers import clamp
+from ..models.helpers import AGENT_DOWNLOAD_PATH, clamp
 from ..models.tables import ONLINE_GRACE
 from ..models.version import count_outdated, version_lt
 
@@ -187,8 +186,7 @@ def _download_url(request: Request) -> str:
     绝对地址让镜像侧零配置即可升级。
     """
     base = getattr(request.app.state.settings, "public_url", "") or ""
-    path = "/api/system/agent/download"
-    return base + path if base else path
+    return base + AGENT_DOWNLOAD_PATH if base else AGENT_DOWNLOAD_PATH
 
 
 @router.get("/updates")

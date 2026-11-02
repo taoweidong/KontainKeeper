@@ -8,7 +8,11 @@ import { computed, onMounted, reactive, ref } from "vue";
 import { useRoute } from "vue-router";
 import { ElMessage } from "element-plus";
 
-import { createCommand, listCollectItems } from "@/api/commands";
+import {
+  createCommand,
+  DEFAULT_COLLECT_ITEMS,
+  listCollectItems
+} from "@/api/commands";
 import { listHosts, type HostSummary } from "@/api/containers";
 import { errText } from "@/utils/kk";
 import { confirmDispatch } from "@/utils/kkConfirm";
@@ -35,9 +39,6 @@ const collectForm = reactive({
   items: [] as string[]
 });
 
-/** 默认勾选的三项：只在后端确实支持时才预勾，不作为失败兜底 */
-const DEFAULT_ITEMS = ["cpu", "mem", "disk"];
-
 const picked = computed(() =>
   hosts.value.filter(h => collectForm.pods.includes(h.pod))
 );
@@ -62,7 +63,7 @@ async function loadItems() {
     itemsFailed.value = false;
     collectForm.items = prefilled
       ? collectForm.items.filter(i => avail.includes(i))
-      : DEFAULT_ITEMS.filter(i => avail.includes(i));
+      : DEFAULT_COLLECT_ITEMS.filter(i => avail.includes(i));
     prefilled = true;
   } catch (e: any) {
     items.value = [];

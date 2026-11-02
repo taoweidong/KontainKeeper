@@ -89,3 +89,17 @@ def clamp(v, lo, hi):
     这里只收「钳」这个动作本身（QR29-S17）。
     """
     return min(max(v, lo), hi)
+
+
+# Agent 二进制下载路径：下发给 Agent 的 URL 与服务端路由必须同源，
+# 桥接（publish_update）与控制器（_download_url）共用这一个常量
+AGENT_DOWNLOAD_PATH = "/api/system/agent/download"
+
+
+def offset_or_none(offset):
+    """分页 offset 归一：负数/0/None 都按「未指定」处理。
+
+    负 offset 直传会让 PG/MySQL 报错（SQLite 则静默按 0 取——三库行为分叉）；
+    三处列表接口曾各写一遍这个防御（QR-S48）。
+    """
+    return offset if offset and offset > 0 else None

@@ -115,3 +115,7 @@ export const getCommandOut = (id: string) => {
     params: { format: "text" }
   });
 };
+
+/** 默认预勾的三项：只在后端确实支持时才预勾，不硬塞采集项清单（QR-W19 收口）。
+ *  monitor 总览的采集弹窗与 command/collect 页共用，语义上属于命令采集域。 */
+export const DEFAULT_COLLECT_ITEMS = ["cpu", "mem", "disk"];

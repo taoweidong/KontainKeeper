@@ -6,13 +6,12 @@
 """
 
 
-import asyncio
 import base64
 import json
 import secrets
 import time
 
-from sqlalchemy import and_, case, delete, func, insert, or_, select, update
+from sqlalchemy import case, func, insert, or_, select, update
 
 from .helpers import TAIL_B64_CHARS, _b64_tail, shards
 from .version import version_lt as _version_lt

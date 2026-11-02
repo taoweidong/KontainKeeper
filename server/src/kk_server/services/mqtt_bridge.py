@@ -32,6 +32,7 @@ import paho.mqtt.client as mqtt
 from .. import ACCEPT_PROTO_VERS, PROTO_VER
 from ..config import ip_in_whitelist
 from ..logsetup import get_logger
+from ..models.helpers import AGENT_DOWNLOAD_PATH
 from ..models.tables import ONLINE_GRACE
 from ..models.version import version_lt
 
@@ -500,7 +501,7 @@ class MqttBridge:
     def _download_url(self):
         """配了 KK_PUBLIC_URL 就下发绝对地址：镜像侧零配置也能升级（A6.1）。"""
         base = getattr(self.s, "public_url", "") or ""
-        path = "/api/system/agent/download"
+        path = AGENT_DOWNLOAD_PATH
         return base + path if base else path
 
     async def _maybe_push_upgrade(self, host, agent_ver):

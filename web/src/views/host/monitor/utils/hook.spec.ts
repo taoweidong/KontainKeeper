@@ -3,7 +3,7 @@
  *  这批函数在 500 台 × 每 10s 轮询的热路径上被逐行调用，边界值全部钉死：
  *  - fillPct 的 NaN/Infinity 钳制（QR29-W5：插件写坏指标不许渲染出字面 NaN）
  *  - tickState 的四档分级边界（30/120/600 秒，写进列头 tooltip 的口径）
- *  - 状态判级的 updating 方点变体（B6：自更新窗口不是故障）
+ *  - 状态判级的 updating 方点变体已随实现迁到 utils/kk.spec.ts（QR-W19 收口）
  */
 import { describe, expect, it, vi } from "vitest";
 import type { HostSummary } from "@/api/containers";
@@ -15,14 +15,7 @@ vi.mock("vue-router", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock("@/utils/http", () => ({ http: { request: vi.fn() } }));
 vi.mock("@/utils/message", () => ({ message: vi.fn() }));
 
-import {
-  HOST_TYPE_LABEL,
-  OFFLINE_REASON_LABEL,
-  fillPct,
-  stateClass,
-  stateText,
-  tickState
-} from "./hook";
+import { HOST_TYPE_LABEL, fillPct, tickState } from "./hook";
 
 const host = (over: Partial<HostSummary> = {}): HostSummary =>
   ({
@@ -88,30 +81,6 @@ describe("tickState：心跳三格判级（阈值与列头 tooltip 同一口径�
     });
     expect(tickState(host({ age_sec: 600 })).cls).toBe("kk-ticks--low");
     expect(tickState(host({ age_sec: 601 }))).toEqual({ n: 0, cls: "" });
-  });
-});
-
-describe("状态判级：B6 的 updating 方点不能丢", () => {
-  it("在线 = 默认实心绿点；自更新窗口 = 方点变体 + 「更新中」；其余离线 = 空心「离线」", () => {
-    expect(stateClass(host())).toBe("kk-state");
-    expect(stateText(host())).toBe("在线");
-
-    expect(stateClass(host({ online: false, status_reason: "updating" }))).toBe(
-      "kk-state kk-state--updating"
-    );
-    expect(stateText(host({ online: false, status_reason: "updating" }))).toBe(
-      "更新中"
-    );
-
-    expect(stateClass(host({ online: false }))).toBe("kk-state kk-state--idle");
-    expect(stateText(host({ online: false }))).toBe("离线");
-    expect(stateText(host({ online: false, status_reason: "weird" }))).toBe(
-      "离线"
-    );
-  });
-
-  it("离线原因词表只认 updating：未知原因一律呈现为「离线」", () => {
-    expect(OFFLINE_REASON_LABEL).toEqual({ updating: "更新中" });
   });
 });
 

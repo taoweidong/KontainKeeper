@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from .deps import CurrentUser, HostFilters, current_user
-from ..models.helpers import clamp
+from ..models.helpers import clamp, offset_or_none
 from ..models.store import DISK_ALERT_PCT
 from ..models.tables import ONLINE_GRACE
 from ..models.version import version_lt
@@ -123,7 +123,7 @@ async def list_containers(request: Request, filters: HostFilters,
         cap = min(limit, 5000)
     else:
         cap = 5000 if view == "full" else None
-    off = offset if offset and offset > 0 else None
+    off = offset_or_none(offset)
     # 一次查回在线集合与最新版本再逐行拼装：500 台只有几次往返，不在循环里打 500 次查询
     # （D1.3 明确要求 KV 只读一次——每行查一次就是与 P1-1 同型的 N+1）
     # total 与列表共用同一套筛选条件，分页控件才不会对着筛完的列表说谎（QR-S36）

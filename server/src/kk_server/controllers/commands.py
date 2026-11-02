@@ -15,7 +15,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
 from ..config import COLLECT_ITEMS, COMMAND_KINDS
-from ..models.helpers import _b64_tail, clamp
+from ..models.helpers import _b64_tail, clamp, offset_or_none
 from ..services.security import is_blacklisted
 from .deps import CurrentUser, current_user
 
@@ -170,8 +170,7 @@ async def list_commands(request: Request, pod: Optional[str] = None, limit: int 
     """
     store = request.app.state.store
     limit = clamp(limit, 1, 500)
-    # 负 offset 直传会让 PG/MySQL 500（containers 已有正确写法，这里对齐）
-    off = offset if offset and offset > 0 else None
+    off = offset_or_none(offset)
     items, total = await asyncio.gather(
         store.list_commands(pod=pod or None, limit=limit, offset=off,
                             batch=batch or None, status=status or None,
