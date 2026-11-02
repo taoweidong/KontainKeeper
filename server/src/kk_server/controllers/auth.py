@@ -134,8 +134,11 @@ async def login(body: LoginBody, request: Request):
         raise HTTPException(status_code=403, detail="账号已被禁用")
     token = await store.create_session(username)
     await store.add_audit(username, "login_ok", {})
+    # fail-closed（QR-S45）：用户行在并发删除窗口消失时回空角色，而不是宣称 admin
+    # ——角色缺失只能收窄、不能放大。实际权限判定走 require_admin 实时查库，
+    # 这里的 roles 只喂前端菜单展示。
     return {"token": token, "username": username,
-            "roles": [user["role"] if user else "admin"]}
+            "roles": [user["role"]] if user else []}
 
 
 @router.post("/logout")
@@ -159,4 +162,5 @@ async def logout(request: Request):
 async def me(user: CurrentUser, request: Request):
     """会话身份：鉴权走 CurrentUser 依赖（QR-S2），漏配路由级依赖也会被参数兜住。"""
     role = await request.app.state.store.get_user_role(user)
-    return {"username": user, "roles": [role or "admin"]}
+    # fail-closed（QR-S45）：角色缺失回空而不是 admin，理由同 login。
+    return {"username": user, "roles": [role] if role else []}

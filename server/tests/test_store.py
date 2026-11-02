@@ -584,3 +584,51 @@ async def test_verify_admin_missing_user_no_short_circuit(store):
 
     assert missing > exists * 0.3, \
         "不存在用户耗时 %fs 与存在用户 %fs 差距过大，时序侧信道未抹平" % (missing, exists)
+
+
+# ---- QR-S43/S44：帧级容错与列宽收敛、口令重置吊销会话 ----
+
+async def test_record_hb_interval_guards(store):
+    """心跳 interval 坏值回落、越界钳制（QR-S43）：坏值此前直接 ValueError，
+    整帧心跳（含指标点）一起丢；自报 2e9 可让死机主机永判在线。"""
+    now = int(time.time())
+    await store.set_online("h-i1", True)
+    await store.record_hb("h-i1", {"ts": now, "interval": "abc",
+                                   "metrics": {"cpu": 1.0}})
+    row = await store.get_container("h-i1")
+    assert row["hb_interval"] == 60 and row["last_metrics"] != ""
+    await store.record_hb("h-i1", {"ts": now, "interval": 2_000_000_000,
+                                   "metrics": {"cpu": 2.0}})
+    assert (await store.get_container("h-i1"))["hb_interval"] == 3600
+    await store.record_hb("h-i1", {"ts": now, "interval": -5,
+                                   "metrics": {"cpu": 3.0}})
+    assert (await store.get_container("h-i1"))["hb_interval"] == 1
+    # 0/缺失与「没报」同义，回落默认 60（`or` 兜底是既有语义，不在此改）
+    await store.record_hb("h-i1", {"ts": now, "interval": 0,
+                                   "metrics": {"cpu": 4.0}})
+    assert (await store.get_container("h-i1"))["hb_interval"] == 60
+
+
+async def test_set_online_clips_agent_reported_strings(store):
+    """reason/agent_ver/image 与 meta 各字段同款收敛到列宽（QR-S43）：
+    MySQL 严格模式下超长 reason 报 1406，该主机 status 整帧落库失败、永远离线。"""
+    await store.set_online("h-clip", True, image="i" * 500, agent_ver="v" * 100,
+                           reason="r" * 100)
+    row = await store.get_container("h-clip")
+    assert row["online"] == 1
+    assert len(row["image"]) == 200
+    assert len(row["agent_ver"]) == 40
+    assert len(row["status_reason"]) == 20
+
+
+async def test_update_user_password_reset_revokes_sessions(store):
+    """重置口令与禁用同款吊销既有会话（QR-S44）：口令泄露后管理员重置，
+    攻击者手里的 12h token 不能继续有效；仅改角色不吊销。"""
+    await store.create_user("u-rev", "old-pass", "operator")
+    tok = await store.create_session("u-rev")
+    assert await store.get_session(tok) == "u-rev"
+    await store.update_user("u-rev", password="new-pass")
+    assert await store.get_session(tok) is None
+    tok2 = await store.create_session("u-rev")
+    await store.update_user("u-rev", role="admin")
+    assert await store.get_session(tok2) == "u-rev"

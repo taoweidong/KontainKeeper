@@ -101,14 +101,17 @@ async def create_commands(body: CommandBody, request: Request, user: CurrentUser
     store, bridge = request.app.state.store, request.app.state.bridge
 
     payload = _build_payload(body)
-    if not body.pods:
+    # 与升级路径（agent_update.upgrade_hosts）同口径：strip + 去重 + 保持顺序——
+    # 重复 pod 会建两条重复命令、执行两遍（QR-S47）；纯空白项按缺失处理。
+    pods = list(dict.fromkeys(p.strip() for p in (body.pods or []) if p and p.strip()))
+    if not pods:
         raise HTTPException(status_code=400, detail="目标容器不能为空")
     if bridge is None:
         raise HTTPException(status_code=503, detail="服务端未配置 KK_MQTT_URL，命令通道不可用")
 
     # 先一次查全量校验存在性，再批量建、逐条发布：
     # 避免「部分已下发、部分 404」造成状态撕裂，也避免 N 次单查（500 台一次点击）
-    missing = sorted(set(body.pods) - await store.containers_exist(body.pods))
+    missing = sorted(set(pods) - await store.containers_exist(pods))
     if missing:
         raise HTTPException(status_code=404, detail="容器不存在: %s" % ", ".join(missing))
 
@@ -121,18 +124,18 @@ async def create_commands(body: CommandBody, request: Request, user: CurrentUser
     if body.kind == "shell" and is_blacklisted(argv_for_check,
                                                request.app.state.cmd_blacklist,
                                                use_shell=use_shell):
-        await store.add_audit(user, "command_blocked", {"argv": argv_for_check, "pods": body.pods})
+        await store.add_audit(user, "command_blocked", {"argv": argv_for_check, "pods": pods})
         raise HTTPException(status_code=400, detail="命令命中黑名单，已被拒绝并记录审计")
 
     ids, batch_id = await store.create_commands_batch(
-        body.pods, body.kind, payload, timeout, user)
+        pods, body.kind, payload, timeout, user)
     # 发布所需字段（id/pod/kind/argv/timeout）在建行时已全部具备，就地组装成 dict
     # 下发即可——回查数据库是 500 次单查换 0 收益（P1-1）。dispatch_command 只做
     # row["..."] 取值，dict 与 Row 同样兼容，无需改桥接。
     argv_json = json.dumps(payload, ensure_ascii=False)
     created = []
     sent_ids = []
-    for cid, pod in zip(ids, body.pods):
+    for cid, pod in zip(ids, pods):
         # dispatch_command 是 paho 的非阻塞发布（线程安全），不是数据库调用
         sent = bridge.dispatch_command({"id": cid, "pod": pod, "kind": body.kind,
                                         "argv": argv_json, "timeout": timeout})
@@ -141,7 +144,7 @@ async def create_commands(body: CommandBody, request: Request, user: CurrentUser
         created.append({"id": cid, "pod": pod, "status": "sent" if sent else "pending"})
     await store.mark_sent_batch(sent_ids)
     await store.add_audit(user, "command_create",
-                    {"kind": body.kind, "argv": payload, "pods": body.pods,
+                    {"kind": body.kind, "argv": payload, "pods": pods,
                      "batch_id": batch_id, "ids": [c["id"] for c in created]})
     return {"items": created, "batch_id": batch_id}
 
@@ -150,9 +153,10 @@ async def create_commands(body: CommandBody, request: Request, user: CurrentUser
 async def list_batches(request: Request, limit: int = 20):
     """最近批次的状态分布：让「500 台一次点击」变成一个可核验的对象。
 
-    必须在 /commands/{cid} 之前注册，否则 "batches" 会被当成命令 id 吃掉。
+    必须在 /commands/{cid} 之前注册，否则 "batches" 会当成命令 id 被吃掉。
     """
-    return {"items": await request.app.state.store.batch_summary(limit=min(limit, 100))}
+    # QR-S47：limit 也要钳下限——负数切片给 list_batches 会变成「去掉最后 N 条」
+    return {"items": await request.app.state.store.batch_summary(limit=clamp(limit, 1, 100))}
 
 
 @router.get("/commands")

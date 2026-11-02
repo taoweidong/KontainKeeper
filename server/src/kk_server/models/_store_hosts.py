@@ -11,7 +11,7 @@ import time
 
 from sqlalchemy import case, func, insert, or_, select, update
 
-from .helpers import _num, shards
+from .helpers import _num, clamp, shards
 from .tables import (ONLINE_GRACE, _SUMMARY_COLS, containers, heartbeats,
                      updates)
 
@@ -200,10 +200,15 @@ class _StoreHostsMixin:
                                            status_reason=(reason or keep)))
         return await self._upsert(
             containers,
-            {"pod": pod, "image": image or "", "agent_ver": agent_ver or "",
+            {"pod": pod,
+             # QR-S43：reason/agent_ver/image 同为 Agent 自报，与 meta 各字段一样
+             # 必须收敛到列宽——MySQL 严格模式下超长 reason 报 1406，该主机的
+             # status 整帧落库失败、永远显示离线；PG/SQLite 则静默存超长，
+             # 三库行为分叉。
+             "image": _clip(image, 200), "agent_ver": _clip(agent_ver, 40),
              "hb_interval": 60, "first_seen": now, "last_seen": now,
              "last_metrics": "", "online": 1, "status_ts": now,
-             "status_reason": str(reason or "online"), **meta},
+             "status_reason": _clip(reason or "online", 20), **meta},
             ["pod"], ["online", "status_ts", "last_seen", "image", "agent_ver",
                       "status_reason"] + list(meta.keys()))
 
@@ -226,8 +231,16 @@ class _StoreHostsMixin:
         # 因为类型错误丢掉——曲线少一个点可以忍，整帧没了就是数据空洞。
         # ip 只在帧里真报了才覆盖：探测失败是「空串」这一正常形态，拿它写回会把
         # status 帧建立的地址抹成空白，详情页的连接信息在一次心跳后就没内容了。
+        # QR-S43：interval 与 ts/pcts 同款设防——坏值回落 60，越界钳进 1..3600。
+        # hb_interval 直接决定在线宽限 max(3*hb_interval, 180)，自报 2e9 可让
+        # 死机主机永判在线、mark_stale_offline 兜底永不生效；Agent 侧合法区间
+        # 1s 起步，1h 上限覆盖一切现实配置。
+        try:
+            hb = int(msg.get("interval") or 60)
+        except (TypeError, ValueError):
+            hb = 60
         vals = {"last_seen": now, "status_ts": now, "last_metrics": raw,
-                "hb_interval": int(msg.get("interval") or 60)}
+                "hb_interval": clamp(hb, 1, 3600)}
         reported_ip = _clip(msg.get("ip"), 64)
         if reported_ip:
             vals["ip"] = reported_ip

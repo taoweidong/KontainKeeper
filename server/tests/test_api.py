@@ -28,7 +28,10 @@ async def api(tmp_path):
     store = app.state.store
     await store.setup()
     await pg_reset(store)
-    # 绕过 lifespan：ASGI Transport 不触发启动事件，这里手工补上等价初始化
+    # 绕过 lifespan：ASGI Transport 不触发启动事件，这里手工补上等价初始化——
+    # ensure_admin 建 admins 行（role 列默认 admin），QR-S45 的 fail-closed
+    # roles 依赖「生产库必有用户行」这一事实，夹具必须与之一致
+    await store.ensure_admin(ADMIN, PASS)
     token = await store.create_session(ADMIN)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -648,3 +651,12 @@ async def test_host_limits_roundtrip(api):
                               params={"hours": 1})).json()
     assert m["disk_limit"] == 85 and m["disk_limit_raw"] is None
     assert m["mem_limit"] is None
+
+
+async def test_me_roles_fail_closed_when_user_row_missing(api):
+    """QR-S45：会话有效但用户行已消失（并发删除窗口）时 roles 回空，
+    不向客户端宣称 admin——角色缺失只能收窄、不能放大。"""
+    tok = await api.store.create_session("ghost-user")
+    r = await api.client.get("/api/me", headers={"Authorization": "Bearer " + tok})
+    assert r.status_code == 200
+    assert r.json()["roles"] == []

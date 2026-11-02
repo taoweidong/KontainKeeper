@@ -8,6 +8,8 @@ import json
 import time
 import types
 
+import paho.mqtt.client as mqtt
+
 import pytest
 
 from _kk_db import kk_db_env, kk_db_url, pg_reset
@@ -681,3 +683,74 @@ async def test_update_result_terminal_frame_is_idempotent(bridge):
     assert audits == ["agent_update_failed"]
     row = await bridge.store.get_update("u-idem")
     assert row["status"] == "failed" and row["reason"] == "sha256_mismatch"
+
+
+# ---- QR-S46：桥接加固回归（mismatch 节流 / uid 唯一 / mqtts 无 CA 痕迹）----
+
+async def test_update_result_mismatch_audit_throttled(bridge):
+    """update_result_mismatch 与 ip_rejected 同型限速：同一台账/主机对在节流窗内
+    只落第一条——匿名发布者持续重放 up- 帧不得变成持续灌审计库。"""
+    await bridge.store.create_update("up-mx-1", "real-host", "0.1.0", "9.9.9")
+    frame = _result_frame("up-mx-1", rc=1, out=b"x")
+    for _ in range(5):
+        await bridge._on_update_result("spoofed-host", "up-mx-1", frame)
+    rows = [a for a in await bridge.store.list_audit(limit=50)
+            if a["action"] == "update_result_mismatch"]
+    assert len(rows) == 1
+
+
+async def test_dispatch_upgrade_uid_unique_within_same_second(bridge):
+    """uid 曾用秒级时间戳：同秒同主机两次建台账会主键冲突（一次性 500）。
+    拼 token 后同秒两次都成功，且不超 updates.id 的 String(48) 列宽。"""
+    latest = {"version": "9.9.9", "sha256": "s", "size": 1}
+    uid1 = await bridge.dispatch_upgrade("dup-host", "0.1.0", latest, online=False)
+    uid2 = await bridge.dispatch_upgrade("dup-host", "0.1.0", latest, online=False)
+    assert uid1 != uid2 and uid1.startswith("up-")
+    assert len(uid1) <= 48 and len(uid2) <= 48
+
+
+def test_mqtts_without_ca_logs_warning(tmp_path):
+    """mqtts:// 未配 CA 静默关证书校验必须留下 warning 痕迹（QR-S46），
+    与 transport 对 TLS 降级的口径一致——降级可以有，但不能无痕。"""
+    from loguru import logger as _lu
+
+    settings = load_settings({
+        **kk_db_env(tmp_path),
+        "KK_MQTT_URL": "mqtts://broker:8883",
+        "KK_TOPIC_PREFIX": "kk/v1",
+        "KK_WEB_DIR": str(tmp_path / "noweb"),
+    })
+    records = []
+    hid = _lu.add(lambda m: records.append(m), level="WARNING")
+    try:
+        MqttBridge(types.SimpleNamespace(), settings, settings.agent_ips,
+                   loop=None, proto_ver=3)
+    finally:
+        _lu.remove(hid)
+    assert any("证书校验" in r for r in records), records[-3:]
+
+    # 配了 CA 不告警：正常加固路径不受噪音干扰
+    settings2 = load_settings({
+        **kk_db_env(tmp_path),
+        "KK_MQTT_URL": "mqtts://broker:8883",
+        "KK_MQTT_TLS_CA": str(tmp_path / "ca.pem"),
+        "KK_TOPIC_PREFIX": "kk/v1",
+        "KK_WEB_DIR": str(tmp_path / "noweb"),
+    })
+    records2 = []
+    hid2 = _lu.add(lambda m: records2.append(m), level="WARNING")
+    try:
+        # tls_set/tls_insecure_set 会真去加载 CA 文件，与本用例无关：
+        # 一起 stub 掉，只看告警分支
+        orig_set, orig_insec = mqtt.Client.tls_set, mqtt.Client.tls_insecure_set
+        mqtt.Client.tls_set = lambda self, *a, **k: None
+        mqtt.Client.tls_insecure_set = lambda self, *a, **k: None
+        try:
+            MqttBridge(types.SimpleNamespace(), settings2, settings2.agent_ips,
+                       loop=None, proto_ver=3)
+        finally:
+            mqtt.Client.tls_set = orig_set
+            mqtt.Client.tls_insecure_set = orig_insec
+    finally:
+        _lu.remove(hid2)
+    assert not any("证书校验" in r for r in records2)

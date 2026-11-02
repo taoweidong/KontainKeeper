@@ -21,9 +21,11 @@ KK_AGENT_IPS 白名单统一校验（ipaddress 网段匹配）。MQTT 经 Broker
 import asyncio
 import base64
 import json
+import secrets
 import ssl
 import threading
 import time
+import traceback
 
 import paho.mqtt.client as mqtt
 
@@ -117,6 +119,12 @@ class MqttBridge:
             self.cli.username_pw_set(settings.mqtt_username, settings.mqtt_password)
         if settings.mqtt_tls_ca or settings.mqtt_url.startswith("mqtts://"):
             ca = settings.mqtt_tls_ca or None
+            if ca is None:
+                # QR-S46：无 CA 的 mqtts 只加密不认证，MITM 可截获 Broker 凭据。
+                # 与 transport 对 TLS 降级的显式 warning 同口径——降级可以有，
+                # 但必须留下能让运维搜到的痕迹。
+                log.warning("mqtts:// 未配置 KK_MQTT_TLS_CA，已关闭服务端证书校验"
+                            "（加密但可被中间人截获）")
             self.cli.tls_set(ca_certs=ca, cert_reqs=ssl.CERT_REQUIRED if ca else ssl.CERT_NONE)
             self.cli.tls_insecure_set(bool(settings.mqtt_tls_insecure))
         self.cli.reconnect_delay_set(min_delay=1, max_delay=60)
@@ -132,8 +140,11 @@ class MqttBridge:
     def stop(self):
         self._stopping.set()
         try:
-            self.cli.loop_stop()
+            # 先 disconnect 再停循环（QR-S46）：DISCONNECT 包要靠网络线程发出，
+            # 先 loop_stop 会把包憋死在队列里，Broker 只能等 keepalive 超时回收会话，
+            # 重启窗口内 Agent 的 QoS1 命令投递时序因此劣化。
             self.cli.disconnect()
+            self.cli.loop_stop()
         except Exception:
             log.debug("bridge stop ignored", exc_info=True)
         self.connected.clear()
@@ -246,7 +257,11 @@ class MqttBridge:
 
     def _on_task_done(self, task):
         if not task.cancelled() and task.exception():
-            log.error("桥接处理帧失败: %s", task.exception())
+            # 带栈（QR-S46）：心跳落库失败只有一行 repr 时 traceback 全丢，
+            # 排障只能看到「失败了」看不到「在哪一行」。
+            exc = task.exception()
+            tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+            log.error("桥接处理帧失败: %s\n%s", exc, tb.rstrip())
 
     def _audit_throttled(self, key):
         """外部可控的高频审计事件限速：同 key 在 AUDIT_THROTTLE 秒内只落第一条。
@@ -412,6 +427,12 @@ class MqttBridge:
             return
         if row["pod"] != host:
             self._bump("rejected")
+            # QR-S46：该路径由 Broker 侧匿名发布者可控（重放任意 up- 帧），与
+            # ip_rejected/host_mismatch 同型走节流，否则持续重放就是持续灌审计库。
+            # key 不带攻击者可随机的 id。
+            if self._audit_throttled(("update_result_mismatch",
+                                      str(row["pod"]), str(host))):
+                return
             await self.store.add_audit("mqtt", "update_result_mismatch",
                                        {"expect": row["pod"], "got": host, "id": cid})
             return
@@ -507,7 +528,10 @@ class MqttBridge:
         - `online=False` 时只写 `queued` **不发帧**：主机离线时帧要靠 Broker 的持久会话
           排队，而此刻它连会话都没有；等重连时补投即可（D2.3）。
         """
-        uid = "up-%s-%d" % (host, int(time.time()))
+        # QR-S46：秒级时间戳做主键，auto 推送与人工批量同秒命中同一主机时
+        # create_update 主键冲突（一次性 500/桥接任务异常）；拼入随机 token 消除。
+        # host 截断保证总长 ≤ String(48)（pod 列允许 120，uid 不能跟着爆）。
+        uid = "up-%s-%d-%s" % (host[:26], int(time.time()), secrets.token_hex(3))
         await self.store.create_update(uid, host, from_ver or "", latest.get("version", ""),
                                        status="pending" if online else "queued")
         if not online:

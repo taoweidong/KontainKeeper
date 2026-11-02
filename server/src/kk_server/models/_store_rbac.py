@@ -224,6 +224,9 @@ class _StoreRbacMixin:
             salt = secrets.token_hex(16)
             await self._run(update(admins).where(admins.c.username == username)
                             .values(salt=salt, pw_hash=_pwdf(salt, password)))
+            # QR-S44：重置口令与禁用同款吊销既有会话——口令泄露后管理员重置，
+            # 攻击者手里的 12h token 不能继续有效。
+            await self._run(delete(sessions).where(sessions.c.username == username))
         if enabled is False:
             # 禁用即吊销会话：12h TTL 的旧 token 不能继续用
             await self._run(delete(sessions).where(sessions.c.username == username))

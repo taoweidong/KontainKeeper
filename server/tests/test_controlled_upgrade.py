@@ -329,3 +329,35 @@ async def test_upgrade_rejects_bad_version(bridge_app):
     body = r.json()
     assert not body["accepted"]
     assert body["skipped"][0]["reason"] == "bad_version"
+
+
+# ---- QR-S47：批量命令 pods 去重 / 批次 limit 钳制 ----
+
+async def test_command_pods_deduped_and_stripped(bridge_app):
+    """重复/带空白的 pods 去重后只建一条命令（对齐升级路径口径）：
+    重复目标此前会建两条重复命令并执行两遍。"""
+    await bridge_app.store.upsert_container("h1", "img", "0.1.0", 60)
+    r = await bridge_app.client.post("/api/commands", json={
+        "pods": ["h1", " h1 ", "h1"], "kind": "shell",
+        "argv": ["echo", "hi"]})
+    assert r.status_code == 200, r.text
+    items = r.json()["items"]
+    assert [i["pod"] for i in items] == ["h1"]
+    # 命令帧也只发一条
+    cmd_frames = [m for m in bridge_app.bridge.cli.msgs
+                  if m["topic"].endswith("/h1/cmd")]
+    assert len(cmd_frames) == 1
+
+
+async def test_command_pods_blank_only_rejected(bridge_app):
+    """纯空白 pods 与空列表同口径 400，而不是建出空批次。"""
+    r = await bridge_app.client.post("/api/commands", json={
+        "pods": ["  ", ""], "kind": "shell", "argv": ["echo", "hi"]})
+    assert r.status_code == 400
+
+
+async def test_list_batches_negative_limit_clamped(bridge_app):
+    """limit 负数此前变成「去掉最后 N 条」的错误切片，现钳进 1..100。"""
+    r = await bridge_app.client.get("/api/commands/batches",
+                                    params={"limit": -5})
+    assert r.status_code == 200 and r.json()["items"] == []
