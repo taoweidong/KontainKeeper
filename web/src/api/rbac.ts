@@ -53,12 +53,17 @@ export const updateUser = (
   username: string,
   data: { role?: string; password?: string; enabled?: boolean }
 ) =>
-  http.request<{ ok: boolean }>("put", `/api/system/users/${username}`, {
-    data
-  });
+  http.request<{ ok: boolean }>(
+    "put",
+    `/api/system/users/${encodeURIComponent(username)}`,
+    { data }
+  );
 
 export const deleteUser = (username: string) =>
-  http.request<{ ok: boolean }>("delete", `/api/system/users/${username}`);
+  http.request<{ ok: boolean }>(
+    "delete",
+    `/api/system/users/${encodeURIComponent(username)}`
+  );
 
 // ---- 角色管理 ----
 
@@ -82,10 +87,17 @@ export const updateRole = (
   name: string,
   data: { label?: string; remark?: string; menus?: Array<string> }
 ) =>
-  http.request<{ ok: boolean }>("put", `/api/system/roles/${name}`, { data });
+  http.request<{ ok: boolean }>(
+    "put",
+    `/api/system/roles/${encodeURIComponent(name)}`,
+    { data }
+  );
 
 export const deleteRole = (name: string) =>
-  http.request<{ ok: boolean }>("delete", `/api/system/roles/${name}`);
+  http.request<{ ok: boolean }>(
+    "delete",
+    `/api/system/roles/${encodeURIComponent(name)}`
+  );
 
 // ---- 菜单管理 ----
 
@@ -115,4 +127,8 @@ export const updateMenu = (
     enabled?: boolean;
   }
 ) =>
-  http.request<{ ok: boolean }>("put", `/api/system/menus/${name}`, { data });
+  http.request<{ ok: boolean }>(
+    "put",
+    `/api/system/menus/${encodeURIComponent(name)}`,
+    { data }
+  );
