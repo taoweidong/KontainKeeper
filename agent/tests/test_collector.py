@@ -332,3 +332,15 @@ def test_disk_io_rate_clamps_counter_reset_to_zero(ps):
     out, _ = c.disk_io_metrics({"disk_io": (prev, 100 * MB, 200 * MB, 1000, 2000)})
     assert out["disk_read_mb"] == 0.0 and out["disk_read_iops"] == 0.0
     assert out["disk_write_mb"] == 0.0 and out["disk_write_iops"] == 0.0
+
+
+def test_cpu_metrics_load_failure_and_empty_percpu(ps):
+    """getloadavg 失败（Windows 真机常见）→ load=None；percpu 空 → cpu_per_core=[]。
+
+    协议字段生产者级分支：此前测试恒走 getloadavg 成功路径，Windows 真机
+    每帧心跳都会走到的这条路反而没有锁。"""
+    ps(cpu_percent=lambda interval=None, percpu=False: [] if percpu else 12.0,
+       cpu_count=lambda: 4,
+       getloadavg=lambda: (_ for _ in ()).throw(OSError("not available")))
+    got = c.cpu_metrics()
+    assert got == {"cpu": 12.0, "cpu_cores": 4, "cpu_per_core": [], "load": None}

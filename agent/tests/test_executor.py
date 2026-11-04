@@ -220,3 +220,13 @@ def test_kill_tree_permission_error_does_not_break_result(monkeypatch):
     r = ex.run_shell([sys.executable, "-c", "import time; time.sleep(2)"], timeout=1)
     assert r["timed_out"] is True and r["rc"] == -1, "杀不掉也要收敛成超时，不能变 rc=125"
 
+
+
+def test_runner_timeout_non_numeric_falls_back_30s():
+    """timeout 字段被污染成非数字（畸形帧）：回落 30s 继续执行，任务不崩。"""
+    got = queue.Queue()
+    runner = ex.Runner(lambda cid, res: got.put(res))
+    runner.submit({"id": "c-badto", "argv": [sys.executable, "-c", "print('ok')"],
+                   "timeout": "abc"})
+    res = got.get(timeout=20)
+    assert res["rc"] == 0 and b"ok" in res["out"] and res["timed_out"] is False
