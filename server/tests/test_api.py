@@ -660,3 +660,49 @@ async def test_me_roles_fail_closed_when_user_row_missing(api):
     r = await api.client.get("/api/me", headers={"Authorization": "Bearer " + tok})
     assert r.status_code == 200
     assert r.json()["roles"] == []
+
+
+# ---- QR-S49：POST /api/commands 校验分支（此前只被需 Broker 的集成用例触达，
+# 无 Broker 日常开发时这层完全裸奔）。全部走 ASGI Transport，零 mock。----
+
+async def _post_cmd(api, **over):
+    body = {"pods": ["host-a"], "kind": "shell", "argv": ["echo", "hi"]}
+    body.update(over)
+    return await api.client.post("/api/commands", json=body)
+
+
+async def test_command_kind_unknown_rejected(api):
+    r = await _post_cmd(api, kind="wat")
+    assert r.status_code == 400 and "kind" in r.json()["detail"]
+
+
+async def test_command_collect_requires_items(api):
+    r = await _post_cmd(api, kind="collect", items=[])
+    assert r.status_code == 400 and "items" in r.json()["detail"]
+
+
+async def test_command_collect_unknown_item_rejected(api):
+    r = await _post_cmd(api, kind="collect", items=["cpu", "nope"])
+    assert r.status_code == 400 and "采集项不存在" in r.json()["detail"]
+
+
+async def test_command_shell_requires_argv_or_cmdline(api):
+    r = await _post_cmd(api, argv=None, cmdline="")
+    assert r.status_code == 400 and "argv 或 cmdline" in r.json()["detail"]
+
+
+async def test_command_cmdline_shlex_failure_rejected(api):
+    """use_shell=false 的 cmdline 走 shlex 拆分：引号不闭合要给 400 而非 500。"""
+    r = await _post_cmd(api, argv=None, cmdline="echo 'unclosed", use_shell=False)
+    assert r.status_code == 400 and "解析失败" in r.json()["detail"]
+
+
+async def test_command_empty_pods_rejected(api):
+    r = await _post_cmd(api, pods=[])
+    assert r.status_code == 400 and "目标容器" in r.json()["detail"]
+
+
+async def test_command_without_bridge_503(api):
+    """api 夹具未配 KK_MQTT_URL：命令通道不可用必须明说（503），而不是静默建行。"""
+    r = await _post_cmd(api)
+    assert r.status_code == 503 and "KK_MQTT_URL" in r.json()["detail"]

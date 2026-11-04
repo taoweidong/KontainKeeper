@@ -754,3 +754,26 @@ def test_mqtts_without_ca_logs_warning(tmp_path):
     finally:
         _lu.remove(hid2)
     assert not any("证书校验" in r for r in records2)
+
+
+async def test_sweep_evicts_dead_result_locks(bridge):
+    """10 分钟无帧的 result 锁被 sweep 回收（内存无界增长的防线），
+    活跃锁不受影响。"""
+    import threading as _th
+    bridge._result_locks["c-dead"] = _th.Lock()
+    bridge._result_lock_ts["c-dead"] = int(time.time()) - 700
+    bridge._result_locks["c-live"] = _th.Lock()
+    bridge._result_lock_ts["c-live"] = int(time.time())
+    await bridge.sweep()
+    assert "c-dead" not in bridge._result_locks
+    assert "c-dead" not in bridge._result_lock_ts
+    assert "c-live" in bridge._result_locks
+
+
+async def test_dispatch_command_corrupt_argv_falls_back_empty(bridge):
+    """argv 列损坏（JSON 解析失败）按空 argv 下发，桥接任务不得崩掉。"""
+    row = {"id": "c-corrupt", "pod": "h1", "kind": "shell",
+           "argv": "not-json{", "timeout": 5}
+    assert bridge.dispatch_command(row) is True
+    payload = json.loads(bridge.cli.msgs[-1]["payload"])
+    assert payload["id"] == "c-corrupt" and payload["argv"] == []

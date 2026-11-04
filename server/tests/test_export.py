@@ -233,3 +233,23 @@ async def test_export_hosts_follows_page_filters(api):
                              params={"group": "ops-web", "docker_unhealthy": "1"})
     _, rows = parse(r.text)
     assert [x[0] for x in rows] == ["web-02"]
+
+
+# ---- 导出行数上限的边界参数化（外带出口的护栏）----
+
+@pytest.mark.parametrize("raw,expect", [
+    ("abc", 2000), (None, 2000), (0, 2000), (-5, 2000), ("100", 100),
+    (20000, 20000),
+])
+def test_export_limit_clamped(raw, expect):
+    from kk_server.controllers.exporting import _limit
+    assert _limit(raw) == expect
+
+
+def test_export_limit_over_max_rejected():
+    from fastapi import HTTPException
+
+    from kk_server.controllers.exporting import MAX_ROWS, _limit
+    with pytest.raises(HTTPException) as ei:
+        _limit(MAX_ROWS + 1)
+    assert ei.value.status_code == 400

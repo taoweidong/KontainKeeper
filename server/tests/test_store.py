@@ -632,3 +632,29 @@ async def test_update_user_password_reset_revokes_sessions(store):
     tok2 = await store.create_session("u-rev")
     await store.update_user("u-rev", role="admin")
     assert await store.get_session(tok2) == "u-rev"
+
+
+# ---- QR-S50：append_result 的水位幂等边界 ----
+
+async def test_append_result_without_seq_appends_unconditionally(store):
+    """无 seq 的老/畸形帧：无法去重，回退无条件追加（保持既有语义）；
+    两次同内容块都进 out_b64，终态由 done 帧盖章。"""
+    await store.upsert_container("pod-seq", "img", "0.1.0", 60)
+    cid = await store.create_command("pod-seq", "shell", ["echo"], 30, "admin")
+    await store.append_result({"id": cid, "seq": None, "out_b64": "aGVsbG8g"})
+    await store.append_result({"id": cid, "seq": None, "out_b64": "aGVsbG8g"})
+    row = await store.get_command(cid)
+    assert row["out_chunks"] == 2           # 无水位：不去重
+    await store.append_result({"id": cid, "seq": None, "out_b64": "", "done": True,
+                               "rc": 0})
+    assert (await store.get_command(cid))["status"] == "done"
+
+
+async def test_append_result_with_bad_seq_treated_as_no_watermark(store):
+    """seq 坏值（"abc"）按「无水位帧」处理：无条件追加而不是抛错丢帧。"""
+    await store.upsert_container("pod-seq2", "img", "0.1.0", 60)
+    cid = await store.create_command("pod-seq2", "shell", ["echo"], 30, "admin")
+    await store.append_result({"id": cid, "seq": "abc", "out_b64": "aGVsbG8="})
+    row = await store.get_command(cid)
+    assert row["out_chunks"] == 1 and row["out_b64"] == "aGVsbG8="
+    assert row["status"] == "running"       # 无 seq 的非终态块保持 running

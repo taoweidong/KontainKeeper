@@ -226,3 +226,41 @@ async def test_menu_update_and_admin_role_bypass(api):
     assert "HostMonitor" in {m["name"] for m in menus}
     granted = await api.store._all(select(role_menus))
     assert all(g["role"] != "admin" for g in granted)
+
+
+async def test_role_without_grants_fails_closed(api):
+    """角色行存在而授权行为空 = 有意清空：可见菜单必须为空（fail-closed 契约），
+    而不是被当成「未初始化」回落全量菜单——回归即越权可见。"""
+    admin_h = await _login(api)
+    r = await api.client.post("/api/system/roles", headers=admin_h,
+                              json={"name": "empty-role", "label": "空授权"})
+    assert r.status_code == 200, r.text
+    r = await api.client.post("/api/system/users", headers=admin_h,
+                              json={"username": "nobody1",
+                                    "password": "nobody-pass-1",
+                                    "role": "empty-role"})
+    assert r.status_code == 200, r.text
+    r = await api.client.post("/api/login",
+                              json={"username": "nobody1",
+                                    "password": "nobody-pass-1"})
+    tok = r.json()["token"]
+    r = await api.client.get("/api/auth/menus",
+                             headers={"Authorization": "Bearer %s" % tok})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["menus"] == []
+    assert body["roles"] == ["empty-role"]
+
+
+async def test_seed_rbac_backfills_missing_route_columns(api):
+    """一阶段升级库的菜单行只有展示元数据：seed_rbac 幂等回填 path/component，
+    且只补路由数据——用户改过的标题保留（内置行的展示元数据不可覆盖）。"""
+    # 夹具库已 seed 过：把该行退化成一阶段形态（只有展示元数据，路由列为空）
+    await api.store.exec_sql(
+        "UPDATE kk_menus SET path='', component='', title='旧标题' "
+        "WHERE name='HostMonitor'")
+    await api.store.seed_rbac()
+    row = await api.store.get_menu("HostMonitor")
+    assert row["path"] == "/hosts/monitor"
+    assert row["component"].endswith("host/monitor/index.vue")
+    assert row["title"] == "旧标题"

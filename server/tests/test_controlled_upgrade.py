@@ -361,3 +361,23 @@ async def test_list_batches_negative_limit_clamped(bridge_app):
     r = await bridge_app.client.get("/api/commands/batches",
                                     params={"limit": -5})
     assert r.status_code == 200 and r.json()["items"] == []
+
+
+async def test_command_unknown_host_404(bridge_app):
+    """目标主机不存在：404 带主机名，而不是建出永远等不到回执的命令行。"""
+    r = await bridge_app.client.post("/api/commands", json={
+        "pods": ["ghost"], "kind": "shell", "argv": ["echo"]})
+    assert r.status_code == 404 and "ghost" in r.json()["detail"]
+
+
+async def test_command_blacklist_blocks_with_audit(bridge_app):
+    """API 边界的黑名单拒绝 + command_blocked 审计 + 不发任何命令帧。
+    此前这条安全红线的 API 层行为只有需 Broker 的集成用例守着（QR-S49）。"""
+    await bridge_app.store.upsert_container("h1", "img", "0.1.0", 60)
+    r = await bridge_app.client.post("/api/commands", json={
+        "pods": ["h1"], "kind": "shell", "argv": ["rm", "-rf", "/data"]})
+    assert r.status_code == 400 and "黑名单" in r.json()["detail"]
+    audit = await bridge_app.store.list_audit(limit=20)
+    assert [a for a in audit if a["action"] == "command_blocked"]
+    assert not [m for m in bridge_app.bridge.cli.msgs
+                if m["topic"].endswith("/h1/cmd")]
