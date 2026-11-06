@@ -99,7 +99,8 @@ kk_agent/                 # 独立 Python 包（编译为单文件二进制）
 - **自定义采集**：投放插件后按 mtime 热加载，结果并入心跳帧的 `custom` 字段；
   单个插件失败只跳过自身。也可下发 `kind=plugin_reload` 立即采集回传。
 - **命令安全**：argv 数组直传 exec（不经 shell 拼接）；黑名单在服务端统一拦截并审计。
-- **守护方式**：镜像 entrypoint-wrapper 监督循环（崩溃 5s 重启）+ 日志轮转；不使用 systemd。
+- **守护方式**：容器内 entrypoint-wrapper 监督循环（崩溃 5s 重启）；非容器 Linux 主机
+  （物理机/VM）走 systemd（`scripts/install.sh` 安装 `deploy/systemd/kk-agent.service`，`Restart=always`）。
 
 ### 3.3 镜像介入（用户无感知）
 
@@ -119,10 +120,13 @@ CMD ["<原 CMD 元素...>"]
 
 ```sh
 #!/bin/sh
-# 后台监管 Agent：崩溃 5s 拉起；自更新 execv 复用 PID 不误判
-( while true; do /opt/kk-agent/kk-agent >>/var/log/kk-agent.log 2>&1; sleep 5; done ) &
+# 后台监管 Agent：崩溃 5s 拉起；自更新 execv 复用 PID 不误判。
+# Agent 日志写 KK_LOG（loguru 文件 sink 负责轮转），supervisor 消息走 KK_SUPERVISOR_LOG
+( while true; do /opt/kk-agent/kk-agent; sleep 5; done ) &
 exec "$@"   # 原启动命令，用户侧完全不变
 ```
+
+实际实现见 `agent/deploy/entrypoint-wrapper.sh`。
 
 v3 起 Agent 零凭据接入（Broker 匿名开放），镜像内只烧入 `KK_SERVER` 等
 非敏感配置；接入管控由服务端 `KK_AGENT_IPS` 白名单承担（上行帧自报 `ip` 校验）。
@@ -152,8 +156,10 @@ kk_server/
 │   ├── containers.py  # 主机列表（?view=summary）/详情/指标
 │   ├── commands.py    # 命令下发（含 kind=collect）/结果/采集项
 │   ├── audit.py       # 审计日志
+│   ├── rbac.py        # 用户/角色/菜单管理（AdminUser）+ /api/auth/menus
+│   ├── exporting.py   # CSV 导出（公式注入防护、行数上限）
 │   ├── stats.py       # GET /api/system/stats 可观测
-│   └── agent_update.py# Agent 自更新上传/清单/下载
+│   └── agent_update.py# Agent 自更新上传/回滚/台账/推送/下载
 └── web/               # Vue3 构建产物（随包打包，服务端直接托管）
 ```
 
@@ -171,12 +177,16 @@ kk_server/
 ### 4.2 前端
 
 `web/` 是独立 pnpm 工程（Vue3 + TS + Element Plus + Vite + Pinia + ECharts，
-底座 pure-admin-thin v6.2.0）。六个业务页：主机总览（10s 轮询 + 多选批量）、
-主机详情（ECharts 曲线 + 磁盘/网卡/进程/登录用户，30s）、命令中心
-（采集面板 + 命令面板，5s）、审计日志、版本与更新（host/update，批量升级入口）。
+底座 pure-admin-thin v6.2.0）。业务页：主机总览（10s 轮询 + 多选批量）、
+主机详情与使用趋势（ECharts 曲线 + 磁盘/网卡/进程/登录用户，30s）、命令中心
+（采集面板 + 命令面板，5s）、审计日志、系统统计（system，/api/system/stats 可观测）、
+版本与更新（host/update，批量升级入口），以及系统管理三页
+（system/{user,role,menu}：用户 / 角色 / 菜单管理，RBAC）。
 
 构建产物同步到 `server/src/kk_server/web/`，`kk-server` 单端口托管全栈，
-也可独立 nginx 反代。菜单完全静态注册（`getAsyncRoutes()` 返回 `[]`），不依赖 mock/fake server。
+也可独立 nginx 反代。菜单**完全由数据库下发**（2026-10-31 RBAC 二阶段）：
+`/api/auth/menus` 按角色下发可见菜单树，经 `handleAsyncRoutes` 动态注册，
+未授权的菜单根本不注册（直连 URL 落 404），接口失败 fail-closed（空树）。
 
 ## 5. 仓库结构
 
@@ -185,13 +195,19 @@ KontainKeeper/
 ├── README.md
 ├── docs/
 │   ├── design.md                  # 本文档
+│   ├── deployment.md              # 生产部署指南
+│   ├── development.md             # 开发环境搭建
+│   ├── ci-jenkins.md              # CI/CD 流水线说明
 │   ├── completion-plan-mqtt.md    # 执行路线图与缺陷账本
 │   └── architecture-review.md     # 代码评审记录
 ├── agent/                         # kk-agent（独立 UV 项目）
 ├── server/                        # kk-server（独立 UV 项目）
 ├── web/                           # Vue3 前端（独立 pnpm 工程）
+├── docker/                        # 镜像与 compose（broker/、mosquitto/、offline/）
+├── deploy/                        # Agent systemd 单元（非容器主机安装）
 ├── proto/messages.md              # 协议 v4（MQTT 主题与帧格式，匿名 Broker + IP 白名单）
 ├── scripts/                       # 构建与部署脚本
+├── Jenkinsfile                    # CI/CD 流水线（见 docs/ci-jenkins.md）
 └── pyproject.toml                 # UV 工作区虚拟根
 ```
 
@@ -214,7 +230,7 @@ KontainKeeper/
 | 自更新下载 | REST 接口按请求**真实 TCP 源 IP** 校验同一白名单（比 MQTT 自报值可靠） |
 | 命令滥用 | 服务端黑名单（`KK_CMD_BLACKLIST`）在源头拦截 + 全量审计；cmdline 经 sh -c（内网灵活优先），argv 直传不经 shell |
 | 自更新完整性 | sha256 强制校验（可选 HMAC），防损坏/篡改 |
-| 管理端 | 会话 token（12h 过期）；生产必须前置 TLS 终结 |
+| 管理端 | 会话 token（12h 过期；**重置口令 / 禁用 / 删除用户均即时吊销该账号全部会话**，QR-S44）；RBAC 三表 + 菜单按角色 fail-closed 下发（未授权根本不注册）；生产必须前置 TLS 终结 |
 | 网络边界 | 匿名 Broker 下唯一不可伪造的隔离：防火墙/安全组限制 1883 端口可达范围；`KK_ENV=production` 未配白名单拒绝启动 |
 
 ## 8. 风险与对策
@@ -224,6 +240,8 @@ KontainKeeper/
   块 ≈8MB —— 这是 Agent 断线窗口的显式驻留预算，刻意压在 25–35MB 常驻口径之内（旧默认 512 块
   单靠排队就能越到 ≈32MB）。超出部分会被淘汰，对策是 `send_result` 感知入队失败、改用 **QoS0**
   强发 `rc=-3` 失败终态（QoS1 终态会被同一个满队列一起挡下），绝不静默丢。
-- **跨库验证边界**：PostgreSQL / MySQL 目前只做了 DDL 与语句的跨方言编译校验，
-  **未连过真实库**；上线前需补真库跑测（MySQL 排序规则大小写、PG 标识符小写折叠等）。
+- **跨库验证边界**：PostgreSQL 已有 CI 真库冒烟（`scripts/db_smoke.py` + Jenkinsfile ⑬，
+  生产镜像清单的 `postgres:18.6`，覆盖建表/扩列/基础读写）；MySQL 不在镜像清单内，
+  以方言编译校验为主（需要真连时经 `MY_IMAGE` 参数注入镜像跑 ⑬）。
+  上线前仍建议按真实规模在预发环境验证（MySQL 排序规则大小写、PG 标识符小写折叠等）。
 - **Agent 被发现/杀掉**：以同用户或 root 运行；wrapper 循环保活。

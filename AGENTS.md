@@ -23,7 +23,7 @@ web/ Vue3 前端（REST 轮询 + ECharts，构建产物由 kk-server 托管）
 
 - `agent/src/kk_agent/` — 主机内客户端（**独立 UV 项目**）。**不再是纯标准库**：采集用 `psutil`（跨平台、8 个采集项），传输用 `paho-mqtt`（重连退避/保活/out-queue），可编译为单文件二进制嵌入镜像，常驻 RSS 口径 **25–35MB**。模块：`transport.py`（MQTT，替代已删的 `ws.py`+`conn.py`）、`collector.py`（psutil，含 `collect_items()` 按项采集）、`executor.py`、`updater.py`（自更新 sha256/HMAC）、`main.py`（事件循环）。
 - `server/src/kk_server/` — FastAPI 服务端，MVC 分层：`models/`（SQLAlchemy 2 Core + async engine，SQLite/PG/MySQL 三库通用）→ `services/`（`mqtt_bridge.py` 无状态桥接、命令黑名单 security）→ `controllers/`（REST `/api/*`）→ `web/`（Vue3 构建产物，随包打包、服务端直接托管）；`main.py` 的 `create_app` 只做装配。**没有 WS 入口**（`agent_ws.py`/`hub.py` 已删）。
-- `web/` — **独立 pnpm 工程**（Vue3 + TS + Element Plus + Vite + Pinia + ECharts，底座 pure-admin-thin v6.2.0）。`src/api/` 业务 API 层、`src/views/` 七个业务页（host/monitor 总览、host/detail 详情、host/update 版本与更新、command/shell 命令面板、command/collect 采集面板、audit 审计、system 系统统计）加 welcome 首页、`src/router/modules/kk.ts` 静态路由。`web/dist/` 被 .gitignore 忽略，产物需人工同步到 `server/src/kk_server/web/`。
+- `web/` — **独立 pnpm 工程**（Vue3 + TS + Element Plus + Vite + Pinia + ECharts，底座 pure-admin-thin v6.2.0）。`src/api/` 业务 API 层、`src/views/` 业务页：主机侧 host/monitor 总览、host/detail 详情、host/trend 使用趋势、host/update 版本与更新，命令侧 command/shell 命令面板、command/collect 采集面板，audit 审计、system 统计，外加 system/{user,role,menu} 系统管理三页（RBAC，2026-10-31 起，仅管理员角色可见）与 welcome 首页；`src/router/modules/` 只剩隐藏的 Root 记账容器（业务菜单由数据库下发，见「关键约束」RBAC 条目）。`web/dist/` 被 .gitignore 忽略，产物需人工同步到 `server/src/kk_server/web/`。
 - `proto/messages.md` — 双端通信协议契约（**当前 v4：status 帧新增可选 `env`/`group`/`labels`/`caps`，主题布局与 QoS/retain 一个字节没改；接入管控沿用 v3 = 去 token、匿名 Broker + 服务端 `KK_AGENT_IPS` 白名单、上行帧携带自报 `ip`**。v3→v4 有兼容窗口 `ACCEPT_PROTO_VERS=(3,4)`，只有 `KK_DROP_PROTO_V3=1` 才关闭；关窗口前必须看统计里的 `proto_v3_received` 确认存量 Agent 已升完，否则是全网闪断。可选 Broker 鉴权加固走双端 `KK_MQTT_USERNAME/PASSWORD`，见 deployment.md）。改协议必须同步：`agent/src/kk_agent/config.py` 的 `PROTO_VER`、`server/src/kk_server/__init__.py` 的 `PROTO_VER`、协议文档、双端测试。
 - `agent/tests/`、`server/tests/`、`scripts/build.sh`（把 agent 叠加进 vscode-server 镜像）。
 - `scripts/install.sh` + `deploy/systemd/kk-agent.service` — **非容器 Linux 主机**（物理机/VM）的 Agent
@@ -45,7 +45,7 @@ bash scripts/quality_gate.sh
 # 后端（仓库根目录；uv run 会去下载 Python 3.12 而失败，务必用 .venv 直调）
 .venv/Scripts/python.exe -m pytest agent/tests -q      # Agent 单测
 .venv/Scripts/python.exe -m pytest server/tests -q      # Server 单测 + 集成
-.venv/Scripts/python.exe -m pytest agent/tests server/tests -q   # 全量 478 条（以 pytest 汇总为准）：Broker 可达时全 passed；不可达时仅 5 条集成用例 skipped
+.venv/Scripts/python.exe -m pytest agent/tests server/tests -q   # 全量 540 条（以 pytest 汇总为准）：Broker 可达时全 passed；不可达时仅 5 条集成用例 skipped
 # 汇总别用 `| tail -3`：失败行在进度条之前，会被截掉（曾因此漏看红灯两轮）。
 # 要看清结果用 --junitxml 再解析 tests/failures/errors/skipped 计数。
 .venv/Scripts/python.exe -m kk_server                   # 起服务端（默认 admin/admin123）
@@ -77,7 +77,7 @@ bash scripts/ci_smoke.sh kontainkeeper-server:local agent/dist/kk-agent         
 ## 关键约束与陷阱
 
 - **Agent 线程模型**：主循环是单线程事件循环，MQTT socket 只由 paho 的后台网络线程触碰；采集/命令/插件在一次性 daemon 线程跑，结果由工作线程直接经 paho 发帧（paho 发布线程安全，不回主线程）；回调里不要做阻塞操作，重活丢给 worker 线程。
-- **三库方言差异只许出现在 store 的既定汇聚点**（基座引擎装配 `_engine_kwargs` / `Store._upsert` / `Store._ensure_schema`+`_pg_tune` / 批删助手 `_delete_batched`/`_purge_outputs`），不要在别处再分叉：MySQL 大字段必须 LONGTEXT（TEXT 仅 64KB，命令输出 base64 最大 5.6MB 会静默截断）、主键必须定长 `String(n)`、upsert 是 `INSERT IGNORE`（SQLAlchemy 2.0 无 `.ignore()`，必须 `prefix_with("IGNORE")`）；PG/SQLite 用 `on_conflict_do_nothing`；PG 引擎吃 `executemany_mode="values_plus"` 与热表 autovacuum/BRIN 调优（`_pg_tune`，启动幂等执行）。
+- **三库方言差异只许出现在 store 的既定汇聚点**（基座引擎装配 `_engine_kwargs` / `Store._upsert` / `Store._ensure_schema`+`_pg_tune` / 批删助手 `_delete_batched`/`_purge_outputs`），不要在别处再分叉：MySQL 大字段必须 LONGTEXT（TEXT 仅 64KB，命令输出 base64 最大 5.6MB 会静默截断）、主键必须定长 `String(n)`、upsert 是 `INSERT IGNORE`（SQLAlchemy 2.0 无 `.ignore()`，必须 `prefix_with("IGNORE")`）；PG/SQLite 用 `on_conflict_do_nothing`；PG 批量 INSERT 由 SQLAlchemy 2.0 insertmanyvalues 自动拼多值语句（asyncpg **不吃也不需要** `executemany_mode`，传入会被引擎直接拒绝）+ 热表 autovacuum/BRIN 调优（`_pg_tune`，启动幂等执行）。
 - **分批删按主键 `IN`，不要用 `DELETE...LIMIT`**：PG 不支持，MySQL 的是方言专属写法，SQLite 还要编译期开关。PG/SQLite 的批删收口为**单语句变体**（子查询内 LIMIT 挑批，每批一次往返）；MySQL 保留先挑后删的两段式（`_key_batches`）。
 - **`create_all` 只建表不加列**：新增列必须登记 `tables._ADD_COLUMNS`，由 `setup()` 的 `_ensure_schema` 自动 ALTER（SQLite 查 `PRAGMA table_info`，其余查 `information_schema` 且 MySQL 要 `DATABASE()` 限定 schema）。
 - **Windows 开发机兼容**：采集基于 psutil（跨平台，不解析 /proc、不注入 fs_root），`agent/tests` 直接读真机/容器指标即可，无需伪造 /proc 树；命令执行的进程树回收按平台分路——POSIX 用 `os.killpg`、Windows 用 `taskkill /F /T`（`executor.py`）。注：`resource` 模块仅 Unix 有，Agent 已不依赖它。

@@ -31,7 +31,7 @@
 
 ```bash
 # 1) 构建 agent 叠加产物镜像（基础镜像为你的私有 vscode-server 镜像）
-scripts/build.sh <私有基础镜像> kk-vscode-server:2026-09
+BASE_IMAGE=<私有基础镜像> scripts/build.sh kk-vscode-server:2026-09
 
 # 2) 打包（自动构建 kk-server、拉取依赖镜像、save 并生成校验单）
 KK_AGENT_IMAGE=kk-vscode-server:2026-09 ./docker/offline/pack.sh
@@ -64,8 +64,8 @@ CentOS 用 `yumdownloader`，U 盘带入安装）。
 # 2) 配置凭据/白名单（与在线部署一致）
 cp .env.example .env   # 填 KK_AGENT_IPS、KK_ADMIN_PASS
 
-# 3) 启动——必须用离线 compose 文件（kk-server 走 image 引用，不触发 build）
-docker compose -f docker-compose.offline.yml --env-file .env up -d
+# 3) 启动——必须用离线 compose 文件（kk-server 走 image 引用，不触发 build；仓库根执行）
+docker compose -f docker/docker-compose.offline.yml --env-file .env up -d
 ```
 
 **切勿用 `docker-compose.prod.yml up --build`**：build 段会在镜像内 `uv sync` 联网

@@ -13,9 +13,9 @@
 |---|---|---|---|
 | ① | 检出与元信息 | — | 记录提交 SHA / 镜像 tag，后续每次部署可追溯到具体提交 |
 | ② | 工具链自检 | — | 节点缺 docker/node/pnpm 时**立刻**说清缺什么，而不是跑到一半报 `command not found` |
-| ③ | 后端测试 | `pytest agent/tests server/tests` | 起一个真 Broker，把 4 条集成用例从 **skipped** 变成**真跑**（见 §3） |
+| ③ | 后端测试 | `pytest agent/tests server/tests` | 起一个真 Broker，把 5 条集成用例从 **skipped** 变成**真跑**（见 §3） |
 | ④ | Broker 端到端冒烟 | `scripts/mqtt_e2e.py` | 单测证不到的语义：retain 只落 status、LWT 触发、离线命令由 Broker 排队、大输出分块重组 |
-| ⑤ | 前端构建与产物同步 | `pnpm lint`（棘轮门禁）+ `pnpm typecheck && pnpm build` | 产物同步进 `server/src/kk_server/web/`（镜像靠它带 UI），并检查**产物漂移**；lint 让格式漂移不再攒到无人看见（QR-2.2） |
+| ⑤ | 前端构建与产物同步 | `pnpm exec eslint --max-warnings 0`（零豁免全域）+ `pnpm typecheck && pnpm build` | 产物同步进 `server/src/kk_server/web/`（镜像靠它带 UI），并检查**产物漂移**；lint 让格式漂移不再攒到无人看见（QR-2.2） |
 | ⑥ | Agent 二进制 | `agent/build/build_binary.sh` | PyInstaller 单文件二进制，供镜像内置与冒烟使用 |
 | ⑦ | 构建服务端镜像 | `docker/Dockerfile` + `docker/broker/Dockerfile` | 构建上下文是仓库根（uv workspace 锁在根），并打上 git 修订标签；②里已自建 kk-broker（生产镜像清单不含 eclipse-mosquitto） |
 | ⑧ | 镜像部署冒烟 | `scripts/ci_smoke.sh` | **真起容器 + 真跑 Agent 二进制**走完整链路；跑不过就不许推送、不许部署 |
@@ -27,15 +27,16 @@
 
 **⑧ 是这条流水线的价值核心**。只做「构建成功 + 容器起来了」的 CI 会漏掉本项目最容易坏的地方——
 服务端起来了但连不上 Broker、Agent 上线了但自报 IP 不在白名单、命令发得出去但结果回不来。
-`scripts/ci_smoke.py` 把这条链路拆成 11 条断言，任何一条断了构建就红。
+`scripts/ci_smoke.sh` 把这条链路拆成一组 `check` 断言（Broker 就绪 → 健康/自检 → 登录 →
+Agent 上线 → 心跳落库 → 命令下发/执行/回传 → 审计留痕），任何一条断了构建就红。
 
 **⑬ 与阶段一~⑫ 刻意解耦**：真库建表扩列、500 连接压测、Agent RSS 基线都**耗时长且与部署无关**，
 每次 push 都跑只会拖慢反馈。因此它只挂在 `TimerTrigger`（默认每日）上；调试时打 `FORCE_NIGHTLY=true`
 可强制触发。它的失败**不阻断**①②③…⑫ 的发布链路——但会独立在每日报告中红出来，逼你修（见 §9）。
 
-**⑤ 的 lint 是棘轮，不是全量门禁**（QR-2.2）。历史上 lint 不在任何门禁里，格式违规攒到 140 条且无人发现
-（`audit/index.vue` 的表格缩进错位就是这么来的）。存量脏的 8 个文件列在 Jenkinsfile 的 `LINT_DIRTY` 里被豁免，
-其余 120+ 个文件新增违规即红；**清单只许缩短，不许加长**——修干净一个页面就把它从 `LINT_DIRTY` 删掉。
+**⑤ 的 lint 是零豁免全域门禁**（QR-2.2 起步，QR-W10 收尾）。历史上 lint 不在任何门禁里，格式违规攒到 140 条
+且无人发现（`audit/index.vue` 的表格缩进错位就是这么来的）；中间曾用「棘轮 + `LINT_DIRTY` 豁免清单」过渡，
+存量脏文件逐页清完后豁免清单已删除——现在 `eslint --max-warnings 0` 护全域，任何新增违规直接红。
 门禁刻意不带 `--fix`：CI 里改写工作区会污染紧随其后的产物漂移检查（同 §6.1 的「静默绿灯」一类问题），
 也不要对全仓跑 `pnpm lint`（那是一条 `--fix` 链，会重写别人正在改的页面）。
 
@@ -97,11 +98,11 @@
 `server/tests/test_integration.py` 在没有 Broker 的环境会**整条 skip**（设计如此，保证本地无 Broker 时单测全绿）：
 
 ```
-不可达时：全量 passed，仅 4 条集成用例 skipped
+不可达时：全量 passed，仅 5 条集成用例 skipped
 可达时  ：全量 passed（0 skipped）
 ```
 
-也就是说，一个「跑通了 CI」但没起 Broker 的流水线，是**用 4 条 skipped 换来的假绿**——
+也就是说，一个「跑通了 CI」但没起 Broker 的流水线，是**用 5 条 skipped 换来的假绿**——
 而跳过的恰好是「Agent 上线 → 指标可见 → 批量下发 → 结果回传」这几条最该被守护的用例。
 
 所以流水线在 ③④⑧ 三个阶段各起一次 Mosquitto（端口 `CI_MQTT_PORT`，默认 **18830**，
@@ -196,7 +197,7 @@ git add server/src/kk_server/web && git commit -m "chore(web): 同步前端构�
 
 门禁本身也会说谎，所以两条反向验证都要做过（本轮实跑结论）：
 
-- **造一次全 skip**：把 `KK_IT_MQTT_URL` 指向空端口 → `pytest` 退出码仍是 0、`skipped=4`，
+- **造一次全 skip**：把 `KK_IT_MQTT_URL` 指向空端口 → `pytest` 退出码仍是 0、`skipped=5`，
   ③ 的 XML 门禁返回 1。只盯 `pytest` 退出码的流水线在这一刻是绿的。
 - **造一次假绿变真红**：把 `transport.py` 的 hb 临时改成 `retain=True` → R1 必须红。
   顺带暴露 e2e 自身的两个盲点，现已修：R1 原先靠「订阅窗口内收到的都是 retained」判定，
@@ -269,8 +270,8 @@ KK_BENCH_MQTT=mqtt://127.0.0.1:18830 .venv/bin/python scripts/bench_agent.py 15
 
 # 3) 前端（pnpm build 已改跨平台，Windows cmd 与 Git Bash 同一条命令，见 QR-2.2）
 cd web && pnpm install --frozen-lockfile && pnpm typecheck && pnpm build && cd ..
-#    ⑤ 的 lint 棘轮豁免清单写在 Jenkinsfile 的 LINT_DIRTY 里；本地直接跑全量 eslint 会因这
-#    8 个存量脏文件报红，属预期。要本地复现门禁，照抄 Jenkinsfile ⑤ 段里那段 bash。
+#    ⑤ 的 lint 现为零豁免全域门禁（`eslint --max-warnings 0`，见 Jenkinsfile ⑤ 段）；
+#    本地复现门禁直接跑同一条命令即可。
 rm -rf server/src/kk_server/web/* && cp -r web/dist/* server/src/kk_server/web/
 
 # 4) Agent 二进制 + 服务端镜像

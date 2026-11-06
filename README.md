@@ -24,7 +24,7 @@ Linux 主机（典型形态：K8S 下的 vscode-server 容器 IDE）的**直连�
 - 服务端 FastAPI 无状态桥接，支持 SQLite / PostgreSQL / MySQL
 - 前端 Vue3 + Element Plus + ECharts，构建产物由服务端直接托管
 
-完整设计见 [docs/design.md](docs/design.md)，协议定义见 [proto/messages.md](proto/messages.md)（v3 MQTT）。
+完整设计见 [docs/design.md](docs/design.md)，协议定义见 [proto/messages.md](proto/messages.md)（v4 MQTT）。
 
 ## 架构一览
 
@@ -114,11 +114,11 @@ server/                  服务端（独立 UV 项目，FastAPI）
   tests/                 Server 单元测试 + 端到端集成
   Dockerfile             生产镜像
 web/                     Vue3 前端（独立 pnpm 工程，pure-admin-thin 底座）
-  src/api/               业务 API 层（containers/commands/audit/system）
-  src/views/             六个业务页（host/monitor、host/detail、host/update、command/shell、command/collect、audit）
-proto/                   双端通信协议契约（v3：匿名 Broker + IP 白名单）
+  src/api/               业务 API 层（containers/commands/audit/system/rbac/exporting 等）
+  src/views/             业务页（host/monitor、host/detail、host/trend、host/update、command/shell、command/collect、audit、system）+ 系统管理三页（system/user、role、menu）
+proto/                   双端通信协议契约（v4：匿名 Broker + IP 白名单）
 scripts/                 构建与部署脚本
-deploy/                  Mosquitto 生产/开发配置 + Agent 容器叠加片段
+deploy/                  Agent systemd 单元（非容器主机安装，配 scripts/install.sh 使用）
 docs/                    deployment(生产部署) / development(开发搭建) / design / 评审与路线图
 ```
 
@@ -133,7 +133,7 @@ docs/                    deployment(生产部署) / development(开发搭建) / 
 | 总体设计与取舍 | [设计文档](docs/design.md) |
 | 缺陷清单与处置映射（P0/P1/P2 + R1–R13） | [架构评审](docs/architecture-review.md) |
 | 八阶段落地计划 | [实现路线图 v3](docs/completion-plan-mqtt.md) |
-| MQTT 主题布局、帧格式、QoS/retain 语义、IP 白名单接入管控 | [通信协议 v3](proto/messages.md) |
+| MQTT 主题布局、帧格式、QoS/retain 语义、IP 白名单接入管控 | [通信协议 v4](proto/messages.md) |
 | Mosquitto 匿名配置与安全模型 | [部署说明](docker/mosquitto/README.md) |
 | 离线部署（内网无网场景的镜像打包与加载） | [离线部署说明](docker/offline/README.md) |
 
@@ -219,11 +219,13 @@ curl -H "Authorization: Bearer <ADMIN_TOKEN>" \
 ## 管理界面
 
 - **主机总览**：在线状态、CPU/内存/磁盘摘要、多选批量下发（10s 轮询）
-- **主机详情**：ECharts 指标曲线、磁盘/网卡/进程/登录用户、最近命令（30s 轮询）
+- **主机详情**：ECharts 指标曲线、使用趋势、磁盘/网卡/进程/登录用户、最近命令（30s 轮询）
 - **命令中心**：采集面板（勾选指标项 × 主机）+ 命令面板（argv 数组 / cmdline 双模）、
   历史列表与输出查看（5s 轮询）
+- **版本与更新**：Agent 版本台账、上传/回滚待分发二进制、选机批量升级
 - **审计日志**：登录、命令下发、黑名单拦截全量留痕
 - **系统统计**：`GET /api/system/stats` 返回主机/命令/存储/Broker 四组可观测数据
+- **系统管理**：用户 / 角色 / 菜单管理（RBAC，仅管理员角色可见）
 
 ## 测试
 
@@ -231,7 +233,7 @@ curl -H "Authorization: Bearer <ADMIN_TOKEN>" \
 uv sync --all-packages
 .venv/Scripts/python.exe -m pytest agent/tests -q     # Agent 单元测试
 .venv/Scripts/python.exe -m pytest server/tests -q    # Server 单测 + 端到端集成
-.venv/Scripts/python.exe -m pytest agent/tests server/tests -q   # 全量 478 条（以 pytest 汇总为准）：Broker 可达时全 passed；不可达时仅 5 条集成用例 skipped（集成用例）
+.venv/Scripts/python.exe -m pytest agent/tests server/tests -q   # 全量 540 条（以 pytest 汇总为准）：Broker 可达时全 passed；不可达时仅 5 条集成用例 skipped
 
 cd web && pnpm typecheck && pnpm build                # 前端类型检查与构建
 ```
@@ -241,8 +243,9 @@ cd web && pnpm typecheck && pnpm build                # 前端类型检查与构
 黑名单、审计、REST 接口契约（ASGI Transport）、以及**真实服务端 + 真实 Agent 线程**的端到端集成
 （需 Broker，端口不可达时自动 skip）。
 
-> 已知验证边界：SQLite 走完整实测；PostgreSQL / MySQL 由 CI 夜测做真库冒烟
-> （`scripts/db_smoke.py`，Jenkinsfile ⑬ 矩阵跑 PG:16 / MySQL:8，覆盖建表/扩列/基础读写），
+> 已知验证边界：SQLite 走完整实测；PostgreSQL 由 CI 夜测做真库冒烟
+> （`scripts/db_smoke.py`，Jenkinsfile ⑬ 跑生产镜像清单的 `postgres:18.6`，覆盖建表/扩列/基础读写；
+> MySQL 不在镜像清单内，由 `MY_IMAGE` 参数按需注入），
 > 上线前仍建议按真实规模在预发环境验证。
 
 ## 安全说明

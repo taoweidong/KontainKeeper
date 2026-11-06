@@ -19,13 +19,13 @@
 
 ```
 agent/src/kk_agent/    transport.py(MQTT) / collector.py(psutil) / executor.py /
-                       updater.py(自更新) / plugin_loader.py / main.py
+                       updater.py(自更新) / plugin_loader.py / hostinfo.py / main.py
 server/src/kk_server/  models/(store,tables,version) / services/(mqtt_bridge,security) /
-                       controllers/(auth,containers,commands,audit,stats,agent_update,health) /
+                       controllers/(auth,rbac,containers,commands,audit,exporting,stats,agent_update,health,deps) /
                        main.py(create_app 工厂，python -m kk_server 运行)
-web/src/               api/(业务 API 层) / views/(六个业务页) / router/modules/kk.ts(静态路由)
-proto/messages.md      双端通信协议契约（v3 MQTT：匿名 Broker + IP 白名单），改协议必读
-scripts/               build.sh(管理镜像) / mqtt_e2e.py(Broker 冒烟) / bench_agent.py / loadtest.py
+web/src/               api/(业务 API 层) / views/(业务页 + system/{user,role,menu} 系统管理三页) / router/modules/(只剩隐藏 Root 记账容器)
+proto/messages.md      双端通信协议契约（v4 MQTT：匿名 Broker + IP 白名单），改协议必读
+scripts/               build.sh(管理镜像) / install.sh(非容器主机 systemd 安装) / mqtt_e2e.py(Broker 冒烟) / bench_agent.py / loadtest.py
 docker/mosquitto/      匿名 Broker 配置（mosquitto.conf，开发/生产同源）+ 自建 Broker 镜像说明
 ```
 
@@ -93,7 +93,8 @@ v3 起 Broker 统一匿名开放（`allow_anonymous true`，无 passwordfile / A
 - 监听 `http://127.0.0.1:8443`，浏览器打开即管理界面；
 - 默认账号 `admin / admin123`（**连续输错 5 次锁定 300 秒**，且按用户名与客户端
   IP 两个维度分别计数 —— 别被自己锁了）；
-- 未配 `KK_MQTT_URL` 时服务端仍能起（只读管理 + 审计导出），日志会警告
+- 未配 `KK_MQTT_URL` 时服务端仍能起（只读管理 + 审计导出；命令下发返回
+  `503 命令通道不可用`），日志会警告
   不连 Broker——要联调 Agent 就先起 Mosquitto 再配环境变量：
 
 ```bash
@@ -174,9 +175,13 @@ rm -rf ../server/src/kk_server/web/* && cp -r dist/* ../server/src/kk_server/web
 
 - `web/dist/` 被 `.gitignore` 忽略，产物需人工同步到 `server/src/kk_server/web/`；
 - `pnpm build` 要求 `web/mock/` 目录存在（空目录即可，prod 构建的 fake server 依赖）；
-- 菜单**完全静态**（`getAsyncRoutes()` 返回 `[]`，路由在 `src/router/modules/kk.ts`），
-  不要引入动态菜单，否则 prod 下菜单空白；
-- 轮询定时器统一用 `setPoll()` / `clearPolls()` 管理，不要散落 `setInterval`。
+- 菜单**完全由数据库下发**（2026-10-31 RBAC 二阶段）：前端 `/api/auth/menus` 按角色
+  拉取可见菜单树，经 `handleAsyncRoutes` 动态注册，接口失败 fail-closed（空树）；
+  **新增页面必须同步 `server/src/kk_server/models/_store_rbac.py` 的内置菜单种子**，
+  `src/router/modules/` 只剩隐藏的 Root 记账容器，不要再往里写静态业务路由；
+- 轮询定时器统一走 `web/src/utils/kkPoll.ts` 的 `usePolls()`
+  （`const { setPoll, clearPoll } = usePolls()`），不要散落 `setInterval`，
+  也不要用模块级全局 `setPoll/clearPolls`（会误清别的页）。
 
 ## 6. 运行 Agent（源码方式）
 
@@ -221,7 +226,7 @@ def collect():
 ## 7. 测试
 
 ```bash
-# 全量（202 条）
+# 全量（540 条）
 .venv/Scripts/python.exe -m pytest agent/tests server/tests -q
 # 分包
 .venv/Scripts/python.exe -m pytest agent/tests -q      # Agent 单测
@@ -230,7 +235,7 @@ def collect():
 cd web && pnpm typecheck && pnpm build
 ```
 
-- **Broker 可达**时全量 passed；**不可达**时仅 4 条端到端集成用例 skipped
+- **Broker 可达**时全量 passed；**不可达**时仅 5 条端到端集成用例 skipped
   （自动跳过，不会误报失败）——跑全量前先起 §3 的 Mosquitto。具体数字以 pytest 汇总为准。
 - `agent/tests` 覆盖 MQTT 传输（主题/QoS/retain/离线队列）、psutil 采集、
   命令执行、插件热加载、自更新；Windows 上直接读真机指标，无需伪造 /proc。
@@ -282,7 +287,7 @@ cd agent && bash build/build_binary.sh   # 产出 agent/dist/kk-agent（Windows 
 | 指标不出现 | Agent 上线（status）≠ 有指标；**指标要等首帧心跳**，测试等待条件须同时检查 `metrics.mem_mb` 非空 |
 | 心跳间隔下限 | `KK_INTERVAL` 下限 1s，别调回去——集成测试依赖数秒内积累多个序列点 |
 | 插件热加载失效 | Windows 文件时间粒度粗，测试写插件后需显式 `os.utime` 递增 mtime |
-| 三库方言 | 方言差异只允许收在 `Store._upsert` / `Store._ensure_schema`；新增列须登记 `tables._ADD_COLUMNS`；分批删按主键 `IN`，不要 `DELETE...LIMIT` |
+| 三库方言 | 方言差异只允许收在 store 的既定汇聚点（`_engine_kwargs` / `Store._upsert` / `Store._ensure_schema`+`_pg_tune` / 批删助手 `_delete_batched`/`_purge_outputs`）；新增列须登记 `tables._ADD_COLUMNS`；分批删按主键 `IN`，不要 `DELETE...LIMIT` |
 | 命令 argv | 前端 cmdline 恒 `use_shell=true` 经 sh -c（内网灵活优先）；argv 数组直 exec 不经 shell。API 层 `use_shell=false` 的 cmdline 走 shlex.split，Windows 含空格路径会拆坏 |
 | 服务端入口 | 是工厂 `create_app`，没有模块级 `app`；运行 `python -m kk_server` |
 | 安全红线 | 命令黑名单（`KK_CMD_BLACKLIST`）+ 审计（`store.add_audit`）不能绕过 |
@@ -297,7 +302,7 @@ cd agent && bash build/build_binary.sh   # 产出 agent/dist/kk-agent（Windows 
 ## 10. 提交前检查清单
 
 ```bash
-.venv/Scripts/python.exe -m pytest agent/tests server/tests -q   # 全绿（无 Broker 时仅 4 条集成用例 skip）
+.venv/Scripts/python.exe -m pytest agent/tests server/tests -q   # 全绿（无 Broker 时仅 5 条集成用例 skip）
 cd web && pnpm typecheck && pnpm build                          # 前端通过
 ```
 

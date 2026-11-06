@@ -168,7 +168,9 @@ v4 只往 `status` 帧里**加可选字段**，不删不改语义——这是兼
   在 status 帧列出它，实现里却两帧都带；现在把「默认上报」从实现细节提升为契约，
   免得日后有人优化帧体积时先砍它。
 - `custom` 为自定义采集插件输出，可缺省；插件 `collect()` 超时（默认 5s，
-  `KK_PLUGIN_TIMEOUT`）即被隔离到文件 mtime 变化重载为止，不影响整帧心跳。
+  `KK_PLUGIN_TIMEOUT`）**或输出不可 JSON 序列化**（QR-A11：在 collect 出口即拦，
+  若拖到 publish_hb 的 `json.dumps` 才失败会让整帧心跳每周期一起丢）均按失败
+  同款隔离到文件 mtime 变化重载为止，不影响整帧心跳。
 - 心跳采集项可用 `KK_HB_ITEMS` 精简（逗号分隔，取值同 §4.1 `kind=collect` 白名单；
   空则全采 8 项），被精简的键整组缺省，服务端按可缺省字段处理。
 - 采集来源现已统一为 **psutil**（不再手工解析 /proc），跨平台；`ts` 为 Unix 秒。
@@ -190,7 +192,7 @@ v4 只往 `status` 帧里**加可选字段**，不删不改语义——这是兼
 | `out_b64` | 该块输出的 base64（v1 的 `data_b64` 已改名） |
 | `ip` | v3 起所有上行帧统一携带的自报出口 IP，白名单校验与 status/hb 同一入口 |
 | `done` | 末块为 `true`，此时携带下方四个字段 |
-| `rc` | 进程退出码；超时被杀为 `-1`；spawn 失败 `126/127`；**`-3` 表示 Agent 未能正常交出结果**——out-queue 溢出（分块没送达）或工作队列积压满（命令被限流拒绝，`out` 里带 `task queue full`），服务端据此置 `failed` |
+| `rc` | 进程退出码；超时被杀为 `-1`；spawn 失败 `126/127`；**未知或非字符串 `kind` 同样恒回 `127` 回执**（QR-A12：此前畸形 kind 不发任何帧，命令会在服务端挂到超时清扫）；**`-3` 表示 Agent 未能正常交出结果**——out-queue 溢出（分块没送达）或工作队列积压满（命令被限流拒绝，`out` 里带 `task queue full`），服务端据此置 `failed` |
 | `timed_out` / `elapsed_ms` / `truncated` | 是否超时、耗时毫秒、输出是否被截断 |
 
 关键收敛语义：**任一分块发送失败，Agent 必须补发一个 `rc=-3` 的失败终态**，
@@ -247,7 +249,7 @@ cpu, mem, disk, disk_io, net, proc, user, sys
 - `kind=collect` 不经 shell，直接调 psutil 采集并返回结构化 JSON。
 
 **命令排队**：Agent 离线时命令由 Broker 持久会话排队（QoS1），重连自动补投。
-服务端**不保留** `pending_for` 补发逻辑（已删），`mark_sent` 语义即「已发布到 Broker」。
+服务端**不保留** `pending_for` 补发逻辑（已删），`mark_sent_batch` 语义即「已发布到 Broker」。
 
 ## 5. Agent 自更新 REST 接口
 
@@ -255,10 +257,18 @@ cpu, mem, disk, disk_io, net, proc, user, sys
 
 | 方法 | 路径 | 鉴权 | 说明 |
 |---|---|---|---|
-| POST | `/api/system/agent` | 管理员会话 | 上传新版本二进制（multipart: `file` + `version`），服务端算 `sha256` 并记录为最新 |
-| GET | `/api/system/agent/current` | 管理员会话 | 服务端当前待分发版本 `{version, sha256, size, uploaded_at, hosts_total, hosts_outdated}`（D1.2；与下一条**刻意分离**：鉴权与语义都不同） |
-| GET | `/api/system/agent/latest?ver=<当前版本>` | 请求源 IP ∈ `KK_AGENT_IPS` | 返回 `{available, version, sha256, size, url, sig}`（`sig` 仅在服务端配了 `KK_UPDATE_HMAC_KEY` 时非空） |
+| POST | `/api/system/agent` | 管理员会话（AdminUser） | 上传新版本二进制（multipart: `file` + `version`），服务端算 `sha256` 并记录为最新 |
+| POST | `/api/system/agent/rollback` | 管理员会话（AdminUser） | 回滚**待分发**的二进制到上一版（B2/P2-7；只换服务端待分发版，已在跑的 Agent 不降级） |
+| GET | `/api/system/updates?limit=` | 登录会话 | 自更新台账（A6.2）：各状态计数 + 最近明细，「这版升了多少、谁失败了」逐台可核验 |
+| GET | `/api/system/agent/current` | 登录会话 | 服务端当前待分发版本 `{version, sha256, size, uploaded_at, hosts_total, hosts_outdated}`（D1.2；与下一条**刻意分离**：鉴权与语义都不同） |
+| POST | `/api/system/agent/upgrade` | 管理员会话（AdminUser） | 受控批量升级（D2.2）：人工选机推送，每台在 `updates` 台账写一行，台账主键即 cmd 帧 `id` |
+| GET | `/api/system/agent/latest?ver=<当前版本>` | 请求源 IP ∈ `KK_AGENT_IPS` | 返回 `{available, version, sha256, size, url, sig, policy}`（`sig` 仅在服务端配了 `KK_UPDATE_HMAC_KEY` 时非空；响应恒带 `policy` 自描述） |
 | GET | `/api/system/agent/download` | 请求源 IP ∈ `KK_AGENT_IPS` | 流式下发最新二进制（下载留审计，QR-S7） |
+
+> **自更新策略由服务端 `KK_UPDATE_MODE` 控制（默认 `manual`）**：`manual` 下
+> `/agent/latest` 恒答「无需升级」（`available=false`——这是策略而非故障），升级走
+> 管理员 `POST /api/system/agent/upgrade` 选机推送；`auto` 才由各 Agent 按
+> `KK_UPDATE_INTERVAL` 自动轮询拉齐。
 
 安全边界（v3）：下载/查询按**请求真实 TCP 源 IP**校验白名单（比 MQTT 侧的自报 ip 可靠；
 经反向代理时源 IP 会变成代理地址，自更新地址应配置为内网直连地址）；上传仍需管理员会话。
@@ -277,9 +287,12 @@ sha256，边际收益有限）。`KK_UPDATE_INSECURE=1` 可关闭 TLS 校验（�
 
 ## 7. 约束
 
-- 帧尺寸由分块机制约束：result 固定 48KB/块（base64 后约 64KB），心跳帧典型 2–4KB，
-  均低于 Mosquitto 2.x 默认 `message_size_limit`（1MB，部署配置未放宽）。
-  v1 WS 解析器的 16MB 保护阈值已随 `ws.py` 删除，应用层不再有独立帧上限。
+- 帧尺寸由应用层分块机制约束：result 固定 48KB/块（base64 后约 64KB），心跳帧典型 2–4KB。
+  注意 Mosquitto 2.0.x 的 `message_size_limit` **默认 0 = 不限制**（上限仅 MQTT 协议级 256MB），
+  仓库交付的 `docker/mosquitto/mosquitto.conf` 亦未设置该项——Broker 对单帧并无 1MB 上限，
+  应用层也不再有任何独立帧上限（v1 WS 解析器的 16MB 保护阈值已随 `ws.py` 删除）。
+  部署侧如需硬上限，应在 mosquitto.conf 显式配置 `message_size_limit`（读帧方在
+  `json.loads` 前不预检尺寸，超大帧会直抵内存）。
 - 所有 `ts` 为 Unix 秒。
 - 命令输出分块 48KB，总量超 4MB 截断并置 `truncated`。
 - Agent 侧离线 out-queue 上限 `MAX_QUEUED = 128`（`KK_MAX_QUEUED` 可配，预算口径见

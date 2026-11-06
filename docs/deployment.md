@@ -115,7 +115,8 @@ KK_ADMIN_PASS=<管理界面强口令>
    白名单基于自报值，适合内网可信环境；
 2. **校验**：kk-server 在消息入口按 `KK_AGENT_IPS` 逐一匹配（`ipaddress` 网段语义），
    命中任一网段即放行，全部未命中则丢弃该帧并记 WARNING 日志
-   （`拒绝白名单外上报：host=xxx ip='x.x.x.x'`），同时在审计页留下 `ip_rejected` 记录；
+   （`host=… 拒绝白名单外上报：ip='x.x.x.x'`），同时在审计页留下 `ip_rejected` 记录
+   （同主机 + IP 60 秒节流一条，防审计灌水）；
 3. **语法**：逗号分隔的 **精确 IP 与 CIDR 网段混合列表**，单个 IP 自动按 `/32`
    （IPv6 按 `/128`）处理；格式写错（如笔误的网段）**启动即失败**，好过静默全拒。
 
@@ -206,6 +207,12 @@ uv run kk-server                            # 监听 0.0.0.0:8443
 | `KK_PUBLIC_URL` | 服务端对外访问基址（如 `http://10.0.0.1:8443`）。**启用自更新的必配项**：配了它，下发给 Agent 的更新帧就带绝对下载地址，镜像侧无需再配 `KK_UPDATE_URL`；不配则仍是相对路径，Agent 拿不到地址时只记 WARNING 并跳过更新 | `""` |
 | `KK_INTERVAL_MIN` | 允许的最小上报间隔（秒）。低于此值的心跳**照常落库**，但会写审计 `interval_violation` 并在 `/api/system/stats` 的 `broker.stats.interval_violation` 计数——用于发现误配机器。留空 = 不检查 | `""` |
 | `KK_UPDATE_HMAC_KEY` | 自更新清单 HMAC 密钥（QR-P0-1）。配了它：上传时对二进制本体算 HMAC 写入清单 `sig`，推送帧与 `/agent/latest` 都携带；**必须与 Agent 侧同名键一致**。不配则 Agent 推送路径默认拒绝未签名更新（除非 Agent 配 `KK_UPDATE_ALLOW_UNSIGNED=1`），见 §9.2.1 | `""` |
+| `KK_UPDATE_MODE` | 自更新策略（D2.1）：`manual`（默认）下 `/agent/latest` 恒答「无需升级」，升级走管理界面「版本与更新」页选机推送；`auto` 恢复自动——Agent 按 `KK_UPDATE_INTERVAL` 轮询拉齐 + 桥接对落后主机自动推送 | `manual` |
+| `KK_UPDATE_QUEUE_TTL` | 升级推送离线队列的保留时长（秒，下限 3600） | `604800`（7 天） |
+| `KK_LOG` | 服务端日志文件路径；留空 = 只写 stdout（docker 采集） | `""` |
+| `KK_LOG_LEVEL` | 日志级别 | `INFO` |
+| `KK_LOG_JSON` | 设 `1` 输出 JSON Lines（接日志采集端时打开） | 关闭 |
+| `KK_AGENT_BIN_DIR` | Agent 二进制资产目录（自更新上传/回滚的存放位置） | `agent_assets` |
 
 ### 4.6 数据库选型
 
@@ -217,11 +224,14 @@ uv run kk-server                            # 监听 0.0.0.0:8443
   由 `MY_IMAGE` 参数按需注入）覆盖建表/扩列/基础读写，
   上线前仍建议按真实规模在预发环境验证。
 - **PostgreSQL 专属调优（启动自动生效，无需手工执行）**：
-  引擎侧 `executemany_mode="values_plus"`（批量建命令 500 条 → 5 次往返）与
+  引擎侧批量 INSERT 由 SQLAlchemy 2.0 insertmanyvalues 自动拼单条多值语句
+  （asyncpg 不支持也不需要 `executemany_mode`，传入会被引擎直接拒绝）与
   连接池（`KK_DB_POOL_SIZE`/`KK_DB_MAX_OVERFLOW`）；维护侧启动时对三张热表
-  设置行数级 autovacuum scale factor（`kk_containers` 每秒被心跳 UPDATE 数次，
-  默认 0.2 比例近乎永不触发）并补 `kk_heartbeats.ts` 的 BRIN 索引（时间范围
-  扫描用 KB 级索引）；批删在 PG 上走「子查询挑批」的单语句变体，每批省一次
+  设置行数级 autovacuum scale factor 与 `kk_containers` fillfactor=80（心跳热更新
+  走 HOT；`kk_containers` 每秒被心跳 UPDATE 数次，默认 0.2 比例近乎永不触发），
+  并补 `kk_heartbeats.ts` / `kk_audit.ts` 的 BRIN 索引（时间范围扫描用 KB 级索引）
+  与在途命令部分索引 `idx_cmd_inflight`（超时清扫从全表扫变常数命中）；
+  批删在 PG 上走「子查询挑批」的单语句变体，每批省一次
   往返。表属主账号即可执行（ALTER TABLE SET 不需要超级用户）。
 
 ### 4.7 启用 MQTT 鉴权（可选加固）
@@ -300,7 +310,8 @@ server {
 
 2. **Agent ↔ Broker 的 MQTT 连接**：跨不可信网络必须 `mqtts://`（配
    `KK_MQTT_TLS_CA`，Agent 侧对应 `KK_TLS_CA`）；Broker 与 Agent 同处内网可信区
-   时可用 `mqtt://`。
+   时可用 `mqtt://`。注意 `mqtts://` **不配 CA 时仅加密不校验证书**（中间人可截获
+   Broker 凭据），服务端与 Agent 都会打显式 warning（QR-S46）——生产务必配 CA。
 
 ## 7. 部署 Agent 到被管理主机
 
@@ -371,7 +382,16 @@ ssh user@target-host chmod +x /opt/kk-agent
 KK_HOST_NAME=host-a KK_INTERVAL=30 /opt/kk-agent mqtt://broker.ops.example.com:1883
 ```
 
-**第三步（推荐）：systemd 常驻**，开机自启 + 崩溃自动拉起：
+**第三步（推荐）：systemd 常驻**，开机自启 + 崩溃自动拉起。仓库提供一键安装脚本：
+
+```bash
+sudo KK_SERVER=mqtt://broker.ops.example.com:1883 bash scripts/install.sh
+# 默认装 /opt/kk-agent/（二进制 + 0600 的 kk-agent.env，只创建不覆盖），
+# 写 /etc/systemd/system/kk-agent.service；可选变量见脚本头注释（KK_GROUP/KK_LABELS 等）。
+# 预演不落盘：KK_INSTALL_DRY_RUN=1 bash scripts/install.sh
+```
+
+下面的手写单元是它的等价手工版：
 
 ```ini
 # /etc/systemd/system/kk-agent.service
@@ -444,6 +464,8 @@ KK_ADVERTISE_IP=10.0.0.15 /opt/kk-agent mqtt://broker.ops.example.com:1883
 | `KK_UPDATE_DISABLED` | 设 `1/true` 关闭自更新。**同时关掉轮询与推送两条路**（QR-P0-1）：推送式升级命令会收到 `update_disabled` 回执 | 关闭 |
 | `KK_UPDATE_ALLOW_UNSIGNED` | 设 `1/true` 放行**未签名**的推送更新（QR-P0-1 逃生口）。默认拒绝：未配 `KK_UPDATE_HMAC_KEY` 时，任何能连 Broker 的客户端都能向 cmd 主题发推送更新帧。仅建议内网可信部署显式开启；轮询路径不受影响 | 关闭 |
 | `KK_UPDATE_HMAC_KEY` | 与服务端同名键配同一密钥：推送更新强制验签（对二进制本体的 HMAC，QR-P0-1）。配了它未签名的清单同样被拒 | 空 |
+| `KK_UPDATE_REQUIRE_SIG` | 设 `1/true` 后**轮询下载路径**也强制清单携带有效 HMAC 签名（须配 `KK_UPDATE_HMAC_KEY`）；默认轮询路径只校验 sha256 | 关闭 |
+| `KK_GROUP` / `KK_LABELS` | 机队分组（单值，截 64 字符）与标签（`k=v,k2=v2` 多值，key 截 64 / value 截 128），随 status 帧上报供总览多维筛选 | 空 |
 | `KK_AGENT_BIN` | 自更新替换目标路径（build.sh 已烧入） | 自动 |
 | `KK_NICE` | Agent 进程 CPU 调度优先级（**由镜像 entrypoint wrapper 读取**，非 Agent 自身）；`19` = 最低，与用户 IDE 争抢 CPU 时主动让位；置 `0` 等价关闭降权 | `19` |
 
@@ -487,11 +509,14 @@ git pull && docker compose -f docker/docker-compose.prod.yml --env-file .env up 
 数据在 `kk-data` 卷（SQLite 于 `/data/kk-server.db`），不受重建影响；
 新增列由启动时 `_ensure_schema` 自动 ALTER 迁移。
 
-### 9.2 Agent 自更新（零人工干预）
+### 9.2 Agent 自更新
 
 Agent 内置版本监控：发现新版本后凭源 IP 白名单从服务端下载二进制
 （下载接口按请求真实源 IP 校验 `KK_AGENT_IPS`），
 **强制校验 sha256** 一致后原子替换并 `execv` 自重启（监管脚本不会误杀）。
+轮询拉齐仅在服务端 `KK_UPDATE_MODE=auto` 时生效——默认 `manual` 下
+`/agent/latest` 恒答「无需升级」，升级走管理界面「版本与更新」页选机推送
+（`POST /api/system/agent/upgrade`）。
 
 发布新版本（管理员）：
 
@@ -505,7 +530,9 @@ curl -H "Authorization: Bearer $TOKEN" -F "version=0.2.0" \
      https://kk-server.ops.example.com/api/system/agent
 ```
 
-各主机 Agent 按 `KK_UPDATE_INTERVAL` 轮询拉齐；镜像内已预配自更新地址时可全自动。
+`KK_UPDATE_MODE=auto` 时各主机 Agent 才按 `KK_UPDATE_INTERVAL` 轮询拉齐
+（±20% 抖动）；默认 `manual` 模式下请在管理界面「版本与更新」页选机推送，
+逐台结果在 `/api/system/updates` 台账核验。
 
 **更新期间的可见性与健壮性（B6）**：
 
