@@ -19,6 +19,8 @@ import asyncio
 import hashlib
 import hmac
 import os
+import re
+import tempfile
 import time
 from typing import List
 
@@ -27,9 +29,12 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from .deps import AgentIp, AdminUser, agent_ip_auth, current_user
+from ..logsetup import get_logger
 from ..models.helpers import AGENT_DOWNLOAD_PATH, clamp
 from ..models.tables import ONLINE_GRACE
 from ..models.version import count_outdated, version_lt
+
+log = get_logger("kk.update")
 
 # 双路由拆分（QR-S2）：同前缀下两组端点的鉴权语义不同——管理员走会话、
 # Agent 走真实源 IP 白名单，router 级依赖各收各的口，新增端点默认受保护。
@@ -39,6 +44,13 @@ agent_router = APIRouter(prefix="/api/system", dependencies=[Depends(agent_ip_au
 MAX_BIN_BYTES = 64 * 1024 * 1024
 _BIN_NAME = "kk-agent"
 _CHUNK = 256 * 1024
+# QR1120-S17：版本号白名单（纯数字段点分）。旧校验只查首字符是数字，"1abc" 可入库，
+# 全网 Agent 会拿到一个永远无法比较/校验的升级目标。上传是唯一写入版本号的入口
+# （回滚互换的是既有清单、批量升级的目标必须等于清单版本），故收口在这一处。
+_VERSION_RE = re.compile(r"\d+(\.\d+)*")
+# QR1120-S14：Windows 共享冲突的短退避重试参数（测试可 monkeypatch 归零，不依赖真实时钟）
+_SWAP_ATTEMPTS = 3
+_SWAP_BACKOFF = 0.2
 
 # 串行化「换 .prev / 写二进制 / 更新 KV 清单」与回滚交换（B6.5）：两个管理员并发
 # 上传会互相踩 —— A 刚换完 .prev，B 又换一次，.prev 便成中间态；Windows 上换一个
@@ -52,23 +64,63 @@ def _bin_path(request: Request):
     return os.path.join(request.app.state.agent_bin_dir, _BIN_NAME)
 
 
+def _replace_retry(src, dst):
+    """os.replace + Windows 共享冲突短退避（QR1120-S14）。
+
+    换 .prev / 上位 / 落 .rollback 期间，agent_download 可能正读着同一个文件：
+    POSIX 读的是旧 inode，rename 天然安全（Agent 侧 sha 不符会自愈进退避）；
+    Windows 上 os.replace 撞正在读的文件会 PermissionError（共享冲突），短退避
+    重试给下载线程让出窗口，仍失败才报错。**不给下载路径加锁**——500 台并发
+    下载不能被一次上传串行化。只重试 PermissionError：其余 OSError 是真故障。
+    """
+    for attempt in range(_SWAP_ATTEMPTS):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if os.name != "nt" or attempt >= _SWAP_ATTEMPTS - 1:
+                raise
+            time.sleep(_SWAP_BACKOFF)
+
+
+def _feed(f, chunk, sha, mac):
+    """分块写盘并喂增量哈希（工作线程里跑，不占事件循环）。"""
+    f.write(chunk)
+    sha.update(chunk)
+    if mac is not None:
+        mac.update(chunk)
+
+
+def _install(dest, tmp_path):
+    """把上传临时文件原子上位，并把上一版留成 .prev。返回 (had_prev, prev_err)。
+
+    QR1120-S15：.prev 保留失败不再静默吞掉——prev_err 交给调用方落 warning +
+    审计（agent_prev_lost），否则回滚能力悄悄消失、下次 rollback 404 无从排查。
+    """
+    had_prev = False
+    prev_err = None
+    if os.path.exists(dest):  # 保留上一版，便于回滚
+        try:
+            # 必须用 os.replace（覆盖语义跨平台一致）：shutil.move 落到
+            # os.rename，在 Windows 上遇到已存在的 .prev 会 FileExistsError。
+            _replace_retry(dest, dest + ".prev")
+            had_prev = True
+        except OSError as e:
+            prev_err = e
+    # 临时文件与 dest 同目录（同文件系统）：os.replace 是原子改名，比 open("wb")
+    # 直写更稳——不会留下「写了一半」的二进制，Windows 共享冲突也有重试兜底。
+    _replace_retry(tmp_path, dest)
+    if os.name == "posix":
+        os.chmod(dest, 0o755)
+    return had_prev, prev_err
+
+
 @router.post("/agent")
 async def upload_agent(request: Request, user: AdminUser,
                        file: UploadFile = File(...), version: str = Form(...)):
-    if not version or not version[0].isdigit():
+    # QR1120-S17：全匹配白名单，"1abc"/"1..2"/"1.0\n" 一律拒绝（旧校验只查首字符）
+    if not version or not _VERSION_RE.fullmatch(version):
         raise HTTPException(status_code=400, detail="version 非法")
-
-    # 边读边累计，超限即断：避免先 `await file.read()` 把整包（最大 64MB）一次性读入内存
-    data = bytearray()
-    while True:
-        chunk = await file.read(_CHUNK)
-        if not chunk:
-            break
-        data.extend(chunk)
-        if len(data) > MAX_BIN_BYTES:
-            raise HTTPException(status_code=413, detail="二进制过大")
-    if len(data) < 1:
-        raise HTTPException(status_code=400, detail="二进制为空")
 
     bin_dir = request.app.state.agent_bin_dir
     dest = os.path.join(bin_dir, _BIN_NAME)
@@ -76,53 +128,64 @@ async def upload_agent(request: Request, user: AdminUser,
     # 与 Agent 侧 KK_UPDATE_HMAC_KEY 保持一致
     key = (getattr(request.app.state.settings, "update_hmac_key", "") or "").strip()
 
-    def _write():
-        """最大 64MB 的同步写与 sha256/HMAC 计算都不要占住事件循环——
-        否则上传时所有心跳与请求都被卡住（QR-S10 一并修）。
-        返回 (had_prev, sha, sig)。"""
-        os.makedirs(bin_dir, exist_ok=True)
-        had_prev = False
-        if os.path.exists(dest):  # 保留上一版，便于回滚
-            try:
-                # 必须用 os.replace（覆盖语义跨平台一致）：shutil.move 落到
-                # os.rename，在 Windows 上遇到已存在的 .prev 会 FileExistsError，
-                # 被下面的 except 吞掉 → 第二次上传起「上一版」静默不保留。
-                os.replace(dest, dest + ".prev")
-                had_prev = True
-            except OSError:
-                pass
-        with open(dest, "wb") as f:
-            f.write(data)
-        if os.name == "posix":
-            os.chmod(dest, 0o755)
-        payload = bytes(data)
-        sha = hashlib.sha256(payload).hexdigest()
-        sig = hmac.new(key.encode(), payload, hashlib.sha256).hexdigest() if key else ""
-        return had_prev, sha, sig
+    # QR1120-S13：流式落盘到二进制目录的临时文件 + 增量 sha256/HMAC——整包不再
+    # 驻留内存（旧实现 bytearray 累到 64MB 后又 bytes() 复制一份算哈希，峰值 ~128MB）。
+    # 64MB 上限在流式过程中强制：超限即断，finally 清理临时文件。
+    await asyncio.to_thread(os.makedirs, bin_dir, exist_ok=True)
+    fd, tmp_path = await asyncio.to_thread(
+        tempfile.mkstemp, prefix=".kk-upload-", suffix=".tmp", dir=bin_dir)
+    sha = hashlib.sha256()
+    mac = hmac.new(key.encode(), digestmod=hashlib.sha256) if key else None
+    total = 0
+    try:
+        with os.fdopen(fd, "wb") as f:
+            while True:
+                chunk = await file.read(_CHUNK)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_BIN_BYTES:
+                    raise HTTPException(status_code=413, detail="二进制过大")
+                # 写盘与哈希都丢工作线程：上传期间心跳与其他请求不被卡住（QR-S10）
+                await asyncio.to_thread(_feed, f, chunk, sha, mac)
+        if total < 1:
+            raise HTTPException(status_code=400, detail="二进制为空")
 
-    # 上一版的**清单**要和二进制一起留下来（B2）：回滚时无从反推旧版本号，
-    # 而 sha256 必须对得上 .prev 文件，否则 Agent 下载后会校验失败。
-    store = request.app.state.store
-    async with _upload_lock:
-        # 读旧清单 → 换 .prev 并落盘 → 写新清单，三步必须整体原子（B6.5）
-        prev_info = await store.get_agent_latest()
-        had_prev, sha, sig = await asyncio.to_thread(_write)
-        info = {"version": version, "sha256": sha, "size": len(data),
-                # uploaded_at 随清单一起留痕（D1.2）：管理员要能回答「这个版本是什么时候传的」。
-                # 回滚时它随清单一起互换，语义是「这个版本被上传的时刻」，正确。
-                "uploaded_at": int(time.time())}
-        if sig:
-            # sig 随清单走：推送（bridge.publish_update）与轮询（/agent/latest）都带上，
-            # Agent 侧用二进制本体验 HMAC（QR-P0-1）
-            info["sig"] = sig
-        # 顺序要紧：先落盘成功，再写 KV 清单 —— 否则清单可能指向尚未写完的字节
-        await store.set_agent_latest(info)
-        if had_prev and prev_info:
-            await store.set_agent_prev(prev_info)
-        elif not had_prev:
-            await store.kv_set("agent_prev", "")   # 首次上传：清掉可能的历史残留
-        await store.add_audit(user, "agent_upload", info)
-    return {"ok": True, **info}
+        # 上一版的**清单**要和二进制一起留下来（B2）：回滚时无从反推旧版本号，
+        # 而 sha256 必须对得上 .prev 文件，否则 Agent 下载后会校验失败。
+        store = request.app.state.store
+        async with _upload_lock:
+            # 读旧清单 → 换 .prev 并落盘 → 写新清单，三步必须整体原子（B6.5）
+            prev_info = await store.get_agent_latest()
+            had_prev, prev_err = await asyncio.to_thread(_install, dest, tmp_path)
+            info = {"version": version, "sha256": sha.hexdigest(), "size": total,
+                    # uploaded_at 随清单一起留痕（D1.2）：管理员要能回答「这个版本是什么时候传的」。
+                    # 回滚时它随清单一起互换，语义是「这个版本被上传的时刻」，正确。
+                    "uploaded_at": int(time.time())}
+            if mac is not None:
+                # sig 随清单走：推送（bridge.publish_update）与轮询（/agent/latest）都带上，
+                # Agent 侧用二进制本体验 HMAC（QR-P0-1）
+                info["sig"] = mac.hexdigest()
+            # 顺序要紧：先落盘成功，再写 KV 清单 —— 否则清单可能指向尚未写完的字节
+            await store.set_agent_latest(info)
+            if had_prev and prev_info:
+                await store.set_agent_prev(prev_info)
+            elif not had_prev:
+                await store.kv_set("agent_prev", "")   # 首次上传：清掉可能的历史残留
+            if prev_err is not None:
+                # QR1120-S15：回滚能力受损必须留痕（日志 + 审计），不许静默
+                log.warning("保留上一版二进制失败，回滚能力受损：%s", prev_err)
+                await store.add_audit(user, "agent_prev_lost", {
+                    "version": version, "path": dest + ".prev",
+                    "reason": str(prev_err)})
+            await store.add_audit(user, "agent_upload", info)
+        return {"ok": True, **info}
+    finally:
+        # 成功路径临时文件已被 os.replace 改名走；拒绝/异常路径必须清理残留
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
 
 
 @router.post("/agent/rollback")
@@ -156,14 +219,16 @@ async def _do_rollback(user, store, dest):
         # 顺序要紧：当前版先暂存到 .swap，再让另一版上位，最后把暂存的当前版
         # 落为 .rollback（新备用）。若直接 replace(dest, ".rollback")，而备用
         # 恰好就叫 .rollback，会在搬走之前把它覆盖掉 —— 回滚一次后就没得撤了。
-        # os.replace 的覆盖语义跨平台一致，Windows 上不会因目标已存在而失败。
+        # os.replace 的覆盖语义跨平台一致，Windows 上不会因目标已存在而失败；
+        # 但会因目标正被下载线程读而 PermissionError —— _replace_retry 短退避
+        # 重试兜底（QR1120-S14），下载路径不加锁。
         if os.path.exists(dest):
             tmp = dest + ".swap"
-            os.replace(dest, tmp)
-            os.replace(alt, dest)
-            os.replace(tmp, dest + ".rollback")
+            _replace_retry(dest, tmp)
+            _replace_retry(alt, dest)
+            _replace_retry(tmp, dest + ".rollback")
         else:
-            os.replace(alt, dest)
+            _replace_retry(alt, dest)
         if os.name == "posix":
             os.chmod(dest, 0o755)
 
@@ -313,6 +378,7 @@ async def upgrade_hosts(body: UpgradeBody, request: Request, user: AdminUser):
         store.online_set(ONLINE_GRACE))
 
     accepted, skipped = [], []
+    chosen = []   # (host, from_ver, is_online)：通过全部分流的主机，保持传入顺序
     for host in hosts:
         if host not in versions:
             skipped.append({"host": host, "reason": "not_found"})
@@ -329,10 +395,32 @@ async def upgrade_hosts(body: UpgradeBody, request: Request, user: AdminUser):
             # 未配 Broker 的只读部署：明说而不是静默受理
             skipped.append({"host": host, "reason": "no_broker"})
             continue
-        is_online = host in online
-        uid = await bridge.dispatch_upgrade(host, from_ver, latest, online=is_online)
-        accepted.append({"host": host, "from_version": from_ver, "to_version": target,
-                         "ledger_id": uid, "queued": not is_online})
+        chosen.append((host, from_ver, host in online))
+
+    # QR1120-S16：台账一次建完，不再逐台 dispatch_upgrade（每台一次 create_update
+    # 事务，500 台 = 500 次串行 DB 往返挤在一个 HTTP 请求里）。create_updates_batch
+    # 只吃单一 from_version/status，故按 (from_version, 在线态) 分组——组数 = 版本数×2，
+    # 与主机数无关。publish 循环保留逐台：MQTT 发布是 paho 非阻塞入队，本身廉价，
+    # 且 publish_update 自带「失败落 failed + 日志 + 统计」语义，与 dispatch_upgrade
+    # 完全一致（离线只写 queued 不投帧，重连由桥接补投）。
+    if chosen:
+        groups = {}
+        for host, from_ver, is_online in chosen:
+            groups.setdefault((from_ver, is_online), []).append(host)
+        uid_by_host = {}
+        for (from_ver, is_online), group in groups.items():
+            ids = await store.create_updates_batch(
+                group, from_ver, target, status="pending" if is_online else "queued")
+            uid_by_host.update(zip(group, ids))
+        for host, from_ver, is_online in chosen:
+            uid = uid_by_host[host]
+            if is_online:
+                await bridge.publish_update(host, uid, latest)
+            else:
+                log.bind(host=host, cmd=uid).info(
+                    "upgrade queued（主机离线，重连后补投）-> %s", target)
+            accepted.append({"host": host, "from_version": from_ver, "to_version": target,
+                             "ledger_id": uid, "queued": not is_online})
 
     if accepted:
         await store.add_audit(user, "agent_upgrade_batch", {
