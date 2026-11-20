@@ -36,6 +36,56 @@ def _clip(value, n):
 _JTEXT_MAX = 4096
 _TRUNCATED_KEY = "_truncated"
 
+# hb 帧 raw 入库的尺寸封顶（QR1120-S10）：插件 custom 可自报任意大字符串，
+# 不封顶时 last_metrics / heartbeats.metrics 会被单帧撑爆（MySQL TEXT 64KB
+# 静默截断成半截 JSON，详情页 json.loads 直接炸）。超限帧做 sanitise 而不是
+# 整帧丢弃——标准指标标量必须保住，曲线与列表不能因插件失控出现数据空洞。
+_HB_RAW_MAX = 256 * 1024
+_HB_STR_MAX = 1024
+
+
+def _shrink_hb(value):
+    """递归把超大字符串换成截断标记；结构与中小值原样保留。"""
+    if isinstance(value, str):
+        if len(value) > _HB_STR_MAX:
+            return "<truncated %d bytes>" % len(value.encode("utf-8", "replace"))
+        return value
+    if isinstance(value, dict):
+        return {k: _shrink_hb(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_shrink_hb(v) for v in value]
+    return value
+
+
+def _hb_raw(msg):
+    """hb 帧序列化入库前的尺寸收敛（QR1120-S10）。
+
+    正常帧零开销路径：先 dumps 再 len 判断，不超限原样返回。超限帧三级收敛，
+    每一级产物都是合法 JSON 且保证 ≤ _HB_RAW_MAX：
+    1. 递归截断超大字符串（保结构、保标准指标）；
+    2. 仍超限（海量小键/大数组）→ 只留 metrics 里的标准标量与 disks；
+    3. 连标准项都超限（disks 本身失控）→ 最小帧，只留三个摘要标量。
+    """
+    raw = json.dumps(msg, ensure_ascii=False)
+    if len(raw) <= _HB_RAW_MAX:
+        return raw
+    shrunk = _shrink_hb(msg if isinstance(msg, dict) else {})
+    shrunk[_TRUNCATED_KEY] = True
+    raw = json.dumps(shrunk, ensure_ascii=False)
+    if len(raw) <= _HB_RAW_MAX:
+        return raw
+    m = msg.get("metrics") if isinstance(msg, dict) else None
+    m = m if isinstance(m, dict) else {}
+    kept = {"metrics": _shrink_hb({k: m.get(k) for k in ("cpu", "mem_mb", "mem_pct", "disks")
+                                   if k in m}),
+            _TRUNCATED_KEY: True}
+    raw = json.dumps(kept, ensure_ascii=False)
+    if len(raw) <= _HB_RAW_MAX:
+        return raw
+    return json.dumps({"metrics": _shrink_hb({k: m.get(k) for k in ("cpu", "mem_mb", "mem_pct")
+                                              if k in m}),
+                       _TRUNCATED_KEY: True}, ensure_ascii=False)
+
 
 def _jtext(obj):
     """结构化字段（labels / caps）入库：空对象落空串，前端按「空 = 未上报」处理。
@@ -134,7 +184,9 @@ class _StoreHostsMixin:
         now = int(time.time())
         return await self._upsert(
             containers,
-            {"pod": pod, "image": image or "", "agent_ver": agent_ver or "",
+            # QR1120-S11：与 set_online 同款 _clip 对齐列宽——image/agent_ver 同为
+            # Agent 自报，超长在 MySQL 严格模式报 1406，首次建表路径不能比 status 路径宽。
+            {"pod": pod, "image": _clip(image, 200), "agent_ver": _clip(agent_ver, 40),
              "hb_interval": int(interval or 60), "first_seen": now, "last_seen": now,
              "last_metrics": "", "online": 0, "status_ts": 0,
              # labels/caps 没有 server_default（MySQL 不接受 TEXT 的默认值），
@@ -155,16 +207,17 @@ class _StoreHostsMixin:
         全部**只在上线路径落库**：离线帧可能是 LWT（Broker 在断连后补发，字段可能缺失
         或来自旧版本 Agent），拿旧数据覆盖新元信息只会把机队视图改脏。
         """
-        now = int(time.time())
+        srv = int(time.time())
         try:
-            ts_n = int(ts) if ts else now
+            ts_n = int(ts) if ts else srv
         except (TypeError, ValueError):
-            ts_n = now
+            ts_n = srv
         # 主机时钟不可信：status 帧的 ts 与 record_hb 同款钳制，越界回落服务器
         # 时间（QR29-S5）。时钟超前的主机若把 status_ts 写进未来，is_online 与
         # mark_stale_offline 的判定式在负差值上恒为「在线」——死机显示在线，
         # 且 retained 状态与 LWT 都被这个值影响，离线兜底永不生效。
-        now = ts_n if now - 86400 <= ts_n <= now + 300 else now
+        # 钳制只作用于上线路径；离线路径恒用服务器时间（QR1120-S7，见下）。
+        now = ts_n if srv - 86400 <= ts_n <= srv + 300 else srv
         # v4 元信息归一：env 里挑列表/详情要用的标量，坏值一律回落空串
         env = env if isinstance(env, dict) else {}
         meta = {
@@ -195,8 +248,13 @@ class _StoreHostsMixin:
                         and int(time.time()) - int(row.get("status_ts") or 0)
                         <= _UPDATING_REASON_GRACE):
                     keep = "updating"
+            # QR1120-S7：离线分支恒用服务器时间。LWT 载荷的 ts 冻结在 Agent
+            # 启动时刻（will 在 __init__ 构造），运行数天后掉线会带陈旧 ts——
+            # 钳制窗内照样把 status_ts 写回过去，既让「离线时长」失真，也污染
+            # updating 120s 宽限判定（宽限拿 status_ts 算年龄）。LWT 时间不可信，
+            # 「服务端何时收到离线帧」才是离线时刻的唯一真相。
             return await self._run(update(containers).where(containers.c.pod == pod)
-                                   .values(online=0, status_ts=now,
+                                   .values(online=0, status_ts=srv,
                                            status_reason=(reason or keep)))
         return await self._upsert(
             containers,
@@ -224,7 +282,8 @@ class _StoreHostsMixin:
         if not (now - 86400 <= ts <= now + 300):
             ts = now
         m = msg.get("metrics") or {}
-        raw = json.dumps(msg, ensure_ascii=False)
+        # QR1120-S10：入库前封顶 256KB，超限 sanitise 后仍是合法 JSON（详情页要 parse）
+        raw = _hb_raw(msg)
         # 摘要列随心跳顺手写：列表接口就不用再逐行解析 last_metrics（B6）
         summary = self._summary_of(m)
         # cpu/mem_mb 落 Float 列前先规整：Agent 插件写坏了指标也不能让整帧心跳
@@ -239,8 +298,13 @@ class _StoreHostsMixin:
             hb = int(msg.get("interval") or 60)
         except (TypeError, ValueError):
             hb = 60
+        # QR1120-S6：心跳是比任何 status 帧更强的在线证据——半开连接下 Agent 已
+        # 重连发 online，Broker keepalive 超时后仍会补发旧会话 LWT 把 online 打回 0；
+        # 只刷 last_seen/status_ts 不回置 online，主机就「心跳在流却永显离线」。
+        # status_reason 一并清空：updating 宽限由 set_online 管，心跳到达说明
+        # Agent 已活，陈旧的离线原因不该继续挂着。
         vals = {"last_seen": now, "status_ts": now, "last_metrics": raw,
-                "hb_interval": clamp(hb, 1, 3600)}
+                "hb_interval": clamp(hb, 1, 3600), "online": 1, "status_reason": ""}
         reported_ip = _clip(msg.get("ip"), 64)
         if reported_ip:
             vals["ip"] = reported_ip

@@ -112,17 +112,26 @@ class _StoreCommandsMixin:
     async def batch_summary(self, limit=20):
         """最近批次的各自状态分布：让「500 台一次点击」变成可核验的对象。
 
-        一条 GROUP BY + 内存聚合，不按批次循环查——500 台规模下批次可能上百个。
+        QR1120-S9：时间窗下推到查询级——先子查询按 created_at 倒序挑出最近
+        limit 个 batch_id，再只对这些批次的行 GROUP BY。旧实现对全部历史行
+        聚合、limit 只在内存切片，命令表按 30 天保留攒到百万行时，每次点开
+        批次面板都是一次全表 GROUP BY。子查询 + IN 是 Core 通用写法，三库同款。
         """
         # ORDER BY 必须落在聚合列上：裸引用 created_at 在 PG 是 GroupingError
         # （SQL 标准拒绝、SQLite/MySQL 宽容放行——2026-10-31 PG 首跑暴露）
         latest_at = func.max(commands.c.created_at).label("created_at")
+        window = (select(commands.c.batch_id.label("batch_id"))
+                  .where(commands.c.batch_id != "")
+                  .group_by(commands.c.batch_id)
+                  .order_by(latest_at.desc()))
+        if limit:
+            window = window.limit(int(limit))
         rows = await self._all(
             select(commands.c.batch_id.label("batch_id"),
                    commands.c.status.label("status"),
                    func.count().label("n"),
                    latest_at)
-            .where(commands.c.batch_id != "")
+            .where(commands.c.batch_id.in_(select(window.subquery().c.batch_id)))
             .group_by(commands.c.batch_id, commands.c.status)
             .order_by(latest_at.desc()))
         agg = {}
@@ -212,11 +221,13 @@ class _StoreCommandsMixin:
             vals = {"out_b64": cat, "out_chunks": commands.c.out_chunks + 1,
                     "out_tail": merged}
         else:
-            # 幂等路径：仅当 seq 严格大于已应用水位才拼接，避免重投翻倍
-            applied_cond = commands.c.last_seq < seq
+            # 幂等路径：仅当 seq 严格大于已应用水位才拼接，避免重投翻倍。
+            # QR1120-S8：CASE 一律绑规整后的 seq_n——绑原始 seq 时字符串 "3"
+            # 在 PG 是类型错误整帧丢，SQLite/MySQL 隐式转换又各自分叉。
+            applied_cond = commands.c.last_seq < seq_n
             cat = case((applied_cond, commands.c.out_b64 + chunk), else_=commands.c.out_b64)
             chunks = case((applied_cond, commands.c.out_chunks + 1), else_=commands.c.out_chunks)
-            last_seq_v = case((applied_cond, seq), else_=commands.c.last_seq)
+            last_seq_v = case((applied_cond, seq_n), else_=commands.c.last_seq)
             vals = {"out_b64": cat, "out_chunks": chunks, "last_seq": last_seq_v,
                     "out_tail": case((applied_cond, merged), else_=commands.c.out_tail)}
         if msg.get("done"):
@@ -252,6 +263,29 @@ class _StoreCommandsMixin:
             id=uid, pod=pod, from_version=from_version or "", to_version=to_version or "",
             status=status, reason="", created_at=int(time.time()), finished_at=None))
         return uid
+
+    async def create_updates_batch(self, pods, from_version, to_version, status="pending"):
+        """批量建升级台账：单事务 + 参数列表（驱动侧走 executemany），
+        与 create_commands_batch 同款手法（QR1120-S12），供批量升级接口用。
+
+        返回 id 列表，与 pods 一一对应。字段与 create_update 完全一致；
+        id 复用桥接 dispatch_upgrade 的既有规则 `up-<host[:26]>-<ts>-<token>`
+        （QR-S46 同秒唯一性锁 test_bridge.py 同款）：批量内同秒同主机多行
+        靠随机 token 区分，不撞主键，且总长 ≤ updates.id 的 String(48)。
+        """
+        pods = list(pods or [])
+        if not pods:
+            return []
+        now = int(time.time())
+        ids = ["up-%s-%d-%s" % (str(pod)[:26], now, secrets.token_hex(3))
+               for pod in pods]
+        rows = [{"id": uid, "pod": pod, "from_version": from_version or "",
+                 "to_version": to_version or "", "status": status, "reason": "",
+                 "created_at": now, "finished_at": None}
+                for uid, pod in zip(ids, pods)]
+        async with self.engine.begin() as conn:
+            await conn.execute(insert(updates), rows)
+        return ids
 
     async def get_update(self, uid):
         return await self._one(select(updates).where(updates.c.id == uid))
@@ -321,9 +355,19 @@ class _StoreCommandsMixin:
         for r in rows:
             if not r["to_version"] or not _version_lt(agent_ver or "", r["to_version"]):
                 done.append(r["id"])
-        for uid in done:
-            await self.finish_update(uid, "done")
-        return len(done)
+        if not done:
+            return 0
+        # QR1120-S12：单语句 WHERE id IN (...) 取代逐条 finish_update——
+        # 500 台批量升级后每台上线都触发一次收敛，逐条就是 500 次事务往返。
+        # 终态保护与 finish_update 同款（只收敛 pending/queued），分片避开变量数上限。
+        now = int(time.time())
+        total = 0
+        for shard in shards(done):
+            total += await self._run(
+                update(updates).where(updates.c.id.in_(shard))
+                .where(updates.c.status.in_(("pending", "queued")))
+                .values(status="done", reason="", finished_at=now))
+        return total
 
     async def sweep_update_timeouts(self, now=None, pending_ttl=1800, queued_ttl=7 * 86400):
         """在途升级收敛为 timeout。

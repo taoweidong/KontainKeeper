@@ -48,6 +48,10 @@ async def _seed(store, pod, cpu, mem, disk_pct, online=True):
         await store.set_online(pod, True, image="img:1", agent_ver="0.3.0")
     await store.record_hb(pod, {"interval": 60, "metrics": {
         "cpu": cpu, "mem_mb": mem, "disks": {"/": {"pct": disk_pct}}}})
+    if not online:
+        # QR1120-S6：心跳即在线证据（record_hb 回置 online=1），离线态必须在
+        # 最后一帧心跳之后由 status/LWT 建立——与 _seed_meta 同款时序。
+        await store.set_online(pod, False)
 
 
 async def test_summary_view_excludes_heavy_fields(api):
