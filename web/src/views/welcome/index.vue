@@ -45,7 +45,8 @@ const { setPoll } = usePolls();
 /** 轮询与手动刷新两个入口，迟到的回包不能盖掉更新的一轮数据（QR-W4）。 */
 const beginLoad = useSeq();
 
-const offline = computed(() => hosts.value.length - online.value);
+// 夹住下界（QR1120-W16）：两路读数来自同一响应但口径独立，坏数据不渲染负数台
+const offline = computed(() => Math.max(0, hosts.value.length - online.value));
 
 /**
  * 「读到过」与「读到 0」必须是两件事（QR-W16，同 /system 那条红线）：
@@ -71,7 +72,10 @@ const cmdStats = computed(() => {
       key: "running",
       value: (c.running ?? 0) + (c.sent ?? 0)
     },
-    { label: "待下发", key: "pending", value: c.pending ?? 0 }
+    { label: "待下发", key: "pending", value: c.pending ?? 0 },
+    // queued 必须计入（QR1120-W8）：离线主机的命令排在 Broker 等补投，
+    // 漏了它「命令总数」就与统计页的在途口径（含 queued）打架
+    { label: "已排队", key: "queued", value: c.queued ?? 0 }
   ];
   return entries;
 });

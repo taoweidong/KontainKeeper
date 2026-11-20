@@ -18,12 +18,15 @@ import { message } from "@/utils/message";
 import { mbText } from "@/utils/kk";
 
 const props = defineProps<{
-  /** 上传表单模型：版本 + 选中的二进制（真相留在父级，关闭/重开不残留半填状态） */
+  /** 上传表单模型：版本 + 选中的二进制（真相留在父级，关闭/重开不残留半填状态）。
+   *  uploading/progress 由父级 beforeSure 写入（QR1120-W20），这里只渲染进度。 */
   form: {
     version: string;
     file: File | null;
     fileName: string;
     size: number;
+    uploading: boolean;
+    progress: number;
   };
   /** 把 el-form 实例递给父级，供 beforeSure 跑 validate */
   registerForm?: (el?: FormInstance) => void;
@@ -115,6 +118,14 @@ function onRemove() {
       <span class="kk-num"
         >{{ form.fileName }} · {{ mbText(form.size / 1024 / 1024) }}</span
       >
+    </el-form-item>
+    <!-- 上传进度（QR1120-W20）：64MB 二进制不再是「对着转圈猜卡没卡死」 -->
+    <el-form-item v-if="form.uploading" label="上传进度">
+      <el-progress
+        class="w-full"
+        :percentage="form.progress"
+        :stroke-width="8"
+      />
     </el-form-item>
   </el-form>
 </template>

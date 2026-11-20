@@ -16,6 +16,7 @@ import {
   errText,
   hostStateClass,
   hostStateText,
+  mergeHostRows,
   statusLabel,
   statusType,
   tsText,
@@ -294,20 +295,27 @@ export function useHostUpdate() {
       if (!isLatest()) return;
       pollFailed.value = false;
       current.value = cur;
-      outdated.value = hosts.items.filter(h => h.agent_outdated);
+      // keyed 合并（QR1120-W2）：未变化行保留旧对象引用，不随 10s 轮询整表重渲染
+      outdated.value = mergeHostRows(
+        outdated.value,
+        hosts.items.filter(h => h.agent_outdated)
+      );
       updates.value = upds.items;
       read.value = true;
       ledgerRead.value = !missLedger;
       // 前端分页的 total 跟着清单长度走；升完功的行离开清单后当前页可能越界
       pagination.total = outdated.value.length;
       clampPage();
-      // 轮询刷新保留现有勾选：先把模型对齐到新数据（丢掉已不再落后的主机），再回填表格；
+      // 轮询刷新保留现有勾选：先把模型对齐到新数据（丢掉已不再落后的主机）；
+      // 表格回填只在勾选的 pod 集合真的变化时做（QR1120-W1）——row-key +
+      // reserve-selection 本来就按 key 保勾，每轮 clearSelection + 逐台 toggle
+      // 是 500 台 × 每 10s 的 selection-change 事件链，纯浪费。
       // 「?pods= 预填」只在首次加载与 query 本身变化（watch）时应用，不随轮询重设
-      reconcileSelection();
+      const selChanged = reconcileSelection();
       if (!podsPrefilled) {
         podsPrefilled = true;
         prefillFromQuery();
-      } else {
+      } else if (selChanged) {
         applySelection();
       }
     } catch (e: any) {
@@ -342,10 +350,16 @@ export function useHostUpdate() {
     selection.value = [...rows, ...offPage];
   }
 
-  /** 数据刷新后把模型对齐到新行对象：丢掉已不再落后的主机，展示与提交都不引用过期数据 */
-  function reconcileSelection() {
+  /** 数据刷新后把模型对齐到新行对象：丢掉已不再落后的主机，展示与提交都不引用过期数据。
+   *  返回勾选的 pod 集合是否变化（QR1120-W1）：next 是「新清单 ∩ 旧勾选」，
+   *  恒为旧集合的子集，所以长度相等即集合相等——只有此时才免掉表格回填。
+   *  行对象引用更新（keyed 合并后多为同一引用）不需要动表格：勾选态按 row-key 认人。 */
+  function reconcileSelection(): boolean {
     const pods = new Set(selection.value.map(h => h.pod));
-    selection.value = outdated.value.filter(h => pods.has(h.pod));
+    const next = outdated.value.filter(h => pods.has(h.pod));
+    const changed = next.length !== selection.value.length;
+    selection.value = next;
+    return changed;
   }
 
   /**
@@ -474,7 +488,9 @@ export function useHostUpdate() {
       if (q) lines.push(`其中 ${q} 台离线，会在重连时自动补投`);
       if (skip) lines.push(`跳过 ${skip} 台（见下方明细）`);
       message(lines.join("，"), { type: "success" });
-      selection.value = [];
+      // 模型与表格勾选态一起清（QR1120-W1 后 load 不再无条件回填表格，
+      // 只清模型会把 reserve-selection 里的残留勾留给下一轮事件）
+      clearSelection();
       // 先刷数据再弹明细：让台账与弹窗内容对得上，而不是反过来
       await load();
       await showSkipped(r.skipped);

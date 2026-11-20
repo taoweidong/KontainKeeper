@@ -25,12 +25,14 @@ import {
   downloadBlob,
   errText,
   fileStamp,
+  fillPct,
   hostStateClass,
   hostStateText,
   mbText,
+  mergeHostRows,
   nowSec,
-  numText,
-  OFFLINE_REASON_LABEL
+  OFFLINE_REASON_LABEL,
+  pctText
 } from "@/utils/kk";
 import { usePolls, useSeq } from "@/utils/kkPoll";
 
@@ -59,13 +61,9 @@ export const HOST_TYPE_LABEL: Record<string, string> = {
   container: "容器"
 };
 
-/** 计量条填充：钳到 0–100，坏值不画出越界的条。
- *  NaN/Infinity 必须显式挡掉（QR29-W5）：Math.min/max 会透传 NaN，
- *  界面会渲染出字面 NaN，插件写坏指标即可触发。 */
-export function fillPct(v: number | null | undefined): number {
-  if (v === null || v === undefined || !Number.isFinite(v)) return 0;
-  return Math.max(0, Math.min(100, Math.round(v)));
-}
+/** 计量条填充收口到 utils/kk（QR1120-W15：detail 磁盘进度条共用同一份
+ *  QR29-W5 防护）。此处保留导出，既有 import 路径与回归锁不变。 */
+export { fillPct };
 
 /** 心跳新鲜度三格，按绝对秒数判级（默认 60s 上报间隔下 ≈ 0.5 / 2 / 10 个周期）。
  *  三格是判级不是历史波形——列头图例写明阈值，避免误读成时间序列。 */
@@ -247,7 +245,8 @@ export function useMonitor() {
     try {
       const data = await listHosts("summary", queryParams());
       if (!isLatest()) return;
-      rows.value = data.items;
+      // keyed 合并（QR1120-W2）：未变化行保留旧对象引用，富单元格不随轮询全量重渲染
+      rows.value = mergeHostRows(rows.value, data.items);
       total.value = data.total;
       online.value = data.online;
       alerts.value = data.alerts;
@@ -401,9 +400,14 @@ export function useMonitor() {
   }
 
   /** 整行可点进详情（原只能点主机名链接，命中区域太小）。
-   *  必须跳过 selection 列，否则勾选会被误判为进详情。 */
+   *  必须跳过 selection 列，否则勾选会被误判为进详情。
+   *  拖选文本（复制 IP/主机名）松手同样触发 row-click：存在非空选区时不跳转
+   *  （QR1120-W7），否则复制一次主机名就被拽进详情页。 */
   function onRowClick(row: HostSummary, column: any) {
     if (column?.type === "selection") return;
+    const sel =
+      typeof window !== "undefined" ? window.getSelection?.() : null;
+    if (sel && !sel.isCollapsed && sel.toString() !== "") return;
     gotoDetail(row.pod);
   }
 
@@ -491,7 +495,7 @@ export function useMonitor() {
           <span class="kk-meter__bar">
             <i style={{ width: fillPct(row.cpu) + "%" }} />
           </span>
-          <span class="kk-meter__num">{numText(row.cpu)}</span>
+          <span class="kk-meter__num">{pctText(row.cpu)}</span>
         </span>
       )
     },
@@ -516,7 +520,7 @@ export function useMonitor() {
           <span class="kk-meter__bar">
             <i style={{ width: fillPct(row.disk_pct) + "%" }} />
           </span>
-          <span class="kk-meter__num">{numText(row.disk_pct, 0)}</span>
+          <span class="kk-meter__num">{pctText(row.disk_pct, 0)}</span>
         </span>
       )
     },

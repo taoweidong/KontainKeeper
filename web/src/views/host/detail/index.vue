@@ -26,8 +26,12 @@ import {
   ageText,
   DISK_ALERT_PCT,
   downloadBlob,
+  durText,
   errText,
   fileStamp,
+  fillPct,
+  hostStateClass,
+  hostStateText,
   mbText,
   numText,
   statusLabel,
@@ -104,7 +108,24 @@ function renderChart(
   // 格式化器建一次、逐点复用，输出的文案与原来逐字相同（FE-16）。
   const times = series.map(p => labelFmt.format(new Date(p.ts * 1000)));
   chart.value.setOption({
-    tooltip: { trigger: "axis" },
+    tooltip: {
+      trigger: "axis",
+      // 双轴单位不同（CPU % / 内存 MB）：valueFormatter 拿不到 series 上下文，
+      // 用 formatter 逐条按 seriesName 配单位（QR1120-W16）；null 点显 - 不画 0
+      formatter: (params: any) => {
+        const list = Array.isArray(params) ? params : [params];
+        if (!list.length) return "";
+        const lines = list.map((p: any) => {
+          const unit = p.seriesName === "CPU %" ? "%" : " MB";
+          const v =
+            p.value === null || p.value === undefined
+              ? "-"
+              : numText(Number(p.value), 1) + unit;
+          return `${p.marker}${p.seriesName}: ${v}`;
+        });
+        return [list[0].axisValueLabel ?? list[0].name, ...lines].join("<br/>");
+      }
+    },
     legend: { data: ["CPU %", "内存 MB"], right: 0 },
     grid: { left: 56, right: 60, top: 36, bottom: 36 },
     xAxis: { type: "category", data: times, boundaryGap: false },
@@ -137,12 +158,25 @@ function renderChart(
  *  详情页即使离线主机也常开（挂着看曲线），所以这条读数必须说清「图上是旧数据」。 */
 const pollFailed = ref(false);
 
+/** 图表空数据态（QR1120-W17）：序列为空时给占位文案，不画一副空坐标系。
+ *  初始为 true——首帧指标到达前同样没有可画的数据。失败时不动它：
+ *  保留上一批曲线是 pollFailed 的既定语义。 */
+const chartEmpty = ref(true);
+
+/** 占位文案分两种（QR-W16 红线）：从没读到过 ≠ 读到了但窗口里没点 */
+const chartEmptyText = computed(() =>
+  pollFailed.value && chartEmpty.value
+    ? "没读到（指标接口不可达）"
+    : "该窗口无数据，等一帧心跳再回来看"
+);
+
 /** silent=true 供轮询复用：曲线失败不刷 toast，交页头读数 */
 async function loadMetrics(silent = false) {
   const isLatest = beginMetrics();
   try {
     const data = await getHostMetrics(pod.value, hours.value);
     if (!isLatest()) return;
+    chartEmpty.value = data.series.length === 0;
     renderChart(data.series);
     pollFailed.value = false;
   } catch (e: any) {
@@ -159,17 +193,22 @@ async function load(silent = false) {
   if (!pod.value) return;
   const isLatest = beginLoad();
   if (!silent) loading.value = true;
+  let hostFailed = false;
   try {
     const data = await getHost(pod.value);
     if (!isLatest()) return;
     detail.value = data;
   } catch (e: any) {
     if (!isLatest()) return;
+    hostFailed = true;
     if (!silent) ElMessage.error("加载主机详情失败：" + errText(e));
   } finally {
     if (isLatest()) loading.value = false;
   }
   await loadMetrics(silent);
+  // getHost 失败而曲线成功时页头也要变冷（QR1120-W11，welcome 的 OR 口径）：
+  // 读数说的是整页新鲜度，详情卡是旧数据就不能继续显绿色「自动刷新」。
+  if (hostFailed) pollFailed.value = true;
 }
 
 /** 图表跟随容器宽度：侧边栏折叠、tabs 收放都只改容器尺寸、不触发 window resize，
@@ -251,13 +290,10 @@ onBeforeUnmount(() => {
         <div class="kk-toolbar">
           <div>
             <b>{{ detail.pod }}</b>
-            <el-tag
-              class="kk-ml"
-              size="small"
-              :type="detail.online ? 'success' : 'info'"
-            >
-              {{ detail.online ? "在线" : "离线" }}
-            </el-tag>
+            <!-- 在线三态与总览/升级页同源（QR1120-W10）：updating 方点不丢 -->
+            <span class="kk-ml" :class="hostStateClass(detail)">
+              {{ hostStateText(detail) }}
+            </span>
             <el-tag
               v-if="detail.disk_alert"
               class="kk-ml"
@@ -275,8 +311,8 @@ onBeforeUnmount(() => {
             >
               {{
                 pollFailed
-                  ? "自动刷新失败，曲线可能已过期"
-                  : "曲线每 30 秒自动刷新"
+                  ? "自动刷新失败，读数可能已过期"
+                  : "每 30 秒自动刷新"
               }}
             </span>
           </div>
@@ -325,7 +361,7 @@ onBeforeUnmount(() => {
         <el-descriptions-item label="CPU">
           {{ numText(detail.metrics?.cpu) }}% ·
           {{ detail.metrics?.cpu_cores ?? "-" }} 核 · load
-          {{ detail.metrics?.load || "-" }}
+          {{ detail.metrics?.load ?? "-" }}
         </el-descriptions-item>
         <el-descriptions-item label="内存">
           {{ mbText(detail.metrics?.mem_mb) }} /
@@ -338,15 +374,17 @@ onBeforeUnmount(() => {
           {{ numText(detail.metrics?.disk_write_mb, 2) }} MB/s
         </el-descriptions-item>
         <el-descriptions-item label="运行时长">
-          {{
-            detail.metrics?.uptime_sec
-              ? ageText(detail.metrics.uptime_sec)
-              : "-"
-          }}
+          <!-- 区间语义用 durText（QR1120-W9）：ageText 的「3 天前」说的是时刻不是时长 -->
+          {{ durText(detail.metrics?.uptime_sec) }}
         </el-descriptions-item>
       </el-descriptions>
 
-      <div ref="chartEl" class="kk-chart" />
+      <!-- 空数据占位（QR1120-W17）：与趋势页 trend-empty 同族；
+           图表容器用 v-show 保活，echarts 实例与 ResizeObserver 不重建 -->
+      <div v-if="chartEmpty" class="kk-chart-empty">
+        {{ chartEmptyText }}
+      </div>
+      <div v-show="!chartEmpty" ref="chartEl" class="kk-chart" />
 
       <!-- 与总览页同族的响应式栅格（:xs/:lg）：1366 笔记本窄屏不再挤压 -->
       <el-row :gutter="16" class="kk-mt-lg">
@@ -362,7 +400,7 @@ onBeforeUnmount(() => {
             <el-table-column label="使用率" min-width="160">
               <template #default="{ row }">
                 <el-progress
-                  :percentage="Math.min(100, Math.round(row.pct || 0))"
+                  :percentage="fillPct(row.pct)"
                   :status="row.pct >= DISK_ALERT_PCT ? 'exception' : undefined"
                 />
               </template>
@@ -455,3 +493,16 @@ onBeforeUnmount(() => {
 </template>
 
 <!-- 通用类（kk-toolbar/kk-desc/kk-chart/kk-h4 等）统一在 style/kk.scss -->
+
+<style scoped lang="scss">
+/* 图表空数据占位（QR1120-W17）：高度与 .kk-chart 同口径，切换时不跳布局 */
+.kk-chart-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 300px;
+  margin: var(--kk-space-lg) 0 0;
+  font-size: 13px;
+  color: var(--el-text-color-placeholder);
+}
+</style>

@@ -264,7 +264,7 @@ const {
     <el-dialog
       v-model="dialog.visible"
       :title="collectTargets.length > 1 ? '批量采集指标' : '采集指标'"
-      width="420px"
+      width="min(92vw, 420px)"
     >
       <el-checkbox-group v-model="dialog.items">
         <el-checkbox v-for="it in collectItems" :key="it" :value="it">

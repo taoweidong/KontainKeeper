@@ -125,6 +125,19 @@ const COUNTER_META: {
     alert: true
   },
   {
+    // QR1120-W21：QR1120-S2/S3 入站防线计数器正式收录（后端 _bump 累加）
+    key: "oversized_dropped",
+    name: "超大帧丢弃",
+    hint: "正常恒 0；增长说明有入站帧超过 1MB 预检上限——入站在被攻击，或 Agent 写坏了帧",
+    alert: true
+  },
+  {
+    key: "host_too_long_dropped",
+    name: "超长主机名丢弃",
+    hint: "正常恒 0；增长说明 topic 里的主机名超过 pod 列宽（120）被入口拒收——入站在被攻击",
+    alert: true
+  },
+  {
     key: "bridge_errors",
     name: "桥接异常",
     hint: "非 0 = paho 回调路径有缺陷在偷偷丢帧（帧可丢、线程不能死），持续增长必须查日志",
@@ -208,9 +221,11 @@ const SUPPRESSED = ["last_msg_ts", "started_at"];
 const counterRows = computed(() => {
   const c = counters.value;
   if (!c) return [];
+  // 缺键显「—」不补 0（QR1120-W16）：后端没报这个键 ≠ 服务端报了 0，
+  // 与本页 :57 / 空态注释的同一条红线（QR-W16）
   const known = COUNTER_META.map(m => ({
     ...m,
-    value: c[m.key] ?? 0
+    value: c[m.key] ?? "—"
   }));
   // 后端新增的键不许悄悄漏掉：原样列出并标明本页还没写说明
   const listed = [...COUNTER_META.map(m => m.key), ...SUPPRESSED];
@@ -224,6 +239,16 @@ const counterRows = computed(() => {
       value: c[k]
     }));
   return [...known, ...extra];
+});
+
+/** 最近一帧（QR1120-W16）：轮询在跑时报相对帧龄；停刷（interval=0）时相对时间
+ *  会冻结骗人，改报该帧的绝对时刻（读数时刻 - 帧龄，与 last_msg_ts 同口径）。 */
+const lastMsgText = computed(() => {
+  const age = broker.value?.last_msg_age_sec;
+  if (age === null || age === undefined) return "-";
+  if (interval.value === 0 && lastLoadedAt.value)
+    return tsText(lastLoadedAt.value - age);
+  return ageText(age);
 });
 
 /** 读数只报绝对时刻：computed 里没有秒级响应式时钟，写「N 秒前」会冻在求值那一刻骗人。 */
@@ -313,7 +338,7 @@ onMounted(() => {
             </span>
             <span class="kk-band__readout">
               最近一帧
-              <b>{{ ageText(broker?.last_msg_age_sec) }}</b>
+              <b>{{ lastMsgText }}</b>
             </span>
           </div>
           <div class="kk-actions">
@@ -425,7 +450,7 @@ onMounted(() => {
         心跳明细
         <b class="kk-num">{{ stats?.storage?.heartbeats ?? "—" }}</b>
         <span v-if="storageDelta" class="kk-sub kk-ml">
-          近 {{ storageDelta.span }}s {{ storageDelta.hb >= 0 ? "+" : ""
+          近 {{ durText(storageDelta.span) }} {{ storageDelta.hb >= 0 ? "+" : ""
           }}{{ storageDelta.hb }} 行
         </span>
       </span>
@@ -455,7 +480,12 @@ onMounted(() => {
         <el-table-column prop="name" label="计数器" width="120" />
         <el-table-column label="值" width="90">
           <template #default="{ row }">
-            <span class="kk-num" :class="{ 'kk-warn': row.alert && row.value }">
+            <span
+              class="kk-num"
+              :class="{
+                'kk-warn': row.alert && typeof row.value === 'number' && row.value > 0
+              }"
+            >
               {{ row.value }}
             </span>
           </template>

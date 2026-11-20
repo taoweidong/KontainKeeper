@@ -7,6 +7,7 @@
 - POST /api/system/agent/upgrade   管理员动作：选机升级（500 台不留 N+1）
 - GET  /api/system/updates         升级台账 + 状态汇总（500 台的升级结果能逐台核验）
 */
+import type { AxiosRequestConfig } from "axios";
 import { http } from "@/utils/http";
 
 /** 管理员看到的「当前待分发版本 + 落后台数」 */
@@ -79,13 +80,23 @@ export type AgentVersionInfo = {
 
 /** 上传新版本二进制（multipart: file + version）。
  *  版本号首字符必须是数字——后端只校验 `version[0].isdigit()`，前端 rules 逐字镜像这条契约，
- *  不另发明更严或更松的规则（`v1.2.3` 这类前缀后端会 400）。 */
-export const uploadAgent = (file: File, version: string) => {
+ *  不另发明更严或更松的规则（`v1.2.3` 这类前缀后端会 400）。
+ *
+ *  timeout: 0（QR1120-W20）：64MB 二进制撞 http 封装的 10s 默认超时必死，
+ *  与 exporting.ts 的导出同口径；onUploadProgress 透传给上传对话框画进度条
+ *  （http.request 的第 3 参整体展开进 axios config，additive，不破坏既有锁）。 */
+export const uploadAgent = (
+  file: File,
+  version: string,
+  onUploadProgress?: AxiosRequestConfig["onUploadProgress"]
+) => {
   const form = new FormData();
   form.append("file", file);
   form.append("version", version);
   return http.request<AgentVersionInfo>("post", "/api/system/agent", {
-    data: form
+    data: form,
+    timeout: 0,
+    onUploadProgress
   });
 };
 

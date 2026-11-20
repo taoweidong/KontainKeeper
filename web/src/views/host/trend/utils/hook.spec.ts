@@ -103,6 +103,10 @@ describe("buildTrendOption：图表 option 组装", () => {
   });
 
   it("上限线只在 limit 非 null 时出现：内存未设置不画线", () => {
+    // QR1120-W3 语义裁决：setOption 改 merge（notMerge=false）后，省略 markLine
+    // 不会移除旧线——「清除上限」必须显式给空 data。原锁断言 markLine 整体
+    // undefined（notMerge 时代成立），merge 模式下那是「上限清不掉」的缺陷，
+    // 改锁为「markLine 恒在、limit=null 时 data 为空」。
     const withLine = buildTrendOption([pt({ disk_pct: 72 })], {
       key: "disk_pct",
       lineName: "磁盘",
@@ -120,8 +124,8 @@ describe("buildTrendOption：图表 option 组装", () => {
       fmt
     });
     expect(
-      (noLine.series[0] as { markLine?: unknown }).markLine
-    ).toBeUndefined();
+      (noLine.series[0] as { markLine: { data: unknown[] } }).markLine.data
+    ).toEqual([]);
   });
 
   it("序列里的 null 原样透传（ECharts 断线，而不是当 0 画）", () => {

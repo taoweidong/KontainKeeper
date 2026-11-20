@@ -12,7 +12,15 @@ import { computed, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 
 import { listHosts, type HostSummary } from "@/api/containers";
-import { errText } from "@/utils/kk";
+import {
+  errText,
+  hostStateClass,
+  hostStateTagType,
+  hostStateText,
+  invertSelection,
+  pctText,
+  unionSelection
+} from "@/utils/kk";
 import { useSeq } from "@/utils/kkPoll";
 
 defineOptions({ name: "HostPicker" });
@@ -70,6 +78,30 @@ const candidates = computed(() => {
     );
 });
 
+/** 抽屉表格前端分页（QR1120-W5）：500 台一次铺进 DOM 是勾选卡顿的另一半。
+ *  row-key + reserve-selection 跨页保勾；全选/反选仍对**全量** candidates 操作，
+ *  分页只压渲染规模，不改选择语义。 */
+const page = ref(1);
+const pageSize = ref(50);
+const pagedCandidates = computed(() => {
+  const start = (page.value - 1) * pageSize.value;
+  return candidates.value.slice(start, start + pageSize.value);
+});
+// 换筛选条件回第一页；候选变少后夹住页码，避免停在空的尾页
+watch([keyword, onlyOnline], () => {
+  page.value = 1;
+});
+watch(
+  () => candidates.value.length,
+  () => {
+    const maxPage = Math.max(
+      1,
+      Math.ceil(candidates.value.length / pageSize.value)
+    );
+    if (page.value > maxPage) page.value = maxPage;
+  }
+);
+
 const selected = computed(() =>
   options.value.filter(h => props.pods.includes(h.pod))
 );
@@ -107,13 +139,16 @@ async function open() {
 }
 
 function syncTableSelection() {
-  // 等表格渲染完再回显勾选状态
+  // 等表格渲染完再回显勾选状态。draft 转 Set（QR1120-W5）：原先对全量 options
+  // 逐行 draft.includes 是 O(n×m)，500×500 每次开抽屉/切筛选都跑一遍。
+  // 回填仍对全量 options：不在当前页的行由 reserve-selection 按 row-key 记住。
   requestAnimationFrame(() => {
     const t = table.value;
     if (!t) return;
+    const picked = new Set(draft.value);
     t.clearSelection();
     for (const h of options.value) {
-      if (draft.value.includes(h.pod)) t.toggleRowSelection(h, true);
+      if (picked.has(h.pod)) t.toggleRowSelection(h, true);
     }
   });
 }
@@ -123,13 +158,20 @@ function onSelect(rows: HostSummary[]) {
 }
 
 function selectAll() {
-  draft.value = candidates.value.map(h => h.pod);
+  // 并集（QR1120-W19）：筛选外的已选（如离线机）不被候选集覆盖
+  draft.value = unionSelection(
+    draft.value,
+    candidates.value.map(h => h.pod)
+  );
   syncTableSelection();
 }
 
 function invert() {
-  const set = new Set(draft.value);
-  draft.value = candidates.value.filter(h => !set.has(h.pod)).map(h => h.pod);
+  // 对称差（QR1120-W19）：只翻候选内的勾选，筛选外已选原样保留
+  draft.value = invertSelection(
+    draft.value,
+    candidates.value.map(h => h.pod)
+  );
   syncTableSelection();
 }
 
@@ -158,12 +200,13 @@ watch(
       <el-button @click="open">
         选择主机（已选 {{ selected.length }} 台）
       </el-button>
+      <!-- 在线三态（QR1120-W10）：自更新窗口显「更新中」琥珀标签，不是普通离线 -->
       <el-tag
         v-for="h in shown"
         :key="h.pod"
         size="small"
         closable
-        :type="h.online ? 'success' : 'info'"
+        :type="hostStateTagType(h)"
         @close="
           emit(
             'update:pods',
@@ -171,7 +214,7 @@ watch(
           )
         "
       >
-        {{ h.pod }}
+        {{ h.pod }} · {{ hostStateText(h) }}
       </el-tag>
       <el-tag v-if="restCount" size="small" type="info"
         >+{{ restCount }}</el-tag
@@ -200,7 +243,7 @@ watch(
       <el-table
         ref="table"
         v-loading="loading"
-        :data="candidates"
+        :data="pagedCandidates"
         size="small"
         :height="'calc(100vh - var(--kk-drawer-h))'"
         row-key="pod"
@@ -215,16 +258,17 @@ watch(
         </el-table-column>
         <el-table-column label="状态" width="90">
           <template #default="{ row }">
-            <el-tag :type="row.online ? 'success' : 'info'" size="small">
-              {{ row.online ? "在线" : "离线" }}
-            </el-tag>
+            <!-- 圆点词汇与总览/升级页同源（QR1120-W10），updating 方点不丢 -->
+            <span :class="hostStateClass(row as HostSummary)">
+              {{ hostStateText(row as HostSummary) }}
+            </span>
           </template>
         </el-table-column>
         <el-table-column label="Agent" width="100">
           <template #default="{ row }">{{ row.agent_ver || "-" }}</template>
         </el-table-column>
         <el-table-column label="CPU" width="90">
-          <template #default="{ row }">{{ row.cpu ?? "-" }}%</template>
+          <template #default="{ row }">{{ pctText(row.cpu) }}</template>
         </el-table-column>
         <template #empty>
           <el-empty
@@ -236,6 +280,18 @@ watch(
           />
         </template>
       </el-table>
+
+      <!-- 前端分页（QR1120-W5）：total 跟筛后候选走，翻页不打后端；
+           跨页勾选由 row-key + reserve-selection 保住 -->
+      <el-pagination
+        v-model:current-page="page"
+        v-model:page-size="pageSize"
+        class="kk-mt"
+        small
+        :total="candidates.length"
+        :page-sizes="[50, 100, 200]"
+        layout="total, sizes, prev, pager, next"
+      />
 
       <template #footer>
         <div class="kk-toolbar">

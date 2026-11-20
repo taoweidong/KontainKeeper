@@ -5,9 +5,15 @@ import type { HostSummary } from "@/api/containers";
 后端所有时间字段都是秒级 Unix 时间戳（int），这里统一成中文可读格式。
 状态色遵循运维直觉：在线/成功=绿，离线/失败=红，执行中=蓝，等待=灰。
 */
+/** zh-CN 时间格式化器模块级缓存（QR1120-W6）：toLocaleString 每次调用都新建
+ *  Intl.DateTimeFormat，总览 100 行 × 10s 轮询是热路径。选项与原调用逐字相同
+ *  （只传 hour12:false，日期/时间分量走 locale 默认），输出不变；
+ *  trend/index.vue 的 FE-16 同款优化收口到这里。 */
+const tsFmt = new Intl.DateTimeFormat("zh-CN", { hour12: false });
+
 export const tsText = (ts?: number | null): string => {
   if (!ts) return "-";
-  return new Date(ts * 1000).toLocaleString("zh-CN", { hour12: false });
+  return tsFmt.format(new Date(ts * 1000));
 };
 
 export const ageText = (sec?: number | null): string => {
@@ -38,6 +44,21 @@ export const numText = (v?: number | null, digits = 1): string =>
   v === null || v === undefined || !Number.isFinite(Number(v))
     ? "-"
     : Number(v).toFixed(digits);
+
+/** 百分比读数（QR1120-W14）：有限值带 %，没读到仍是 -（不渲染 "-%"）。
+ *  总览计量条、HostPicker、趋势页头共用——原先有的列带 % 有的裸数字。 */
+export const pctText = (v?: number | null, digits = 1): string => {
+  const t = numText(v, digits);
+  return t === "-" ? "-" : `${t}%`;
+};
+
+/** 计量条填充：钳到 0–100，坏值不画出越界的条（QR29-W5，QR1120-W15 抽到公共层）。
+ *  NaN/Infinity 必须显式挡掉：Math.min/max 会透传 NaN，
+ *  界面会渲染出字面 NaN，插件写坏指标即可触发。monitor/detail 共用。 */
+export function fillPct(v: number | null | undefined): number {
+  if (v === null || v === undefined || !Number.isFinite(v)) return 0;
+  return Math.max(0, Math.min(100, Math.round(v)));
+}
 
 /** 请求失败时数字读数的占位（QR-W16）。0 在这些页面上的意思是「服务端报了 0」，
  *  拿它当「没读到」就是编数据：调用方必须能区分这两种状态，别拿 `?? 0` 代替。 */
@@ -181,16 +202,92 @@ export const OFFLINE_REASON_LABEL: Record<string, string> = {
   updating: "更新中"
 };
 
+/** 在线三态判定只依赖这两个字段（QR1120-W10 收窄入参）：列表行 HostSummary
+ *  与详情 HostDetail 同形可用，不必为详情页伪造一份 summary。 */
+type HostStateInput = Pick<HostSummary, "online" | "status_reason">;
+
 /** 在线/离线状态：空心点 = 离线（含自更新窗口的方点变体），实心 = 在线。
  *  monitor 总览与 update 升级页共用同一映射（QR-W19：两份实现已收敛到此）。 */
-export function hostStateClass(row: HostSummary): string {
+export function hostStateClass(row: HostStateInput): string {
   if (row.online) return "kk-state";
   return row.status_reason === "updating"
     ? "kk-state kk-state--updating"
     : "kk-state kk-state--idle";
 }
 
-export function hostStateText(row: HostSummary): string {
+export function hostStateText(row: HostStateInput): string {
   if (row.online) return "在线";
   return OFFLINE_REASON_LABEL[row.status_reason || ""] || "离线";
+}
+
+/** 在线三态 → el-tag 类型（QR1120-W10）：仍用标签词汇的页面（HostPicker 已选
+ *  标签）与圆点词汇共用同一份三态判定，updating 不再被显成普通离线。 */
+export function hostStateTagType(
+  row: HostStateInput
+): "success" | "warning" | "info" {
+  if (row.online) return "success";
+  return row.status_reason === "updating" ? "warning" : "info";
+}
+
+/** 轮询 keyed 合并（QR1120-W2）：按 pod 认人，实质字段未变的行保留旧对象引用，
+ *  富单元格不必每 10s 全量重渲染（monitor/update 两页共用，可单测）。
+ *
+ *  两条比较口径：
+ *  - age_sec 是随行就市的时钟读数（服务端 now - last_seen），每轮必变但不代表
+ *    主机状态变化——比较时豁免；命中合并时**就地**补新值，对象引用不变，
+ *    只有读它的那一格（最近心跳）触发细粒度更新。
+ *  - caps 等对象字段每轮响应都是新引用（=== 恒 false），按 JSON 比较。
+ *
+ *  整表逐行未变且顺序一致时返回原数组引用，paged 切片与表格 diff 全部短路。 */
+export function mergeHostRows<T extends { pod: string }>(
+  prev: readonly T[],
+  next: readonly T[]
+): T[] {
+  const byPod = new Map(prev.map(r => [r.pod, r]));
+  let sameAll = prev.length === next.length;
+  const merged = next.map((row, i) => {
+    const old = byPod.get(row.pod) as (T & Record<string, any>) | undefined;
+    if (old && sameDisplay(old, row)) {
+      if ("age_sec" in row) (old as any).age_sec = (row as any).age_sec;
+      if (prev[i] !== old) sameAll = false;
+      return old;
+    }
+    sameAll = false;
+    return row;
+  });
+  return sameAll ? (prev as T[]) : merged;
+}
+
+function sameDisplay(a: Record<string, any>, b: Record<string, any>): boolean {
+  const ka = Object.keys(a);
+  if (ka.length !== Object.keys(b).length) return false;
+  return ka.every(k => {
+    if (k === "age_sec") return true;
+    const va = a[k];
+    const vb = b[k];
+    if (va === vb) return true;
+    if (va && vb && typeof va === "object" && typeof vb === "object")
+      return JSON.stringify(va) === JSON.stringify(vb);
+    return false;
+  });
+}
+
+/** 全选 = 并集（QR1120-W19）：筛选外的已选（如勾了离线机后开「仅在线」）
+ *  不被候选集整体覆盖。HostPicker 的全选按钮走这里。 */
+export function unionSelection(draft: string[], candidates: string[]): string[] {
+  return [...new Set([...draft, ...candidates])];
+}
+
+/** 反选 = draft 与 candidates 的对称差（QR1120-W19）：只翻候选内的勾选，
+ *  筛选外的已选原样保留——原先用 candidates 整体覆盖会静默清空它们。 */
+export function invertSelection(
+  draft: string[],
+  candidates: string[]
+): string[] {
+  const cand = new Set(candidates);
+  const picked = new Set(draft);
+  const next = new Set<string>();
+  for (const p of picked) if (!cand.has(p)) next.add(p);
+  for (const p of cand) if (!picked.has(p)) next.add(p);
+  return [...next];
 }

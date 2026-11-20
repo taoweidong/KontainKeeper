@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, watch } from "vue";
 import { useRouter } from "vue-router";
+import { pctText, tsText } from "@/utils/kk";
 import {
   HOUR_OPTIONS,
   isBreach,
@@ -51,6 +52,13 @@ const latest = computed(() => {
   return null;
 });
 
+/** 读数时刻提示（QR1120-W13）：7d 窗口走小时聚合，末点不是「现在」 */
+const latestTooltip = computed(() =>
+  latest.value
+    ? `该点时刻 ${tsText(latest.value.ts)}${hours.value > 24 ? "（小时聚合）" : ""}`
+    : ""
+);
+
 const memChart = useTrendChart(() =>
   series.value.length
     ? buildTrendOption(series.value, {
@@ -97,24 +105,38 @@ function gotoDetail() {
             <el-button link type="primary" @click="gotoDetail">
               {{ pod || "未知主机" }}
             </el-button>
-            <span class="kk-band__readout">
-              <b>{{ latest?.mem_pct ?? "—" }}</b>
-              内存 %
-              <span
-                v-if="isBreach(latest?.mem_pct, memLimit)"
-                class="kk-state kk-state--bad kk-bad"
-                >越限</span
-              >
-            </span>
-            <span class="kk-band__readout">
-              <b>{{ latest?.disk_pct ?? "—" }}</b>
-              磁盘 %
-              <span
-                v-if="isBreach(latest?.disk_pct, diskLimit)"
-                class="kk-state kk-state--bad kk-bad"
-                >越限</span
-              >
-            </span>
+            <!-- 最新读数：一位小数 + %（QR1120-W13），tooltip 标注该点时刻——
+                 7d 窗口末点可能是近 1 小时前的小时聚合值，不是「现在」 -->
+            <el-tooltip
+              :disabled="!latest"
+              :content="latestTooltip"
+              placement="bottom"
+            >
+              <span class="kk-band__readout">
+                <b>{{ pctText(latest?.mem_pct) }}</b>
+                内存
+                <span
+                  v-if="isBreach(latest?.mem_pct, memLimit)"
+                  class="kk-state kk-state--bad kk-bad"
+                  >越限</span
+                >
+              </span>
+            </el-tooltip>
+            <el-tooltip
+              :disabled="!latest"
+              :content="latestTooltip"
+              placement="bottom"
+            >
+              <span class="kk-band__readout">
+                <b>{{ pctText(latest?.disk_pct) }}</b>
+                磁盘
+                <span
+                  v-if="isBreach(latest?.disk_pct, diskLimit)"
+                  class="kk-state kk-state--bad kk-bad"
+                  >越限</span
+                >
+              </span>
+            </el-tooltip>
             <el-tooltip
               content="自动刷新最近一次成功的时间；失败时图表保持上一批数据"
               placement="bottom"

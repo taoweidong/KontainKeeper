@@ -55,12 +55,16 @@ const {
   clearSelection
 } = useHostUpdate();
 
-/** 上传对话框模型：对话框每次打开都重置，半填状态不跨次残留 */
+/** 上传对话框模型：对话框每次打开都重置，半填状态不跨次残留。
+ *  uploading/progress 供内容体画进度条（QR1120-W20）：64MB 上传没有进度
+ *  等于让运维对着转圈猜「是不是卡死了」。 */
 const uploadForm = reactive({
   version: "",
   file: null as File | null,
   fileName: "",
-  size: 0
+  size: 0,
+  uploading: false,
+  progress: 0
 });
 
 /** el-form 实例由内容体（./form.vue）挂载时经 registerForm 递回来：
@@ -72,9 +76,12 @@ function openUploadDialog() {
   uploadForm.file = null;
   uploadForm.fileName = "";
   uploadForm.size = 0;
+  uploadForm.uploading = false;
+  uploadForm.progress = 0;
   addDialog({
     title: "上传新版本",
-    width: "560px",
+    // 窄屏不溢出（QR1120-W18）：固定 px 在 <560px 视口会横向撑出
+    width: "min(92vw, 560px)",
     /** —— DialogProps 验证条目（Task 3 遗留、本任务补验的渲染缺口）——
      *  modalClass（v7 移植净增的 12 个之一，type.ts 声明「遮罩的自定义类名」）：
      *  声明时挂在遮罩 .el-overlay 元素上——浏览器里以「带该类的遮罩存在」实测；
@@ -109,8 +116,21 @@ function openUploadDialog() {
           closeLoading?.();
           return;
         }
+        uploadForm.uploading = true;
+        uploadForm.progress = 0;
         try {
-          const r = await uploadAgent(uploadForm.file, uploadForm.version);
+          const r = await uploadAgent(
+            uploadForm.file,
+            uploadForm.version,
+            e => {
+              // total 可能缺失（代理剥 Content-Length 等）：此时进度条停在 0，
+              // 不编造百分比；完成由成功回执表达（QR1120-W20）
+              uploadForm.progress = e.total
+                ? Math.min(99, Math.round((e.loaded * 100) / e.total))
+                : 0;
+            }
+          );
+          uploadForm.progress = 100;
           message(
             `已上传 ${r.version}（${mbText(r.size / 1024 / 1024)} · sha256 ${r.sha256.slice(0, 12)}…），待分发版本已切换`,
             { type: "success" }
@@ -122,6 +142,8 @@ function openUploadDialog() {
           // 失败留在对话框里可改可重试——上传是运维动作，关掉重来成本高
           message("上传失败：" + errText(e), { type: "error" });
           closeLoading?.();
+        } finally {
+          uploadForm.uploading = false;
         }
       });
     }

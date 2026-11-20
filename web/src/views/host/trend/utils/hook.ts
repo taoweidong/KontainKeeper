@@ -17,7 +17,7 @@ import {
   type MetricPoint,
   type MetricsResult
 } from "@/api/containers";
-import { errText } from "@/utils/kk";
+import { errText, pctText } from "@/utils/kk";
 import { usePolls, useSeq } from "@/utils/kkPoll";
 
 /**
@@ -88,7 +88,11 @@ export function buildTrendOption(
 ): echarts.EChartsCoreOption {
   const data = points.map(p => p[opts.key]);
   return {
-    tooltip: { trigger: "axis" },
+    tooltip: {
+      trigger: "axis",
+      // 百分比口径统一一位小数 + %（QR1120-W16）；null 点显示 - 而不是 0
+      valueFormatter: (v: number | null) => pctText(v)
+    },
     grid: { left: 44, right: 20, top: 30, bottom: 32 },
     xAxis: {
       type: "category",
@@ -110,21 +114,19 @@ export function buildTrendOption(
         areaStyle: { opacity: 0.15 },
         connectNulls: false,
         data,
-        ...(opts.limit === null
-          ? {}
-          : {
-              markLine: {
-                symbol: "none",
-                silent: true,
-                lineStyle: { color: "#f56c6c", type: "dashed" },
-                label: {
-                  formatter: "告警上限 {c}%",
-                  position: "insideEndTop",
-                  color: "#f56c6c"
-                },
-                data: [{ yAxis: opts.limit }]
-              }
-            })
+        // markLine 恒在（QR1120-W3）：setOption 改 merge 后，省略 markLine 不会
+        // 移除旧线——清除上限必须显式给空 data，否则「不画线」是句空话。
+        markLine: {
+          symbol: "none",
+          silent: true,
+          lineStyle: { color: "#f56c6c", type: "dashed" },
+          label: {
+            formatter: "告警上限 {c}%",
+            position: "insideEndTop",
+            color: "#f56c6c"
+          },
+          data: opts.limit === null ? [] : [{ yAxis: opts.limit }]
+        }
       }
     ]
   };
@@ -152,13 +154,17 @@ export function useHostTrend() {
   const { setPoll } = usePolls();
   const beginLoad = useSeq();
 
-  /** 空序列有两种成因：没读到（接口挂了）vs 读到了但确实没有点（新主机还没攒出数据） */
+  /** 空态三态分开（QR1120-W4）：加载中 / 没读到（接口挂了）/ 读到了但确实没有点
+   *  （新主机还没攒出数据）。初始加载期间谎报「接口不可达」会把人支去查网络。 */
   const emptyText = computed(() => {
+    if (loading.value) return "加载中…";
     if (read.value) return "这个时间窗内没有序列数据，等一帧心跳再回来看";
     return "没读到（指标接口不可达）";
   });
 
-  async function load(silent = false) {
+  /** syncInputs=false 供切时间窗用（QR1120-W12）：换窗口不该冲掉未保存的上限编辑。
+   *  回填时机仍是初始加载 / pod 变化 / 保存成功后重载（QR-W17 的静默豁免不变）。 */
+  async function load(silent = false, syncInputs = true) {
     if (!pod.value) return;
     const isLatest = beginLoad();
     if (!silent) loading.value = true;
@@ -168,10 +174,9 @@ export function useHostTrend() {
       metrics.value = data;
       read.value = true;
       pollFailed.value = false;
-      if (!silent) {
+      if (!silent && syncInputs) {
         // QR-W17：静默轮询不回填输入框——运维正在改告警上限时，30s 轮询会把
         // 编辑中的值打回原值，极易点出「以为保存了新值、实际保存旧值」的操作。
-        // 非静默加载（初始/切时间窗/保存后重载）才是输入框的同步时机。
         memInput.value = data.mem_limit;
         diskInput.value = data.disk_limit_raw;
       }
@@ -191,12 +196,18 @@ export function useHostTrend() {
     setPoll(POLL_KEY, () => load(true), 30 * 1000);
   }
 
-  watch(hours, () => load());
+  // 切时间窗不回填输入框（QR1120-W12）：窗口换了，未保存的上限编辑还在
+  watch(hours, () => load(false, false));
 
   // QR-W17：同组件路由复用（详情↔趋势之间带参跳转）不会重新挂载，
   // 必须显式重取，否则页面停留在上一台主机的曲线与上限表单。
+  // QR1120-W4：旧主机的曲线与上限输入框立即退场，加载期间给加载态而不是旧数据。
   watch(pod, () => {
     read.value = false;
+    metrics.value = null;
+    memInput.value = null;
+    diskInput.value = null;
+    pollFailed.value = false;
     load();
   });
 
@@ -258,7 +269,10 @@ export function useTrendChart(
     if (!el.value) return;
     if (!chart.value) chart.value = echarts.init(el.value);
     const opt = getOption();
-    if (opt) chart.value.setOption(opt, true);
+    // merge 而非 notMerge（QR1120-W3）：series 结构固定（单线 + 可选上限线），
+    // 每 30s 全量重建会重置动画与 tooltip 状态。上限清除由 buildTrendOption
+    // 显式给空 markLine.data 承担（merge 不会替你删组件）。
+    if (opt) chart.value.setOption(opt, false);
   }
 
   useResizeObserver(el, () => chart.value?.resize());

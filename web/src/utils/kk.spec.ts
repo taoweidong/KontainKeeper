@@ -168,8 +168,14 @@ describe("argvText：命令内容预览的统一出口（QR29-E.2）", () => {
 
 import {
   OFFLINE_REASON_LABEL,
+  fillPct,
   hostStateClass,
-  hostStateText
+  hostStateTagType,
+  hostStateText,
+  invertSelection,
+  mergeHostRows,
+  pctText,
+  unionSelection
 } from "@/utils/kk";
 import type { HostSummary } from "@/api/containers";
 
@@ -197,5 +203,115 @@ describe("hostStateClass/hostStateText：B6 的 updating 方点不能丢", () =>
 
   it("离线原因词表只认 updating：未知原因一律呈现为「离线」", () => {
     expect(OFFLINE_REASON_LABEL).toEqual({ updating: "更新中" });
+  });
+
+  it("hostStateTagType：标签词汇与圆点词汇同一份三态（QR1120-W10）", () => {
+    expect(hostStateTagType(host())).toBe("success");
+    expect(
+      hostStateTagType(host({ online: false, status_reason: "updating" }))
+    ).toBe("warning");
+    expect(hostStateTagType(host({ online: false }))).toBe("info");
+    expect(hostStateTagType(host({ online: false, status_reason: "x" }))).toBe(
+      "info"
+    );
+  });
+});
+
+// ---- QR1120-W15：fillPct 抽到公共层（monitor/detail 共用，防护口径不变）----
+
+describe("fillPct：计量条 0–100 钳制（QR29-W5 / QR1120-W15）", () => {
+  it("坏值一律回 0：NaN / Infinity / null / undefined 都不许画出越界的条", () => {
+    expect(fillPct(Number.NaN)).toBe(0);
+    expect(fillPct(Number.POSITIVE_INFINITY)).toBe(0);
+    expect(fillPct(Number.NEGATIVE_INFINITY)).toBe(0);
+    expect(fillPct(null)).toBe(0);
+    expect(fillPct(undefined)).toBe(0);
+  });
+
+  it("正常值四舍五入并钳到 [0,100]：负数不再漏进 detail 磁盘进度条", () => {
+    expect(fillPct(33.4)).toBe(33);
+    expect(fillPct(-5)).toBe(0);
+    expect(fillPct(120)).toBe(100);
+    expect(fillPct(0)).toBe(0);
+    expect(fillPct(100)).toBe(100);
+  });
+});
+
+describe("pctText：百分比读数统一带 %（QR1120-W14）", () => {
+  it("有限值带 %，没读到仍是 -（不渲染 \"-%\"）", () => {
+    expect(pctText(33.45)).toBe("33.5%");
+    expect(pctText(0)).toBe("0.0%"); // 读到 0 是真值
+    expect(pctText(87, 0)).toBe("87%");
+    expect(pctText(null)).toBe("-");
+    expect(pctText(undefined)).toBe("-");
+    expect(pctText(Number.NaN)).toBe("-");
+  });
+});
+
+// ---- QR1120-W2：轮询 keyed 合并（monitor/update 共用的纯函数）----
+
+describe("mergeHostRows：未变化行保留旧对象引用", () => {
+  const row = (pod: string, over: Record<string, unknown> = {}) => ({
+    pod,
+    online: true,
+    cpu: 10,
+    age_sec: 5,
+    caps: { shell: true },
+    ...over
+  });
+
+  it("实质字段未变 → 保留旧引用；age_sec 豁免比较但就地补新值", () => {
+    const prev = [row("a"), row("b")];
+    const next = [row("a", { age_sec: 15 }), row("b", { age_sec: 15 })];
+    const merged = mergeHostRows(prev, next);
+    expect(merged[0]).toBe(prev[0]); // 引用不变，富单元格不重渲染
+    expect(merged[1]).toBe(prev[1]);
+    expect(merged[0].age_sec).toBe(15); // 时钟读数仍新鲜
+  });
+
+  it("caps 等对象字段按 JSON 比较：新引用同内容不算变化，内容变了才算", () => {
+    const prev = [row("a")];
+    expect(mergeHostRows(prev, [row("a")])[0]).toBe(prev[0]);
+    const changed = mergeHostRows(prev, [row("a", { caps: { shell: false } })]);
+    expect(changed[0]).not.toBe(prev[0]);
+  });
+
+  it("实质字段变化 → 换新对象；增删行与顺序跟随 next", () => {
+    const prev = [row("a"), row("b")];
+    const next = [row("b"), row("c"), row("a", { cpu: 90 })];
+    const merged = mergeHostRows(prev, next);
+    expect(merged.map(r => r.pod)).toEqual(["b", "c", "a"]);
+    expect(merged[0]).toBe(prev[1]); // b 未变
+    expect(merged[2]).not.toBe(prev[0]); // a 的 cpu 变了
+    expect(merged[2].cpu).toBe(90);
+  });
+
+  it("整表逐行未变且顺序一致 → 返回原数组引用（paged 切片全短路）", () => {
+    const prev = [row("a"), row("b")];
+    const merged = mergeHostRows(prev, [row("a"), row("b")]);
+    expect(merged).toBe(prev);
+  });
+
+  it("空 prev（首次加载）原样返回 next", () => {
+    const next = [row("a")];
+    expect(mergeHostRows([], next)).toEqual(next);
+  });
+});
+
+// ---- QR1120-W19：HostPicker 全选/反选不丢筛选外已选 ----
+
+describe("unionSelection / invertSelection：选择集语义", () => {
+  it("全选 = 并集：筛选外的已选（离线机）保留", () => {
+    expect(unionSelection(["off1"], ["a", "b"])).toEqual(["off1", "a", "b"]);
+    expect(unionSelection(["a"], ["a", "b"])).toEqual(["a", "b"]); // 去重
+    expect(unionSelection([], [])).toEqual([]);
+  });
+
+  it("反选 = 对称差：只翻候选内勾选，筛选外已选原样保留", () => {
+    // 勾了离线机 off1 后开「仅在线」再反选：off1 不丢，候选内 a 取消、b 勾上
+    expect(invertSelection(["off1", "a"], ["a", "b"])).toEqual(["off1", "b"]);
+    expect(invertSelection([], ["a", "b"])).toEqual(["a", "b"]);
+    expect(invertSelection(["a", "b"], ["a", "b"])).toEqual([]);
+    expect(invertSelection(["off1"], [])).toEqual(["off1"]);
   });
 });
