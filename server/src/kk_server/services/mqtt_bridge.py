@@ -58,6 +58,14 @@ OFFLINE_GRACE = ONLINE_GRACE
 # 频率由**外部来源**控制，逐帧落库等于把审计表交给攻击者灌（P0：audit 曾无保留
 # 策略，两者叠加就是磁盘 DoS）。同 key 60s 一条足够溯源，stats 计数仍逐帧累加。
 AUDIT_THROTTLE = 60
+# 入站帧应用层尺寸上限（QR1120-S2）：匿名 Broker 下任何发布者都能发任意大的帧，
+# json.loads 前不预检就等于把内存交给外部。hb/status 正常 <10KB；result 分块
+# 48KB（base64 后 ~64KB）；cmd 回执同型。统一 1MB 留足余量，超限直接丢弃。
+MAX_FRAME_BYTES = 1024 * 1024
+# topic 主机名长度上限（QR1120-S3）：与 tables 的 pod 列 String(120) 同口径。
+# 超长 host 落 MySQL 会炸 1406 令整帧失败（status 丢在线态、hb 丢指标），
+# 入口拒收比让方言错误穿透到 store 更干净。
+MAX_HOST_LEN = 120
 
 
 class MqttBridge:
@@ -103,6 +111,10 @@ class MqttBridge:
                       # paho 网络线程回调里的异常计数（QR29-S2）：正常时恒 0，
                       # 持续增长说明帧解析/分发路径有缺陷在偷偷丢帧
                       "bridge_errors": 0,
+                      # QR1120-S2/S3：入站防线丢弃计数（正常恒 0，增长说明有
+                      # 超大帧/超长主机名在打入口）。统计页对未收录键有动态兜底
+                      # 渲染，COUNTER_META 正式收录由 web 侧跟进
+                      "oversized_dropped": 0, "host_too_long_dropped": 0,
                       "last_msg_ts": 0, "started_at": int(time.time())}
         # _result_locks 的最近使用时间（cid -> ts）：sweep 周期回收永不到终态的条目
         self._result_lock_ts = {}
@@ -166,7 +178,17 @@ class MqttBridge:
             host, _, port = rest.partition(":")
         if not host:
             raise ValueError("KK_MQTT_URL 缺少主机名：%r" % url)
-        return host, int(port or (8883 if secure else 1883)), secure
+        # QR1120-S4：坏端口（mqtt://b:abc）此前裸抛 int() 的 ValueError，
+        # 启动日志里只有 invalid literal 看不出是哪个配置项——包成可读错误。
+        try:
+            port_num = int(port or (8883 if secure else 1883))
+        except ValueError:
+            raise ValueError(
+                "KK_MQTT_URL 端口非法：%r（应为 1-65535 的整数）" % port) from None
+        if not 1 <= port_num <= 65535:
+            raise ValueError(
+                "KK_MQTT_URL 端口超出范围：%r（应为 1-65535）" % port)
+        return host, port_num, secure
 
     def _sub_topics(self):
         """唯一需要改的地方：多实例时改成 $share/{group}/... 并逐实例换 client_id。"""
@@ -209,8 +231,26 @@ class MqttBridge:
         depth = len(self.prefix.split("/"))
         try:
             host, suffix = parts[depth], parts[depth + 1]
+        except IndexError:
+            log.warning("忽略无法解析的帧 topic=%s", msg.topic)
+            return
+        # QR1120-S3：host 取自主题、发布者任选，超过 pod 列宽（String(120)）
+        # 的帧落 MySQL 会炸 1406 整帧失败——入口拒收，计数 + 节流日志。
+        if len(host) > MAX_HOST_LEN:
+            self._bump("host_too_long_dropped")
+            self._drop_log("host_too_long", "丢弃超长主机名帧 len=%s max=%s topic=%s",
+                           len(host), MAX_HOST_LEN, msg.topic)
+            return
+        # QR1120-S2：json.loads 前预检尺寸——匿名 Broker 下超大帧是现成的
+        # 内存 DoS 面。超限丢弃 + 计数 + 节流日志（不逐帧落审计）。
+        if len(msg.payload) > MAX_FRAME_BYTES:
+            self._bump("oversized_dropped")
+            self._drop_log("oversized", "丢弃超大帧 bytes=%s max=%s topic=%s",
+                           len(msg.payload), MAX_FRAME_BYTES, msg.topic)
+            return
+        try:
             body = json.loads(msg.payload.decode("utf-8", "replace"))
-        except (ValueError, UnicodeDecodeError, IndexError):
+        except (ValueError, UnicodeDecodeError):
             log.warning("忽略无法解析的帧 topic=%s", msg.topic)
             return
         if not isinstance(body, dict) or not host:
@@ -267,8 +307,11 @@ class MqttBridge:
     def _audit_throttled(self, key):
         """外部可控的高频审计事件限速：同 key 在 AUDIT_THROTTLE 秒内只落第一条。
 
-        返回 True 表示本次应跳过落库。key 必须取有界维度（actor/action/host），
-        不能带攻击者可随机的 id，否则这个 dict 自己就成了无界增长点。
+        返回 True 表示本次应跳过落库。key 必须取有界维度——QR1120-S1 起一律
+        **按 action 全局**（单元素 tuple）：host 取自主题、ip 是帧内自报值，
+        匿名 Broker 下两者都是攻击者可逐帧轮换的维度，带进 key 等于轮换即绕过
+        节流（且 _audit_ts 自己成为无界增长点）。首条事件的 host/ip 仍完整记在
+        审计 detail 里供溯源；stats 计数逐帧递增，不受节流影响。
         """
         now = int(time.time())
         last = self._audit_ts.get(key, 0)
@@ -278,10 +321,22 @@ class MqttBridge:
             self._audit_ts = {k: v for k, v in self._audit_ts.items() if v > cutoff}
         return now - last < AUDIT_THROTTLE
 
+    def _drop_log(self, kind, fmt, *args):
+        """入口丢弃（超大帧/超长主机名）的节流日志（QR1120-S2/S3）。
+
+        与审计节流同一本时间账、同一条「key 只取有界维度」纪律：kind 是常量，
+        不带 host/topic 里的攻击者可控串。丢弃不落审计——逐帧落审计本身就是
+        灌库路径；计数在 stats，痕迹在这里，60s 一条足够发现攻击。
+        """
+        if not self._audit_throttled(("drop_log", kind)):
+            log.warning(fmt, *args)
+
     # ---- 三类上行帧（事件循环线程）----
     async def _on_ip_rejected(self, host, body):
         """白名单外上报的审计落库（v3 接入管控，替代原 token 拒绝审计）。"""
-        if self._audit_throttled(("ip_rejected", host, str(body.get("ip") or ""))):
+        # QR1120-S1：key 按 action 全局——ip 是自报值，逐帧换 ip 曾让每个新 key
+        # 都过节流（轮换即绕过灌库）。首条事件的 host/ip 仍记在 detail 里。
+        if self._audit_throttled(("ip_rejected",)):
             return
         await self.store.add_audit("mqtt", "ip_rejected",
                              {"host": host, "ip": str(body.get("ip") or ""),
@@ -289,7 +344,7 @@ class MqttBridge:
 
     async def _on_host_mismatch(self, host, body):
         """帧归属不一致的审计落库（QR29-S4）：topic 主机与 body.host 对不上。"""
-        if self._audit_throttled(("host_mismatch", host)):
+        if self._audit_throttled(("host_mismatch",)):   # QR1120-S1：action 全局
             return
         await self.store.add_audit("mqtt", "host_mismatch",
                              {"topic_host": host,
@@ -305,7 +360,7 @@ class MqttBridge:
             proto = 0
         if proto not in self.accept_proto_vers:
             self._bump("rejected")
-            if not self._audit_throttled(("proto_mismatch", host)):
+            if not self._audit_throttled(("proto_mismatch",)):   # QR1120-S1：action 全局
                 await self.store.add_audit("mqtt", "proto_mismatch",
                                      {"host": host, "proto_ver": body.get("proto_ver")})
             log.bind(host=host).warning(
@@ -345,7 +400,7 @@ class MqttBridge:
         if not await self.store.get_container(host):
             # 没上线过的主机直接发心跳：多半是伪造或 status 帧丢了，不入库
             self._bump("rejected")
-            if not self._audit_throttled(("hb_unknown_host", host)):
+            if not self._audit_throttled(("hb_unknown_host",)):   # QR1120-S1：action 全局
                 await self.store.add_audit("mqtt", "hb_unknown_host", {"host": host})
             return
         await self.store.record_hb(host, body)
@@ -368,7 +423,9 @@ class MqttBridge:
         if interval and interval < floor:
             self._bump("interval_violation")
             # 误配 1s 上报时这里是每秒一条审计：不限速就与 ip_rejected 同型的灌库路径
-            if not self._audit_throttled(("interval_violation", host)):
+            # QR1120-S1：host 虽已过白名单/归属闸门，仍是发布者任选的主题串，
+            # 带进 key 同型可轮换绕过——按 action 全局收口
+            if not self._audit_throttled(("interval_violation",)):
                 await self.store.add_audit("mqtt", "interval_violation",
                                            {"host": host, "interval": interval,
                                             "min": floor})
@@ -395,14 +452,14 @@ class MqttBridge:
             cmd = await self.store.get_command(cid)
             if cmd is None:
                 self._bump("rejected")
-                if not self._audit_throttled(("result_unknown_cmd", host)):
+                if not self._audit_throttled(("result_unknown_cmd",)):   # QR1120-S1：action 全局
                     await self.store.add_audit("mqtt", "result_unknown_cmd",
                                                {"host": host, "id": cid})
                 return
             if cmd["pod"] != host:
                 # 归属校验：A 主机不能替 B 主机回传结果（评审 P0-3）
                 self._bump("rejected")
-                if not self._audit_throttled(("result_mismatch", host)):
+                if not self._audit_throttled(("result_mismatch",)):   # QR1120-S1：action 全局
                     await self.store.add_audit("mqtt", "result_mismatch",
                                                {"expect": cmd["pod"], "got": host, "id": cid})
                 log.bind(host=host, cmd=cid).warning(
@@ -430,9 +487,9 @@ class MqttBridge:
             self._bump("rejected")
             # QR-S46：该路径由 Broker 侧匿名发布者可控（重放任意 up- 帧），与
             # ip_rejected/host_mismatch 同型走节流，否则持续重放就是持续灌审计库。
-            # key 不带攻击者可随机的 id。
-            if self._audit_throttled(("update_result_mismatch",
-                                      str(row["pod"]), str(host))):
+            # QR1120-S1：key 按 action 全局——got host 取自主题可逐帧轮换，
+            # 旧 key 带 (pod, host) 时换 host 即绕过。expect/got 仍记在 detail。
+            if self._audit_throttled(("update_result_mismatch",)):
                 return
             await self.store.add_audit("mqtt", "update_result_mismatch",
                                        {"expect": row["pod"], "got": host, "id": cid})
@@ -442,13 +499,17 @@ class MqttBridge:
             # QoS1 重发或 Agent 双发（QR-A19）都会让 upgrade_failed 翻倍、多写一条审计。
             return
         rc = body.get("rc")
+        # QR1120-S5：Agent 侧把「良性不更新」（not_newer/backoff 等）从 rc=1
+        # 改为 rc=0（reason 保留在 out_b64）。rc=0 一律落 done 且 reason 进台账
+        # ——良性跳过不是失败，不得写 agent_update_failed 审计；rc≠0 仍 failed。
+        reason = _b64_text(body.get("out_b64"))[:40]
         if rc in (None, 0):
-            await self.store.finish_update(cid, "done")
+            await self.store.finish_update(cid, "done", reason)
             self._bump("upgrade_done", 1)
             log.bind(host=host, cmd=cid).info(
-                "agent upgrade done -> %s", row["to_version"])
+                "agent upgrade done -> %s reason=%s", row["to_version"], reason)
             return
-        reason = _b64_text(body.get("out_b64"))[:40] or "agent_reported_failure"
+        reason = reason or "agent_reported_failure"
         await self.store.finish_update(cid, "failed", reason)
         self._bump("upgrade_failed", 1)
         await self.store.add_audit("mqtt", "agent_update_failed",

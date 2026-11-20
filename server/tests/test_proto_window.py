@@ -136,7 +136,12 @@ async def test_drop_v3_window_closes_the_gate(mk):
 async def test_malformed_proto_ver_rejects_instead_of_crashing(mk):
     """QR-S29：`"proto_ver": "v3"` 这类畸形帧过去会炸掉整个派发 task，
     而 QoS1 已被 paho 线程 ACK —— 帧从此永久丢失，retained 状态也不落库。
-    闸门必须按「窗口外」处理：拒收 + 审计，不抛。"""
+    闸门必须按「窗口外」处理：拒收 + 审计，不抛。
+
+    QR1120-S1 裁决：proto_mismatch 节流 key 收口为按 action 全局（旧 key 带
+    host，发布者逐帧换 host 即绕过 throttle 灌审计库）。两条畸形帧在同一个
+    60s 窗口内只落**第一条**审计，故计数断言由 2 改 1；拒收语义本身不变
+    （rejected 仍逐帧 +1，数字字符串仍受理）。"""
     bridge = await mk()
     await bridge._on_status("bad-01", frame("bad-01", "v3"))
     await bridge._on_status("bad-02", frame("bad-02", None))
@@ -144,7 +149,7 @@ async def test_malformed_proto_ver_rejects_instead_of_crashing(mk):
     assert bridge.stats["rejected"] == 2
     assert (await bridge.store.get_container("bad-03"))["proto_ver"] == 4
     actions = [a["action"] for a in await bridge.store.list_audit()]
-    assert actions.count("proto_mismatch") == 2
+    assert actions.count("proto_mismatch") == 1
 
 
 async def test_offline_frame_does_not_clobber_v4_meta(mk):
@@ -186,4 +191,5 @@ def test_live_counter_has_frontend_reading_slot():
         r'"([a-z0-9_]+)"', re.search(r"const SUPPRESSED = \[([^\]]*)\]", text).group(1)))
 
     assert not (live & hidden), "关窗口的判据被藏进 SUPPRESSED，运维读不到：%s" % sorted(live & hidden)
-    assert not (live - listed), "后端在累加、这页却没收录：%s" % sorted(live - listed)
+    assert not (live - listed), \
+        "后端在累加、这页却没收录：%s" % sorted(live - listed)
