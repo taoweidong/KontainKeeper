@@ -15,6 +15,9 @@ defineOptions({ name: "SysMenu" });
 
 const loading = ref(false);
 const menus = ref<RbacMenu[]>([]);
+/** 读到过真值没有（QR1120-W28 / QR-W16）：菜单表有内置种子，正常部署不可能为空——
+ *  接口挂掉时显「菜单表为空」是把故障谎报成真空。 */
+const read = ref(false);
 
 const dialog = reactive({
   visible: false,
@@ -54,6 +57,7 @@ async function load() {
   loading.value = true;
   try {
     menus.value = (await listMenus()).items;
+    read.value = true;
   } catch (e: any) {
     ElMessage.error("加载菜单失败：" + errText(e));
   } finally {
@@ -140,7 +144,10 @@ onMounted(load);
           </template>
         </el-table-column>
         <template #empty>
-          <el-empty description="菜单表为空" :image-size="60" />
+          <el-empty
+            :description="read ? '菜单表为空' : '没读到（菜单接口不可达）'"
+            :image-size="60"
+          />
         </template>
       </el-table>
       <p class="kk-sub kk-mt">
@@ -150,10 +157,11 @@ onMounted(load);
       </p>
     </el-card>
 
+    <!-- 宽度 min(92vw, Npx)（QR1120-W29）：固定 px 在窄屏会溢出视口 -->
     <el-dialog
       v-model="dialog.visible"
       :title="`编辑菜单 ${dialog.target}`"
-      width="480px"
+      width="min(92vw, 480px)"
       :close-on-click-modal="false"
     >
       <el-form label-width="110px">

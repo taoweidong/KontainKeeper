@@ -19,6 +19,7 @@ const {
   exporting,
   pagination,
   onSearch,
+  reloadFirstPage,
   onExport,
   resetFields
 } = useAuditLog();
@@ -45,13 +46,13 @@ function onSelectionChange(rows: any[]) {
         />
       </el-form-item>
       <el-form-item>
-        <!-- 搜索按**当前页**重查，所以绑 onSearch 而不是「归第 1 页再查」：这是原页面的行为，
-             brief 也如此。归位由 hook 内部 reloadFirstPage 在另外三条路径上做（关键字防抖 /
-             改条数 / 重置），它不导出，模板里既不需要也不该自己拼 currentPage = 1。 -->
+        <!-- 搜索统一归第 1 页再查（QR1120-W33）：关键字防抖本就归位，点搜索却按当前页
+             查是遗留的不一致——在第 5 页点搜索会「查不到刚输的关键字」。归位语义收在
+             hook 的 reloadFirstPage，模板不自己拼 currentPage = 1。 -->
         <el-button
           type="primary"
           :icon="useRenderIcon(SearchIcon)"
-          @click="onSearch"
+          @click="reloadFirstPage"
           >搜索</el-button
         >
         <el-button :icon="useRenderIcon(RefreshIcon)" @click="resetFields"
@@ -60,9 +61,12 @@ function onSelectionChange(rows: any[]) {
       </el-form-item>
     </el-form>
 
+    <!-- :loading 接真实请求态（QR1120-W27）：spin 跟随 onSearch 的在途状态，
+         不再是固定 500ms 的假转圈。 -->
     <PureTableBar
       title="审计日志"
       :columns="columns"
+      :loading="loading"
       :table-ref="tableRef?.getTableRef()"
       @refresh="onSearch"
     >

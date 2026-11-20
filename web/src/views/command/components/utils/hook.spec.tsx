@@ -4,8 +4,9 @@
  *  - 轮询 key 带实例序号（QR29-W8）：shell 与 collect 两页 keep-alive 下共存，同名 key
  *    会被 setPoll 的「按 key 覆盖」静默掐掉另一页的轮询。
  *  - 自适应节奏：有未终态命令 3s，全终态 10s；`autoRefresh` 关掉就彻底停表。
- *  - 静默轮询失败只置 `pollFailed`，不刷 toast（W5：3s 一轮会把噪音做成刷屏）；
- *    手动刷新失败才给可读错误。
+ *  - 刷新失败恒置 `pollFailed`（QR1120-W22 裁决，对齐 W5/QR-W17 全站口径：
+ *    monitor/detail/update/trend/system/welcome 六页失败恒 true）：静默那路不刷
+ *    toast（3s 一轮会把噪音做成刷屏），手动那路另有可读错误，但页头读数同样变冷。
  *  - `read` 与 `pollFailed` 共同支撑「读到过 / 确实为空 / 接口不可达」三态（QR-W16）。
  *  - 抽屉输出走 useSeq 票据：连点两行时先点的慢响应不许填进后点的抽屉（QR-W4）；
  *    点已清理行必须复位 loading，否则抽屉永久转圈（QR29-W3）。
@@ -147,7 +148,11 @@ describe("挂载读数与分页状态源", () => {
     });
   });
 
-  it("手动加载失败：给可读错误、loading 复位、read 保持 false，pollFailed 不置位", async () => {
+  it("手动加载失败：给可读错误、loading 复位、read 保持 false，pollFailed 同样置位（QR1120-W22）", async () => {
+    // 语义裁决（QR1120-W22）：旧锁断言「手动失败 pollFailed 不置位」，那是六页中
+    // 唯一未对齐的口径——手动刷新失败时列表同样可能已过期，页头却继续谎称同步正常。
+    // 现对齐 W5/QR-W17 全站口径（monitor/detail/update/trend/system/welcome 失败恒
+    // true）：手动失败 = toast + 读数变冷双通道，静默失败 = 仅读数变冷。
     h.listCommands.mockRejectedValue({
       response: { data: { detail: "库连接失败" } }
     });
@@ -157,7 +162,7 @@ describe("挂载读数与分页状态源", () => {
     expect(h.message).toHaveBeenCalledWith("加载命令历史失败：库连接失败", {
       type: "error"
     });
-    expect(api.pollFailed.value).toBe(false); // 那是静默轮询专用的读数
+    expect(api.pollFailed.value).toBe(true); // 手动失败也变冷，不再豁免
     expect(api.loading.value).toBe(false);
     expect(api.read.value).toBe(false);
   });

@@ -8,8 +8,13 @@
  *     人会被卡在原地、本地会话清不掉。
  *  2. `loginByUsername` 的成功/失败两条路径：只有 `success` 为真才 `setToken`；
  *     失败必须把原始错误抛给调用方（登录页靠 errText 透出后端中文文案）。
- *  3. `handRefreshToken` 恒失败（后端无刷新接口），且不许半途写脏 token。
+ *  3. `logOut()` 必须调全局 `clearPolls()`（QR1120-W31）：keep-alive 缓存页的轮询
+ *     不随登出卸载，不停表就会带着已吊销的 token 继续打后端。
  *  4. 状态水合与 setter：刷新后从 localStorage 的 user-info 复原画像，未登录时是空数组。
+ *
+ *  语义裁决（QR1120-W31）：原第 3 组锁 `handRefreshToken` 的两条用例已随死代码删除——
+ *  后端无 refresh 接口、全仓无调用方，http 拦截器对 401 统一登出兜底，锁一个不存在的
+ *  动作没有意义；`refreshTokenApi` 同删（api/user.spec.ts 同步裁决）。
  *  jsdom + 真 pinia；`@/router`、`@/utils/auth`、`@/api/user`、`./multiTags` 全部桩掉，
  *  否则会把整张路由/cookie/api 依赖图拖进来。
  */
@@ -21,7 +26,6 @@ const h = vi.hoisted(() => ({
   order: [] as string[],
   logoutApi: vi.fn(),
   getLogin: vi.fn(),
-  refreshTokenApi: vi.fn(),
   setToken: vi.fn(),
   removeToken: vi.fn(),
   routerPush: vi.fn(),
@@ -80,8 +84,7 @@ vi.mock("@/api/user", () => ({
   logoutApi: () => {
     h.order.push("logoutApi");
     return h.logoutApi();
-  },
-  refreshTokenApi: (...a: any[]) => h.refreshTokenApi(...a)
+  }
 }));
 
 vi.mock("./multiTags", () => ({
@@ -95,11 +98,14 @@ vi.mock("./multiTags", () => ({
 
 import { store } from "../utils";
 import { useUserStoreHook } from "./user";
+// kkPoll 用真实实现（纯定时器模块，无 DOM/网络依赖）：clearPolls 的接线要真停表才算数
+import { clearPolls, pollKeys, setPoll } from "@/utils/kkPoll";
 
 beforeEach(() => {
   vi.clearAllMocks();
   h.order.length = 0;
   h.mem = {};
+  clearPolls(); // 定时器是模块级全局，逐条清掉免相互依赖
   setActivePinia(store);
   useUserStoreHook().$reset(); // store 实例在本文件内共享，逐条复位免相互依赖
   h.logoutApi.mockResolvedValue(undefined); // 真实实现自吞错误
@@ -214,35 +220,22 @@ describe("loginByUsername", () => {
   });
 });
 
-describe("handRefreshToken：后端无刷新接口", () => {
-  it("恒 reject 且不写 token", async () => {
-    h.refreshTokenApi.mockRejectedValue(
-      new Error("refresh-token not supported")
-    );
+describe("logOut 的全局停表兜底（QR1120-W31）", () => {
+  it("登出清掉全部在跑轮询：keep-alive 缓存页不卸载，不许带着已吊销 token 继续打后端", () => {
+    const tick = vi.fn();
+    setPoll("opt1120-a", tick, 1000);
+    setPoll("opt1120-b", tick, 3000);
+    expect(pollKeys().sort()).toEqual(["opt1120-a", "opt1120-b"]);
 
-    await expect(
-      useUserStoreHook().handRefreshToken({ refreshToken: "rt" } as any)
-    ).rejects.toThrow("refresh-token not supported");
-    expect(h.setToken).not.toHaveBeenCalled();
+    useUserStoreHook().logOut();
+
+    expect(pollKeys()).toEqual([]); // clearPolls 真的接线了，不是注释宣称
+    expect(tick).not.toHaveBeenCalled();
   });
 
-  it("后端补上刷新接口时的成功分支：setToken 收到 data.data 并回传结果（形状契约先锁住）", async () => {
-    const refreshed = {
-      success: true,
-      data: {
-        accessToken: "new",
-        refreshToken: "new2",
-        expires: new Date("2026-04-30T22:00:00Z")
-      }
-    };
-    h.refreshTokenApi.mockResolvedValue(refreshed);
-
-    const res = await useUserStoreHook().handRefreshToken({
-      refreshToken: "rt"
-    } as any);
-
-    expect(res).toBe(refreshed);
-    expect(h.setToken.mock.calls[0][0]).toBe(refreshed.data);
+  it("没有在跑轮询时登出不抛异常（clearPolls 对空表无副作用）", () => {
+    expect(pollKeys()).toEqual([]);
+    expect(() => useUserStoreHook().logOut()).not.toThrow();
   });
 });
 

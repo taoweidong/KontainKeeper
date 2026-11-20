@@ -54,6 +54,26 @@ async function loadHosts() {
   }
 }
 
+/** 勾选落 URL 的阈值（QR1120-W25）：500 台全选时 pods 序列化是数 KB 的 query，
+ *  每次勾选都触发 router.replace + multiTags 重算，地址栏也没法看。超过 20 台
+ *  或序列化超 1500 字符就不落 URL，选择态改存 sessionStorage（刷新可恢复、
+ *  不进地址栏与分享链接）；少量勾选维持落 URL 的现状，保住「复制链接分享」。 */
+const PODS_URL_MAX = 20;
+const PODS_URL_MAX_LEN = 1500;
+const PODS_STORAGE_KEY = "kk-shell-pods";
+
+const podsTooBigForUrl = (pods: string[]) =>
+  pods.length > PODS_URL_MAX || pods.join(",").length > PODS_URL_MAX_LEN;
+
+/** query 逐键比较（值都是字符串/数组）：超阈值档里勾选只改内存与 sessionStorage，
+ *  query 没变就不该再触发路由替换。 */
+const sameQuery = (a: Record<string, any>, b: Record<string, any>) => {
+  const ka = Object.keys(a);
+  return (
+    ka.length === Object.keys(b).length && ka.every(k => a[k] === b[k])
+  );
+};
+
 /** 选择与超时同步到 query（replace 不污染后退栈）：刷新与分享不丢。
  *  命令体 **不落 URL**——地址栏、复制链接、浏览器历史都会留下整条 shell 命令。
  *  只 watch 真正落 URL 的三个字段（QR29-W9）：旧写法 `{...shellForm} + deep` 让
@@ -62,14 +82,25 @@ async function loadHosts() {
 watch(
   () => [shellForm.pods, shellForm.mode, shellForm.timeout] as const,
   ([pods, mode, timeout]) => {
-    router.replace({
-      query: {
-        ...route.query,
-        pods: pods.join(",") || undefined,
-        mode,
-        timeout: String(timeout)
+    const tooBig = podsTooBigForUrl(pods);
+    try {
+      if (tooBig) {
+        sessionStorage.setItem(PODS_STORAGE_KEY, JSON.stringify(pods));
+      } else {
+        sessionStorage.removeItem(PODS_STORAGE_KEY);
       }
-    });
+    } catch {
+      // 存储不可用（隐私模式等）时退回纯内存：选择仍在表单里，只是刷新不恢复
+    }
+    const query = { ...route.query };
+    // ?cmdline= 是跳转入口的一次性参数：onMounted 读进表单后不再回写地址栏，
+    // 旧写法 `...route.query` 会让整条命令永远留在 URL 里（QR1120-W25）
+    delete query.cmdline;
+    if (!tooBig && pods.length) query.pods = pods.join(",");
+    else delete query.pods;
+    query.mode = mode;
+    query.timeout = String(timeout);
+    if (!sameQuery(query, route.query)) router.replace({ query });
   }
 );
 
@@ -114,7 +145,24 @@ onMounted(async () => {
   // 总览页「批量执行命令」跳来时带上预选主机（?pods= 契约不变）
   const q = route.query;
   const preset = String(q.pods || "");
-  if (preset) shellForm.pods = preset.split(",").filter(Boolean);
+  if (preset) {
+    shellForm.pods = preset.split(",").filter(Boolean);
+  } else {
+    // 超阈值不落 URL 的勾选（QR1120-W25）：刷新后从 sessionStorage 恢复；
+    // URL 带 pods 时以 URL 为准（分享/跳转入口优先于本地残留）
+    try {
+      const saved = JSON.parse(
+        sessionStorage.getItem(PODS_STORAGE_KEY) || "null"
+      );
+      if (Array.isArray(saved)) {
+        shellForm.pods = saved.filter(
+          (p): p is string => typeof p === "string" && !!p
+        );
+      }
+    } catch {
+      // 存储内容损坏按无预选处理，不让一条坏数据挡住页面
+    }
+  }
   if (q.mode === "argv") shellForm.mode = "argv";
   if (q.cmdline) shellForm.cmdline = String(q.cmdline);
   if (q.timeout) shellForm.timeout = Number(q.timeout) || 30;

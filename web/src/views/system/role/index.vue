@@ -5,7 +5,7 @@
  * 菜单树节点 = 后端菜单表（与前端路由 name 一一对应），勾选即授权。
  */
 import { computed, nextTick, onMounted, reactive, ref } from "vue";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import type { FormInstance, FormRules } from "element-plus";
 import type { ElTree } from "element-plus";
 
@@ -25,6 +25,9 @@ defineOptions({ name: "SysRole" });
 const loading = ref(false);
 const roles = ref<RbacRole[]>([]);
 const menus = ref<RbacMenu[]>([]);
+/** 读到过真值没有（QR1120-W28 / QR-W16）：接口挂掉时空表不能说「还没有角色」，
+ *  内置角色明明存在——那是把故障谎报成真空。 */
+const read = ref(false);
 
 const dialog = reactive({
   visible: false,
@@ -75,6 +78,7 @@ async function load() {
     const [r, m] = await Promise.all([listRoles(), listMenus()]);
     roles.value = r.items;
     menus.value = m.items;
+    read.value = true;
   } catch (e: any) {
     ElMessage.error("加载角色列表失败：" + errText(e));
   } finally {
@@ -125,7 +129,20 @@ async function submit() {
           remark: form.remark
         });
         if (menuNames.length) {
-          await updateRole(form.name, { menus: menuNames });
+          try {
+            await updateRole(form.name, { menus: menuNames });
+          } catch (e: any) {
+            // 两段式无原子性（QR1120-W32）：角色已建成、授权这一步挂了。
+            // 此时重试「新增」必撞 409，提示必须指向「编辑该角色补授权」，
+            // 并关框刷新让那个无授权角色立刻可见可编辑。
+            ElMessage.error(
+              `角色 ${form.label} 已创建，但菜单授权失败：${errText(e)}。` +
+                `请在列表中「编辑」该角色补授权（直接重试新增会撞 409）。`
+            );
+            dialog.visible = false;
+            await load();
+            return;
+          }
         }
         ElMessage.success(`已创建角色 ${form.label}`);
       } else {
@@ -147,6 +164,21 @@ async function submit() {
 }
 
 async function onRemove(row: RbacRole) {
+  // 二次确认（QR1120-W23）：删角色会连带移除菜单授权，不可逆。
+  // 范式对齐 host/update 的回滚确认：取消走 catch 静默返回。
+  try {
+    await ElMessageBox.confirm(
+      `确认删除角色「${row.label}」（${row.name}）？该角色的菜单授权将一并移除，操作不可恢复。`,
+      "删除角色",
+      {
+        type: "warning",
+        confirmButtonText: "确认删除",
+        cancelButtonText: "取消"
+      }
+    );
+  } catch {
+    return;
+  }
   try {
     await deleteRole(row.name);
     ElMessage.success(`已删除角色 ${row.label}`);
@@ -212,7 +244,10 @@ onMounted(load);
           </template>
         </el-table-column>
         <template #empty>
-          <el-empty description="还没有角色" :image-size="60" />
+          <el-empty
+            :description="read ? '还没有角色' : '没读到（角色接口不可达）'"
+            :image-size="60"
+          />
         </template>
       </el-table>
       <p class="kk-sub kk-mt">
@@ -221,10 +256,11 @@ onMounted(load);
       </p>
     </el-card>
 
+    <!-- 宽度 min(92vw, Npx)（QR1120-W29）：固定 px 在窄屏会溢出视口 -->
     <el-dialog
       v-model="dialog.visible"
       :title="dialog.mode === 'create' ? '新增角色' : `编辑角色 ${dialog.target}`"
-      width="520px"
+      width="min(92vw, 520px)"
       :close-on-click-modal="false"
     >
       <el-form

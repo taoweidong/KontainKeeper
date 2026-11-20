@@ -5,7 +5,7 @@
  * 路由守卫拦非授权角色，接口侧另有 AdminUser 依赖兜底。
  */
 import { onMounted, reactive, ref } from "vue";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import type { FormInstance, FormRules } from "element-plus";
 
 import { errText, tsText } from "@/utils/kk";
@@ -26,6 +26,9 @@ const loading = ref(false);
 const users = ref<RbacUser[]>([]);
 const roles = ref<RbacRole[]>([]);
 const me = ref("");
+/** 读到过真值没有（QR1120-W28 / QR-W16）：接口挂掉时空表不能说「还没有用户」——
+ *  那是把故障谎报成真空，admin 会以为账号被删光了。 */
+const read = ref(false);
 
 const dialog = reactive({
   visible: false,
@@ -61,6 +64,7 @@ async function load() {
     const [u, r] = await Promise.all([listUsers(), listRoles()]);
     users.value = u.items;
     roles.value = r.items;
+    read.value = true;
   } catch (e: any) {
     ElMessage.error("加载用户列表失败：" + errText(e));
   } finally {
@@ -121,6 +125,21 @@ async function submit() {
 }
 
 async function onRemove(row: RbacUser) {
+  // 二次确认（QR1120-W23）：删账号是不可逆动作，误点即删没有挽回余地。
+  // 范式对齐 host/update 的回滚确认：取消走 catch 静默返回。
+  try {
+    await ElMessageBox.confirm(
+      `确认删除用户「${row.username}」？删除后该账号立即无法登录、已有会话被吊销，操作不可恢复。`,
+      "删除用户",
+      {
+        type: "warning",
+        confirmButtonText: "确认删除",
+        cancelButtonText: "取消"
+      }
+    );
+  } catch {
+    return;
+  }
   try {
     await deleteUser(row.username);
     ElMessage.success(`已删除用户 ${row.username}`);
@@ -186,7 +205,10 @@ onMounted(async () => {
           </template>
         </el-table-column>
         <template #empty>
-          <el-empty description="还没有用户" :image-size="60" />
+          <el-empty
+            :description="read ? '还没有用户' : '没读到（用户接口不可达）'"
+            :image-size="60"
+          />
         </template>
       </el-table>
       <p class="kk-sub kk-mt">
@@ -195,10 +217,11 @@ onMounted(async () => {
       </p>
     </el-card>
 
+    <!-- 宽度 min(92vw, Npx)（QR1120-W29）：固定 px 在窄屏会溢出视口 -->
     <el-dialog
       v-model="dialog.visible"
       :title="dialog.mode === 'create' ? '新增用户' : `编辑用户 ${form.username}`"
-      width="460px"
+      width="min(92vw, 460px)"
       :close-on-click-modal="false"
     >
       <el-form

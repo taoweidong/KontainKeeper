@@ -8,15 +8,10 @@ import {
   routerArrays,
   storageLocal
 } from "../utils";
-import {
-  type UserResult,
-  type RefreshTokenResult,
-  getLogin,
-  logoutApi,
-  refreshTokenApi
-} from "@/api/user";
+import { type UserResult, getLogin, logoutApi } from "@/api/user";
 import { useMultiTagsStoreHook } from "./multiTags";
 import { type DataInfo, setToken, removeToken, userKey } from "@/utils/auth";
+import { clearPolls } from "@/utils/kkPoll";
 
 export const useUserStore = defineStore("pure-user", {
   state: (): userType => ({
@@ -83,6 +78,10 @@ export const useUserStore = defineStore("pure-user", {
      *  网络问题阻塞；服务端会话删不掉时由 12h TTL 兜底。 */
     logOut() {
       logoutApi();
+      // 全局停表兜底（QR1120-W31）：kkPoll 注释宣称的登出清理此前并未接线，
+      // 只靠组件卸载的作用域清理——keep-alive 缓存页的轮询在登出后仍会带着
+      // 已吊销的 token 打后端。这里显式清掉全部在跑轮询。
+      clearPolls();
       this.username = "";
       this.roles = [];
       this.permissions = [];
@@ -90,22 +89,9 @@ export const useUserStore = defineStore("pure-user", {
       useMultiTagsStoreHook().handleTags("equal", [...routerArrays]);
       resetRouter();
       router.push("/login");
-    },
-    /** 刷新`token` */
-    async handRefreshToken(data) {
-      return new Promise<RefreshTokenResult>((resolve, reject) => {
-        refreshTokenApi(data)
-          .then(data => {
-            if (data) {
-              setToken(data.data);
-              resolve(data);
-            }
-          })
-          .catch(error => {
-            reject(error);
-          });
-      });
     }
+    // handRefreshToken 已删（QR1120-W31）：后端无 refresh 接口、全仓无调用方，
+    // http 拦截器对 401 统一清 token 跳登录，死分支不再保留。
   }
 });
 

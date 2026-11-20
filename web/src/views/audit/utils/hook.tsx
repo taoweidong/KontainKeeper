@@ -88,7 +88,7 @@ export function useAuditLog() {
       align: "left",
       cellRenderer: ({ row }) => (
         <>
-          {Object.entries(parseDetail(row.detail)).map(([k, v]) => (
+          {Object.entries(detailOf(row)).map(([k, v]) => (
             <span key={k} class="kk-kv">
               <b>{k}</b>:{" "}
               {typeof v === "object" ? JSON.stringify(v) : String(v)}
@@ -99,6 +99,20 @@ export function useAuditLog() {
       )
     }
   ];
+
+  /** 明细一次性解析（QR1120-W26）：原先 cellRenderer 每次渲染都 JSON.parse，
+   *  200 行 × 翻页/刷新/密度切换全是重复解析。改为 load 成功后整批预解析，
+   *  结果按行对象挂 WeakMap（不污染 API 返回形状、行被替换后自动可回收）；
+   *  渲染器只查表，未命中才解析一次并回填——同一行对象至多解析一次。 */
+  const detailCache = new WeakMap<AuditRow, Record<string, any>>();
+  function detailOf(row: AuditRow): Record<string, any> {
+    let d = detailCache.get(row);
+    if (!d) {
+      d = parseDetail(row.detail);
+      detailCache.set(row, d);
+    }
+    return d;
+  }
 
   const beginLoad = useSeq();
 
@@ -114,6 +128,8 @@ export function useAuditLog() {
       });
       if (!isLatest()) return;
       dataList.value = data.items;
+      // 落表前整批预解析：渲染期（含翻页回来的重渲染）不再碰 JSON.parse
+      data.items.forEach(r => detailOf(r));
       pagination.total = data.total;
       read.value = true;
     } catch (e: any) {
@@ -129,6 +145,9 @@ export function useAuditLog() {
    * 程序改 `pagination.currentPage` 不触发 emit，所以这里必须自己 `onSearch()`；
    * 反过来用户点页码时 pure-table 已把 `currentPage` 改进这个 reactive，`@page-current-change`
    * 只调 `onSearch()`、不再赋值（FE-8 同族：既归位又靠 emit 才会各打一发）。
+   *
+   * QR1120-W33 起对外导出：搜索按钮也走这里——关键字防抖归第 1 页、点搜索却按
+   * 当前页查是同一动作的两副面孔，在第 5 页点搜索会「查不到刚输的关键字」。
    */
   function reloadFirstPage() {
     pagination.currentPage = 1;
@@ -194,6 +213,7 @@ export function useAuditLog() {
     exporting,
     pagination,
     onSearch,
+    reloadFirstPage,
     onExport,
     resetFields
   };

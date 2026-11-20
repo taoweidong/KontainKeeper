@@ -35,6 +35,8 @@ const {
   pollFailed,
   pagination,
   out,
+  outView,
+  hasActive,
   batchStat,
   hasFilter,
   statNum,
@@ -109,9 +111,12 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
       </el-form-item>
     </el-form>
 
+    <!-- :loading 接真实请求态（QR1120-W27）：不传时 bar 内部仍是固定 500ms 假转圈，
+         传了则 spin 跟随 loading，慢请求转到底、快请求立刻停。 -->
     <PureTableBar
       title="执行历史"
       :columns="columns"
+      :loading="loading"
       :table-ref="tableRef?.getTableRef()"
       @refresh="loadCommands()"
     >
@@ -128,7 +133,10 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
               statNum(batchStat.running)
             }}
           </span>
-          <!-- 静默轮询失败进这条读数、不弹 toast（W5）：3~10s 一轮的刷屏会把真错误淹掉。 -->
+          <!-- 刷新失败进这条读数（W5 / QR1120-W22：静默与手动同一口径）；静默那路
+               不弹 toast——3~10s 一轮的刷屏会把真错误淹掉。
+               正常态按当前档位说实话（QR1120-W30）：全终态时实际是 10s 一轮，
+               恒显「有未终态命令时 3 秒一轮」会让用户按 3s 的预期等结果。 -->
           <span
             v-if="autoRefresh"
             class="kk-sync shrink-0"
@@ -136,8 +144,10 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
           >
             {{
               pollFailed
-                ? "自动刷新失败，列表可能已过期"
-                : "有未终态命令时 3 秒一轮"
+                ? "刷新失败，列表可能已过期"
+                : hasActive
+                  ? "有未终态命令：3 秒一轮"
+                  : "全部已终态：10 秒一轮"
             }}
           </span>
         </div>
@@ -231,8 +241,19 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
     </PureTableBar>
 
     <el-drawer v-model="out.visible" :title="out.title" size="42%">
+      <!-- 大输出切片渲染（QR1120-W24）：超 256K 字符只把头 128K + 尾 64K 交给 DOM，
+           中段折叠成一条引导（完整内容走下方「下载此条输出」，复用既有在途守卫）。
+           不超阈值时 outView 为 null，照旧单个 pre 全文渲染。 -->
       <el-scrollbar class="kk-out-scroll">
-        <pre v-loading="out.loading" class="kk-out">{{ out.text }}</pre>
+        <div v-loading="out.loading" class="kk-out-body">
+          <pre class="kk-out">{{ outView ? outView.head : out.text }}</pre>
+          <template v-if="outView">
+            <div class="kk-out-gap">
+              … 已省略中段 {{ outView.omitted }} 字符，点下方「下载此条输出」查看完整内容 …
+            </div>
+            <pre class="kk-out">{{ outView.tail }}</pre>
+          </template>
+        </div>
       </el-scrollbar>
       <template #footer>
         <div class="kk-toolbar">
@@ -249,5 +270,22 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
 <style scoped>
 .kk-out-scroll {
   height: 100%;
+}
+
+/* v-loading 从 pre 挪到包裹层（QR1120-W24 切片后有两个 pre）：
+   给最小高度，空输出/加载中 spinner 才有落点 */
+.kk-out-body {
+  min-height: 120px;
+}
+
+/* 中段省略引导条：与输出正文区分开，弱底色 + 居中 */
+.kk-out-gap {
+  padding: 8px 10px;
+  margin: 6px 0;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  text-align: center;
+  background: var(--el-fill-color);
+  border-radius: 4px;
 }
 </style>

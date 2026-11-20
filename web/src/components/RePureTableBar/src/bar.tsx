@@ -18,6 +18,7 @@ import {
   getKeyList
 } from "@pureadmin/utils";
 
+import { useRefreshSpin } from "./refreshSpin";
 import PinAngle from "~icons/bi/pin-angle";
 import Fullscreen from "~icons/ri/fullscreen-fill";
 import PinAngleFill from "~icons/bi/pin-angle-fill";
@@ -50,6 +51,14 @@ const props = {
   tableKey: {
     type: [String, Number] as PropType<string | number>,
     default: "0"
+  },
+  /** 真实请求的加载态（QR1120-W27，additive 可选）：传入时刷新图标的 spin 跟随它，
+   *  慢请求转到底、快请求立刻停；不传（undefined）保持旧行为——固定 500ms 假转圈，
+   *  未接线的页面不受影响。显式 default: undefined 是为了不让 Vue 的 Boolean
+   *  casting 把「未传」兜成 false（那会让旧页面永远不转）。 */
+  loading: {
+    type: Boolean,
+    default: undefined
   }
 };
 
@@ -59,7 +68,6 @@ export default defineComponent({
   emits: ["refresh", "fullscreen"],
   setup(props, { emit, slots, attrs }) {
     const size = ref("default");
-    const loading = ref(false);
     const checkAll = ref(true);
     const isFullscreen = ref(false);
     const isIndeterminate = ref(false);
@@ -108,11 +116,13 @@ export default defineComponent({
       ];
     });
 
-    function onReFresh() {
-      loading.value = true;
-      emit("refresh");
-      delay(500).then(() => (loading.value = false));
-    }
+    /** 刷新 spin 状态机（QR1120-W27）：语义与单测都在 ./refreshSpin，
+     *  这里只把外部 loading prop 与 emit 接进去。 */
+    const { spin, onReFresh } = useRefreshSpin(
+      () => props.loading,
+      () => emit("refresh"),
+      delay
+    );
 
     function onExpand() {
       isExpandAll.value = !isExpandAll.value;
@@ -310,7 +320,7 @@ export default defineComponent({
                 class={[
                   "w-[16px]",
                   iconClass.value,
-                  loading.value ? "animate-spin" : ""
+                  spin.value ? "animate-spin" : ""
                 ]}
                 v-tippy={rendTippyProps("刷新")}
                 onClick={() => onReFresh()}

@@ -6,15 +6,18 @@
  *    漏掉都会让 setToken 写进残缺会话（登录后立刻 401 或直接白屏）。
  *  - logoutApi 自吞错误（`.catch(() => undefined)`）：后端 401/断网都不许让调用方抛异常，
  *    否则 logOut() 的本地清理会被网络问题打断（QR29-W1 的后半段）。
- *  - refreshTokenApi 恒 reject（后端无此接口），由 http 拦截器统一登出兜底。
  *  expires 用 fake timers 钉死时钟，断言「签发即 12h」而不是「大概 12h」。
+ *
+ *  语义裁决（QR1120-W31）：原「refreshTokenApi 恒 reject」一组锁已随死代码删除——
+ *  后端无刷新接口、全仓无调用方（store 的 handRefreshToken 同删），token 过期由
+ *  http 响应拦截器统一清 token 跳登录，不再保留这条死分支的形状锁。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const httpMock = vi.hoisted(() => ({ request: vi.fn() }));
 vi.mock("@/utils/http", () => ({ http: httpMock }));
 
-import { getLogin, logoutApi, refreshTokenApi } from "./user";
+import { getLogin, logoutApi } from "./user";
 
 const NOW = new Date("2026-04-30T08:00:00Z");
 
@@ -97,11 +100,3 @@ describe("logoutApi：永不 reject", () => {
   });
 });
 
-describe("refreshTokenApi：后端无刷新接口", () => {
-  it("恒 reject 且不碰 http（避免挂起 Promise 的死分支，评审 P1-1）", async () => {
-    await expect(refreshTokenApi({ refreshToken: "rt" })).rejects.toThrow(
-      "refresh-token not supported"
-    );
-    expect(httpMock.request).not.toHaveBeenCalled();
-  });
-});

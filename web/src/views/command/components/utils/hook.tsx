@@ -45,6 +45,28 @@ import { usePolls, useSeq } from "@/utils/kkPoll";
 /** 与后端 `status` 字段同名的状态词汇表，只用于「未终态」判定 */
 const ACTIVE_STATUS = ["pending", "sent", "running"];
 
+/** 大输出渲染阈值（QR1120-W24）：`.kk-out` 是 word-break:break-all + pre-wrap，
+ *  全文进 DOM 时布局成本随长度线性涨，MB 级输出会把抽屉卡死。超过 256K 字符
+ *  只渲染头 128K + 尾 64K，中段给「已省略」引导，完整内容走既有的 downloadOut。
+ *  口径是 JS 字符串长度（UTF-16 code unit）而非字节——文案因此说「字符」，
+ *  用 TextEncoder 数真字节要把全文再编码一遍，恰好是这里要省掉的成本。 */
+export const OUT_RENDER_LIMIT = 256 * 1024;
+export const OUT_HEAD_LEN = 128 * 1024;
+export const OUT_TAIL_LEN = 64 * 1024;
+
+/** 纯函数切片：不超阈值返回 null（模板照旧全文渲染）；超了返回头/尾/省略数。
+ *  导出供单测直接驱动，不必造 256K 字符串过一遍抽屉。 */
+export function sliceOutText(
+  text: string
+): { head: string; tail: string; omitted: number } | null {
+  if (text.length <= OUT_RENDER_LIMIT) return null;
+  return {
+    head: text.slice(0, OUT_HEAD_LEN),
+    tail: text.slice(text.length - OUT_TAIL_LEN),
+    omitted: text.length - OUT_HEAD_LEN - OUT_TAIL_LEN
+  };
+}
+
 /** 轮询 key 的实例序号（QR29-W8）：本组件被 shell 与 collect 两页共用，keep-alive
  *  下两个实例共存，硬编码同名 key 会让 setPoll 的「按 key 覆盖」静默掐掉另一页
  *  正在跑的轮询。对外契约不变（仍导出 POLL_KEY，模板的「自动刷新」勾选用它停表）。 */
@@ -101,7 +123,8 @@ export function useCommandHistory() {
   const fresh = ref<Set<string>>(new Set());
   const batches = ref<BatchSummary[]>([]);
   const exporting = ref(false);
-  /** 静默轮询失败：状态进表头读数，不再每 3~10s 弹一次 toast（W5） */
+  /** 刷新失败（静默轮询与手动刷新同一口径，QR1120-W22）：状态进表头读数，
+   *  静默那路不再每 3~10s 弹一次 toast（W5）；手动那路另有 toast，但读数同样变冷。 */
   const pollFailed = ref(false);
 
   const pagination = reactive<PaginationProps>({
@@ -119,6 +142,10 @@ export function useCommandHistory() {
     loading: false,
     id: ""
   });
+
+  /** 抽屉渲染视图（QR1120-W24）：超阈值时只把头/尾交给 DOM，中段折叠成引导条。
+   *  out.text 仍是全文——下载走 downloadOut 重新拉取，不依赖这份切片。 */
+  const outView = computed(() => sliceOutText(out.text));
 
   // 作用域版 setPoll/clearPoll：卸载只清本组件注册的 key，不再误清其他页面的轮询
   const { setPoll, clearPoll } = usePolls();
@@ -146,8 +173,10 @@ export function useCommandHistory() {
       pollFailed.value = false;
     } catch (e: any) {
       if (!isLatest()) return;
-      // 自适应轮询最密到 3s 一轮：失败刷 toast 会把噪音做成刷屏，状态改由表头读数承担（W5）
-      pollFailed.value = silent;
+      // 失败恒置位（QR1120-W22，对齐 W5/QR-W17 全站口径）：手动刷新失败时列表同样
+      // 可能已过期，页头读数必须变冷，不能因为「这次是手动的」就继续谎称同步正常。
+      // 静默那路不刷 toast（3s 一轮会刷屏），手动那路的 toast 照旧。
+      pollFailed.value = true;
       if (!silent)
         message("加载命令历史失败：" + errText(e), { type: "error" });
     } finally {
@@ -440,6 +469,8 @@ export function useCommandHistory() {
     pollFailed,
     pagination,
     out,
+    outView,
+    hasActive,
     batchStat,
     hasFilter,
     statNum,

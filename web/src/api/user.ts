@@ -22,18 +22,6 @@ export type UserResult = {
   };
 };
 
-export type RefreshTokenResult = {
-  success: boolean;
-  data: {
-    /** `token` */
-    accessToken: string;
-    /** 用于调用刷新`accessToken`的接口时所需的`token` */
-    refreshToken: string;
-    /** `accessToken`的过期时间（格式'xxxx/xx/xx xx:xx:xx'） */
-    expires: Date;
-  };
-};
-
 /**
  * 登录：对接 KontainKeeper 后端 POST /api/login
  * 后端返回 {token, username, roles}，这里适配成 pure-admin 期望的 {success, data: {...}}
@@ -73,13 +61,5 @@ export const getLogin = (data?: object) => {
 export const logoutApi = (): Promise<{ ok: boolean } | undefined> =>
   http.request<{ ok: boolean }>("post", "/api/logout").catch(() => undefined);
 
-/**
- * 刷新 token：后端暂无此接口。
- * 12h 过期后 401 → 这里抛错 → http 拦截器会清 token 并跳登录页。
- *
- * 入参签名故意与原模板一致（可接收 refresh token）：用户端可能传入，
- * 真正的实现等后端补接口再补——签名稳定可避免 store 那侧的改动连锁。
- */
-export const refreshTokenApi = (_?: object): Promise<RefreshTokenResult> => {
-  return Promise.reject(new Error("refresh-token not supported"));
-};
+// refreshTokenApi 已删（QR1120-W31）：后端无刷新接口、全仓无调用方。
+// token 12h 过期后 401 由 http 响应拦截器统一清 token 跳登录页。
