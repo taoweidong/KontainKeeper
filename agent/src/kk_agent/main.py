@@ -157,7 +157,13 @@ def _run_update(tr, cmd, cfg, log):
 
     ok, reason = kk_updater.apply_manifest_receipt(cfg, log, cmd,
                                                    on_before_restart=before_restart)
-    return _res(0 if ok else 1, (reason or "").encode("utf-8", "replace"))
+    reason = reason or ""
+    # QR1120-A7：良性跳过不是失败——not_newer（已是最新，QoS1 重投同一条
+    # update 帧的常见结局）/ backoff（退避期重推）/ update_busy（锁 busy）
+    # 一律 rc=0，服务端落 done，不再产生假 failed 行 + 审计；reason 字节保留，
+    # 台账仍可辨。真实失败（校验/下载/execv 等）仍 rc=1。
+    rc = 0 if ok or reason in kk_updater.BENIGN_SKIP_REASONS else 1
+    return _res(rc, reason.encode("utf-8", "replace"))
 
 
 def make_dispatcher(tr, runner, cfg, log, state_box):
@@ -279,9 +285,16 @@ def run(stop=None, cfg=None, overrides=None):
     log.info("kk-agent %s starting: broker=%s host=%s interval=%ss",
              kk_config.AGENT_VER, cfg["server"], cfg["host"], cfg["interval"])
 
+    # QR1120-A9：启动即清扫 SIGKILL/断电遗留的陈旧下载半成品（只认二进制同
+    # 目录的 .kk-agent.download.* 前缀且 mtime>1h）；源码形态无目标时空操作。
+    kk_updater.sweep_stale_downloads(cfg, log)
+
     tr.start()
     next_hb = 0.0
-    next_update = 0.0  # 启动后尽快检查一次版本
+    # QR1120-A6：首拍更新检查也要抖动。同镜像批量部署时 500 台启动相位接近，
+    # next_update=0 会让它们全在 t≈0 集体拉包（惊群）。首拍均匀落在
+    # [0, interval) 内，把首批下载摊到整个第一周期（期望等待仅 interval/2）。
+    next_update = time.monotonic() + random.uniform(0, cfg["update_interval"])
     try:
         tr.wait_ready(timeout=READY_TIMEOUT_SEC, stop=stop)
         while not stop.is_set():

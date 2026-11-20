@@ -49,6 +49,13 @@ RC_SEND_FAILED = -3
 # announce_update 等 PUBACK 的上限（QR29-A10）：B6 要求 execv 前等到确认，
 # 但 Broker 无响应时也不能无限挂住更新线程。
 PUBACK_WAIT_SEC = 1.0
+# QR1120-A12：入站 cmd 帧的尺寸上限。正常命令帧是 KB 级（argv + 短参数），
+# 64KB 已很宽裕；Broker 匿名开放，任何人都能往 cmd 主题发帧，超大帧在
+# json.loads **之前**丢弃，防解析/内存放大。
+MAX_CMD_BYTES = 64 * 1024
+# QR1120-A12：重复告警（超大帧丢弃 / 异常断开提示）的节流间隔——被攻击或
+# 克隆机互踢会话时不能刷屏。单调钟计，测试用假时钟驱动。
+WARN_THROTTLE_SEC = 60.0
 
 
 class TransportError(Exception):
@@ -147,6 +154,10 @@ class Transport:
         # （眼下 shell 由 Agent 侧 allow_shell 自己拦）。目前只声明 shell；docker
         # 能力随 v4 之后的容器阶段接入。
         self.caps = {"shell": bool(cfg.get("allow_shell", True))}
+        # QR1120-A12：超大帧 / 异常断开提示的节流状态（None = 尚未提示过）
+        self._last_oversize_warn = None
+        self._oversize_drops = 0
+        self._last_disconnect_hint = None
 
         # client_id 必须稳定：Broker 靠它识别「同一个 Agent」并保留离线命令队列
         client_id = "%s-%s" % (cfg.get("client_id") or "kk", self.host)
@@ -310,13 +321,20 @@ class Transport:
         可能既收不到 updating、又只看到 Broker 补发的 LWT（reason 为空），等于白做。
 
         本方法是钩子，异常一律吞掉：宣告失败绝不允许阻断更新主流程。
+        但失败必须留痕（QR1120-A11）：旧实现未连接直接 return、PUBACK 等不到
+        也静默，execv 照走，服务端只见空 reason 的 LWT，B6.1 的 updating 宽限
+        在高延迟链路经常失效且无从排查。阻断 execv 比丢宣告更危险，故只 warning。
         """
         try:
             if not self.cli.is_connected():
+                self.log.warning("announce_update skipped: mqtt not connected; "
+                                 "server will only see the empty-reason LWT")
                 return
-            self.publish_status(False, "updating", wait=True)
-        except Exception:
-            pass
+            if not self.publish_status(False, "updating", wait=True):
+                self.log.warning("announce_update not acknowledged before restart; "
+                                 "the updating grace may not apply on the server")
+        except Exception as e:
+            self.log.warning("announce_update failed: %s", e)
 
     def publish_hb(self, metrics, custom=None):
         payload = json.dumps({
@@ -360,10 +378,54 @@ class Transport:
         self.connected.clear()
         if not self._stopping.is_set():
             self.log.warning("mqtt disconnected (rc=%s), paho will retry with backoff", reason_code)
+            self._hint_session_takeover(reason_code)
+
+    def _hint_session_takeover(self, reason_code):
+        """QR1120-A12：克隆机同 hostname → client_id 相同 → 会话互踢的提示。
+
+        paho 2.1.0 语义（已核对源码）：MQTT5 的 DISCONNECT 0x8E(142) 才是明确的
+        "Session taken over"；本端走 MQTTv311，协议没有断开原因码——Broker 踢
+        会话时直接关 TCP，paho 经 convert_disconnect_error_code_to_reason_code
+        转成 "Unspecified error"(128)，与普通网络断开无法区分。因此：显式 142
+        给定向提示；其余非正常断开只给通用提示（节流），不瞎猜码值。
+        """
+        try:
+            taken_over = reason_code == 142 or str(reason_code) == "Session taken over"
+        except Exception:
+            taken_over = False
+        if not taken_over and reason_code == 0:
+            return
+        now = time.monotonic()
+        if (self._last_disconnect_hint is not None
+                and now - self._last_disconnect_hint < WARN_THROTTLE_SEC):
+            return
+        self._last_disconnect_hint = now
+        if taken_over:
+            self.log.warning("mqtt session taken over: another client connected with the "
+                             "same client_id (host=%s); if this machine was cloned, set "
+                             "KK_HOST_NAME to a unique value", self.host)
+        else:
+            self.log.warning("mqtt abnormal disconnect (rc=%s): if this repeats, another "
+                             "agent may share the same client_id (cloned hostname) — set "
+                             "KK_HOST_NAME to a unique value; otherwise check network/broker",
+                             reason_code)
 
     def _on_message(self, client, userdata, msg):
+        raw = msg.payload
+        # QR1120-A12：json.loads 之前预检尺寸——超大 cmd 帧直接丢弃，
+        # warning 按 WARN_THROTTLE_SEC 节流防刷屏（计数始终累计，提示里带总数）。
+        if len(raw) > MAX_CMD_BYTES:
+            self._oversize_drops += 1
+            now = time.monotonic()
+            if (self._last_oversize_warn is None
+                    or now - self._last_oversize_warn >= WARN_THROTTLE_SEC):
+                self._last_oversize_warn = now
+                self.log.warning("oversized command frame dropped: %d bytes > %d limit "
+                                 "(%d dropped in this session)",
+                                 len(raw), MAX_CMD_BYTES, self._oversize_drops)
+            return
         try:
-            payload = json.loads(msg.payload.decode("utf-8", "replace"))
+            payload = json.loads(raw.decode("utf-8", "replace"))
         except (ValueError, UnicodeDecodeError):
             self.log.warning("bad command frame ignored")
             return

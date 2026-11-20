@@ -36,6 +36,20 @@ MAX_BIN_BYTES = 64 * 1024 * 1024  # 单文件上限 64MB，防 OOM
 MAX_MANIFEST_BYTES = 1024 * 1024  # 清单上限 1MB（QR-A23）：正常清单不到它的零头
 _CHUNK = 256 * 1024
 
+# 下载半成品的文件名前缀（QR1120-A9 的清扫只认它，绝不碰别的文件）
+DOWNLOAD_TMP_PREFIX = ".kk-agent.download."
+# QR1120-A8：单次下载的总 wall-clock 时限。timeout=60 只是**单次 socket 读**的
+# 超时，慢速滴答源（每 59s 喂一口）能让下载线程长活；总时限兜底，超限按下载
+# 失败处理（http_error），半成品照旧清理。
+DOWNLOAD_DEADLINE_SEC = 300
+# QR1120-A8：更新锁的最长等待。轮询每 interval 无条件 spawn 线程，旧实现在
+# `with _update_lock` 上无限等 → 上一轮卡住时每 300s 积一条线程。拿不到锁即
+# 跳过本轮：轮询路径静默跳过，推送路径回良性回执 update_busy（rc=0）。
+UPDATE_LOCK_WAIT_SEC = 10
+# QR1120-A9：启动清扫的陈旧阈值。在途下载 mtime 新鲜，不会被误删；
+# 只有 SIGKILL/断电留下的超过 1h 的残留才清。
+STALE_TMP_AGE_SEC = 3600
+
 # 串行化自更新（轮询检查与服务端推送可能并发触发），避免两次下载竞争同一二进制
 _update_lock = threading.Lock()
 
@@ -44,7 +58,12 @@ _update_lock = threading.Lock()
 # 重试同一版本 —— 无限重试 + 日志刷屏，500 台一起刷还会把服务端打满。
 # 成功或**版本号变化**即清零，所以上传修好的包会立刻得到一次机会，不受退避阻挡。
 FAIL_BACKOFF = (300, 600, 1800)
-_NO_BACKOFF = frozenset({"not_newer", "backoff"})   # 非失败：无更新 / 本身就在退避中
+# QR1120-A7：良性跳过**不是失败**——推送回执映射 rc=0（服务端落 done），
+# 也不进退避账本。not_newer=已是最新（execv 后 QoS1 重投同一条 update 帧的
+# 常见结局）、backoff=本身就在失败退避窗口内、update_busy=另一次更新正在进行
+# （QR1120-A8 的锁超时跳过）。真实失败（校验/下载/execv/未签名拒绝）仍 rc=1。
+BENIGN_SKIP_REASONS = frozenset({"not_newer", "backoff", "update_busy"})
+_NO_BACKOFF = BENIGN_SKIP_REASONS   # 非失败：无更新 / 退避中 / 锁 busy
 _fail_state = {"count": 0, "until": 0.0, "ver": ""}
 # 退避账本的并发守卫：轮询线程（spawn_check）与 kind=update 命令线程都会读写
 # _fail_state，无锁时读改交错会让退避计数错乱、提前重试坏版本（评审 P1）。
@@ -63,6 +82,19 @@ def note_update_failure(ver=""):
 def reset_update_failure():
     with _fail_lock:
         _fail_state.update(count=0, until=0.0, ver="")
+
+
+# QR1120-A10：轮询拉清单的连续失败计数。旧实现失败只记 debug（默认 INFO 不
+# 可见），轮询坏了完全无痕。现在首次失败 warning、持续失败每 N 次 warning 一次，
+# 成功即清零。模块级状态，测试前后用 reset_fetch_failure() 清。
+_FETCH_WARN_EVERY = 10
+_fetch_fail_state = {"count": 0}
+_fetch_fail_lock = threading.Lock()
+
+
+def reset_fetch_failure():
+    with _fetch_fail_lock:
+        _fetch_fail_state["count"] = 0
 
 
 def _note_result(ver, ok, reason):
@@ -151,19 +183,25 @@ def _build_opener(insecure):
     return urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
 
 
-def _stream_capped(req, timeout, max_bytes, what, insecure=False):
+def _stream_capped(req, timeout, max_bytes, what, insecure=False, deadline_sec=None):
     """流式读取并**硬性封顶**（QR-A23）：`KK_UPDATE_URL` 指向异变的源时，
     超大响应体在 `resp.read()` 里一次性成形会把 Agent 顶出内存。
 
     清单（KB 级 JSON）与二进制（8~12MB）两个下载路径共用同一骨架（QR29-A7），
     封顶语义只有一份；`what` 只进报错文案，区分是哪个资源超限。
+
+    deadline_sec（QR1120-A8）：给出时按单调钟计总时限，超限 RuntimeError。
+    `timeout` 只管单次 socket 读，慢速滴答源靠总时限兜底。
     """
+    deadline = None if deadline_sec is None else time.monotonic() + deadline_sec
     buf = bytearray()
     with _build_opener(insecure).open(req, timeout=timeout) as resp:
         while True:
             chunk = resp.read(_CHUNK)
             if not chunk:
                 break
+            if deadline is not None and time.monotonic() > deadline:
+                raise RuntimeError("%s download exceeded %ss deadline" % (what, deadline_sec))
             buf.extend(chunk)
             if len(buf) > max_bytes:
                 raise RuntimeError("%s too large: >%d bytes" % (what, max_bytes))
@@ -188,8 +226,17 @@ def fetch_latest(cfg, log):
     try:
         info = json.loads(_http_get(url, timeout=15, insecure=cfg.get("update_insecure")))
     except Exception as e:
-        log.debug("fetch latest version failed: %s", e)
+        # QR1120-A10：首次失败与每 _FETCH_WARN_EVERY 次持续失败各 warning 一次，
+        # 其余保持 debug——轮询坏了要看得见，又不能每 300s 刷一条 warning。
+        with _fetch_fail_lock:
+            _fetch_fail_state["count"] += 1
+            n = _fetch_fail_state["count"]
+        if n == 1 or n % _FETCH_WARN_EVERY == 0:
+            log.warning("fetch latest version failed (%d consecutive): %s", n, e)
+        else:
+            log.debug("fetch latest version failed: %s", e)
         return None
+    reset_fetch_failure()
     return info if isinstance(info, dict) and info.get("available") else None
 
 
@@ -277,7 +324,8 @@ def _verify_signature_path(path, manifest, cfg, log):
                                         manifest, cfg, log)
 
 
-def download_binary(url, log, insecure=False, max_bytes=MAX_BIN_BYTES, to_path=None):
+def download_binary(url, log, insecure=False, max_bytes=MAX_BIN_BYTES, to_path=None,
+                    deadline_sec=DOWNLOAD_DEADLINE_SEC):
     """分块下载二进制，带大小上限保护（QR29-A4：更新期 RSS 峰值不随包体线性）。
 
     - to_path 给出：流式写入该文件并**边写边算 sha256**，返回 (size, sha256hex)。
@@ -285,12 +333,18 @@ def download_binary(url, log, insecure=False, max_bytes=MAX_BIN_BYTES, to_path=N
       不再二次写。下载失败/超限删干净半成品后原样抛出。
     - to_path 为空：保留旧契约返回 bytes（字节语义一字不变）。
     封顶语义不变：任何时刻累计超过 max_bytes 立即 RuntimeError。
+
+    deadline_sec（QR1120-A8）：总 wall-clock 时限（单调钟）。timeout=60 只是
+    单次 socket 读的超时，慢速滴答源可让下载线程长活、进而让后续轮询线程在
+    更新锁上堆积；总时限超限按下载失败抛出，to_path 形态照旧清理半成品。
     """
     req = urllib.request.Request(url)
     if to_path is None:
-        return _stream_capped(req, 60, max_bytes, "binary", insecure=insecure)
+        return _stream_capped(req, 60, max_bytes, "binary", insecure=insecure,
+                              deadline_sec=deadline_sec)
     sha = hashlib.sha256()
     total = 0
+    deadline = time.monotonic() + deadline_sec
     try:
         with _build_opener(insecure).open(req, timeout=60) as resp, \
                 open(to_path, "wb") as f:
@@ -298,6 +352,8 @@ def download_binary(url, log, insecure=False, max_bytes=MAX_BIN_BYTES, to_path=N
                 chunk = resp.read(_CHUNK)
                 if not chunk:
                     break
+                if time.monotonic() > deadline:
+                    raise RuntimeError("binary download exceeded %ss deadline" % deadline_sec)
                 total += len(chunk)
                 if total > max_bytes:
                     raise RuntimeError("binary too large: >%d bytes" % max_bytes)
@@ -354,6 +410,41 @@ def restore_backup(target):
         return True
     except OSError:
         return False
+
+
+def sweep_stale_downloads(cfg, log=None):
+    """QR1120-A9：启动时清扫二进制同目录的陈旧下载半成品。
+
+    进程被 SIGKILL/断电时，`.kk-agent.download.<pid>` 最大 64MB 的残留会永久
+    留在磁盘上（正常失败路径有 finally remove，唯独进程横死没有）。这里只认
+    DOWNLOAD_TMP_PREFIX 前缀、只清 mtime 超过 STALE_TMP_AGE_SEC 的普通文件——
+    在途下载（别的进程/线程正在写）mtime 新鲜，不会误删。任何失败静默 debug：
+    清扫是卫生动作，绝不能挡住 Agent 启动。源码形态无替换目标时是空操作。
+    """
+    log = _log(log)
+    target = (cfg or {}).get("agent_bin") or _default_target()
+    if not target:
+        return
+    directory = os.path.dirname(os.path.abspath(target))
+    try:
+        names = os.listdir(directory)
+    except OSError as e:
+        log.debug("stale download sweep skipped: %s", e)
+        return
+    now = time.time()
+    for name in names:
+        if not name.startswith(DOWNLOAD_TMP_PREFIX):
+            continue
+        path = os.path.join(directory, name)
+        try:
+            if not os.path.isfile(path):
+                continue
+            if now - os.path.getmtime(path) < STALE_TMP_AGE_SEC:
+                continue
+            os.remove(path)
+            log.info("removed stale download leftover: %s", path)
+        except OSError as e:
+            log.debug("stale download sweep failed for %s: %s", path, e)
 
 
 def apply_manifest(cfg, log, manifest, on_before_restart=None):
@@ -414,11 +505,18 @@ def _apply_manifest(cfg, log, manifest, on_before_restart=None):
         return False, "no_url"
 
     log.info("agent update available: %s -> %s, downloading", kk_config.AGENT_VER, ver)
-    with _update_lock:
+    # QR1120-A8：锁等待改为有限超时。轮询路径每 interval 无条件 spawn 线程，
+    # 上一轮下载卡在慢速源时，新线程曾在 `with _update_lock` 上无限排队，
+    # 每 300s 积一条。拿不到锁即跳过本轮：轮询静默跳过，推送路径经
+    # apply_manifest_receipt 回 update_busy 良性回执（rc=0，服务端落 done）。
+    if not _update_lock.acquire(timeout=UPDATE_LOCK_WAIT_SEC):
+        log.info("another update is in progress, skip this round (lock busy)")
+        return False, "update_busy"
+    try:
         # 流式下载直落 target 同目录的 tmp（QR29-A4）：同文件系统 os.replace 才
         # 原子；sha256 与 size 都来自下载那一趟的边写边算，不再整包驻留内存。
         tmp = os.path.join(os.path.dirname(os.path.abspath(target)),
-                           ".kk-agent.download.%d" % os.getpid())
+                           DOWNLOAD_TMP_PREFIX + "%d" % os.getpid())
         try:
             try:
                 size, sha = download_binary(url, log, cfg.get("update_insecure"),
@@ -480,6 +578,8 @@ def _apply_manifest(cfg, log, manifest, on_before_restart=None):
                 log.error("restore failed: %s is the NEW binary; verify it manually "
                           "before restarting this host", target)
             return False, "exec_error"
+    finally:
+        _update_lock.release()
     return True, ""
 
 
