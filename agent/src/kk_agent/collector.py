@@ -9,9 +9,12 @@
 """
 import os
 import platform
+import threading
 import time
 
 import psutil
+
+from .logutil import get_logger
 
 MB = 1048576.0
 TOP_N = 5
@@ -265,8 +268,45 @@ ITEMS = {
 ITEM_NAMES = sorted(ITEMS)
 
 
+# QR1120-A5：采集项失败留痕。此前 except 静默 continue，某项永久坏掉时
+# 静默缺项无从排障。首次失败 warning、同项持续失败降 debug（防每拍刷屏）、
+# 成功清零。collect_items 会被心跳 worker 与命令池 worker（kind=collect）
+# 并发调用，状态读写加锁守卫。
+_item_failures = {}          # name -> 连续失败次数
+_item_fail_lock = threading.Lock()
+_item_log = None             # 懒初始化：避免 import 期装配日志 sink
+
+
+def _get_item_log():
+    global _item_log
+    if _item_log is None:
+        # 与主日志同 name：复用 main 已装配的级别/sink（get_logger 按 name 幂等）
+        _item_log = get_logger()
+    return _item_log
+
+
+def _note_item_failure(name, exc):
+    with _item_fail_lock:
+        n = _item_failures.get(name, 0) + 1
+        _item_failures[name] = n
+    log = _get_item_log().bind(item=name)
+    if n == 1:
+        log.warning("collect item failed: %s", exc)
+    else:
+        log.debug("collect item still failing (%d consecutive): %s", n, exc)
+
+
+def _note_item_success(name):
+    with _item_fail_lock:
+        _item_failures.pop(name, None)
+
+
 def collect_items(items, state, cfg=None):
-    """按名称采集指定项，返回 (指标字典, 新状态)。未知项忽略。"""
+    """按名称采集指定项，返回 (指标字典, 新状态)。未知项忽略。
+
+    单项异常仍只跳过该项（不拖垮整帧），但会留痕（QR1120-A5）：
+    首次失败 warning，同项持续失败降 debug，成功清零。
+    """
     cfg = cfg or {}
     out, next_state = {}, dict(state or {})
     for name in items or []:
@@ -275,8 +315,10 @@ def collect_items(items, state, cfg=None):
             continue
         try:
             part, st = fn(next_state, cfg)
-        except Exception:
+        except Exception as e:
+            _note_item_failure(name, e)
             continue
+        _note_item_success(name)
         out.update(part or {})
         if st:
             next_state.update(st)

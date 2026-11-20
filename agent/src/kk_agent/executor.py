@@ -214,7 +214,10 @@ class Runner:
         argv = cmd.get("argv") or []
         try:
             timeout = min(max(int(cmd.get("timeout", 30)), 1), 600)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # QR1120-A4：json.loads 默认接受 Infinity/NaN，int(float('inf'))
+            # 抛 OverflowError——旧捕获元组漏了它，异常穿透 dispatch 被兜底
+            # 吞掉且不发任何回执，服务端挂到超时清扫。与畸形值同口径回落 30s。
             timeout = 30
         use_shell = bool(cmd.get("use_shell")) and self.allow_shell
         if use_shell:
