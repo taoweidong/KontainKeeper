@@ -10,8 +10,7 @@ import { usePermissionStoreHook } from "@/store/modules/permission";
 import LaySidebarExtraIcon from "../lay-sidebar/components/SidebarExtraIcon.vue";
 import LaySidebarFullScreen from "../lay-sidebar/components/SidebarFullScreen.vue";
 
-import LogoutCircleRLine from "~icons/ri/logout-circle-r-line";
-import Setting from "~icons/ri/settings-3-line";
+import { IconLogout, IconSetting } from "@/utils/kkIcons";
 
 const menuRef = ref();
 const defaultActive = ref(null);
@@ -101,14 +100,14 @@ watch(
       <el-dropdown trigger="click">
         <span class="el-dropdown-link navbar-bg-hover select-none">
           <img :src="userAvatar" :style="avatarsStyle" />
-          <p v-if="username" class="dark:text-white">{{ username }}</p>
+          <p v-if="username" class="text-text_color_primary">{{ username }}</p>
         </span>
         <template #dropdown>
           <el-dropdown-menu class="logout">
             <el-dropdown-item @click="logout">
               <IconifyIconOffline
-                :icon="LogoutCircleRLine"
-                style="margin: 5px"
+                :icon="IconLogout"
+                style="margin: var(--kk-space-sm)"
               />
               退出系统
             </el-dropdown-item>
@@ -120,7 +119,7 @@ watch(
         title="打开系统配置"
         @click="onPanel"
       >
-        <IconifyIconOffline :icon="Setting" />
+        <IconifyIconOffline :icon="IconSetting" />
       </span>
     </div>
   </div>

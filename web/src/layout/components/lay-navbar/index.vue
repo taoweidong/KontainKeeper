@@ -7,8 +7,7 @@ import LaySidebarFullScreen from "../lay-sidebar/components/SidebarFullScreen.vu
 import LaySidebarBreadCrumb from "../lay-sidebar/components/SidebarBreadCrumb.vue";
 import LaySidebarTopCollapse from "../lay-sidebar/components/SidebarTopCollapse.vue";
 
-import LogoutCircleRLine from "~icons/ri/logout-circle-r-line";
-import Setting from "~icons/ri/settings-3-line";
+import { IconLogout, IconSetting } from "@/utils/kkIcons";
 
 const {
   layout,
@@ -24,7 +23,8 @@ const {
 </script>
 
 <template>
-  <div class="navbar bg-[#fff] shadow-xs shadow-[rgba(0,21,41,0.08)]">
+  <!-- QR1122-W16：白底+装饰阴影→EP 背景变量+hairline（暗色补丁变冗余） -->
+  <div class="navbar bg-bg_color border-b border-[var(--pure-border-color)]">
     <LaySidebarTopCollapse
       v-if="device === 'mobile'"
       class="hamburger-container"
@@ -50,14 +50,14 @@ const {
       <el-dropdown trigger="click">
         <span class="el-dropdown-link navbar-bg-hover select-none">
           <img :src="userAvatar" :style="avatarsStyle" />
-          <p v-if="username" class="dark:text-white">{{ username }}</p>
+          <p v-if="username" class="text-text_color_primary">{{ username }}</p>
         </span>
         <template #dropdown>
           <el-dropdown-menu class="logout">
             <el-dropdown-item @click="logout">
               <IconifyIconOffline
-                :icon="LogoutCircleRLine"
-                style="margin: 5px"
+                :icon="IconLogout"
+                style="margin: var(--kk-space-sm)"
               />
               退出系统
             </el-dropdown-item>
@@ -69,7 +69,7 @@ const {
         title="打开系统配置"
         @click="onPanel"
       >
-        <IconifyIconOffline :icon="Setting" />
+        <IconifyIconOffline :icon="IconSetting" />
       </span>
     </div>
   </div>
@@ -80,6 +80,9 @@ const {
   width: 100%;
   height: 48px;
   overflow: hidden;
+  /* hairline 边框吃进 48px 高度锚点（QR1122-W16）：box-sizing 保证外尺寸
+     不变，lay-content 的 padding-top 48/81 与 --kk-page-h 耦合不受影响 */
+  box-sizing: border-box;
 
   .hamburger-container {
     float: left;
@@ -94,15 +97,15 @@ const {
     justify-content: flex-end;
     min-width: 280px;
     height: 48px;
-    color: #000000d9;
+    color: var(--el-text-color-primary);
 
     .el-dropdown-link {
       display: flex;
       align-items: center;
       justify-content: space-around;
       height: 48px;
-      padding: 10px;
-      color: #000000d9;
+      padding: var(--kk-space);
+      color: var(--el-text-color-primary);
       cursor: pointer;
 
       p {
@@ -119,7 +122,7 @@ const {
 
   .breadcrumb-container {
     float: left;
-    margin-left: 16px;
+    margin-left: var(--kk-space-lg);
   }
 }
 

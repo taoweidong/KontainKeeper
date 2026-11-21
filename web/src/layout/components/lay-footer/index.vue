@@ -5,9 +5,8 @@ const TITLE = getConfig("Title");
 </script>
 
 <template>
-  <footer
-    class="layout-footer text-[rgba(0,0,0,0.6)] dark:text-[rgba(220,220,242,0.8)]"
-  >
+  <!-- EP 文字变量一行替代亮/暗双写硬编码（QR1122-W16） -->
+  <footer class="layout-footer text-text_color_regular">
     Copyright © 2026
     <a
       class="hover:text-primary!"

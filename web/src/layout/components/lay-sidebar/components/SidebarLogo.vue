@@ -48,7 +48,7 @@ const { title, getLogo } = useNav();
     flex-wrap: nowrap;
     align-items: center;
     height: 100%;
-    padding-left: 10px;
+    padding-left: var(--kk-space);
 
     img {
       display: inline-block;

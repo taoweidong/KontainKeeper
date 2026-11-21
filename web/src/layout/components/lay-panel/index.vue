@@ -19,9 +19,8 @@ const iconClass = computed(() => {
     "rounded-[4px]",
     "cursor-pointer",
     "transition-colors",
-    "hover:bg-[#0000000f]",
-    "dark:hover:bg-[#ffffff1f]",
-    "dark:hover:text-[#ffffffd9]"
+    // EP fill 变量自适应亮/暗（QR1122-W16），替代硬编码双写
+    "hover:bg-[var(--el-fill-color-light)]"
   ];
 });
 
@@ -140,6 +139,6 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 20px;
+  padding: var(--kk-space-md) var(--kk-space-lg);
 }
 </style>

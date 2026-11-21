@@ -53,10 +53,10 @@ const getSubMenuIconStyle = computed((): CSSProperties => {
     alignItems: "center",
     margin:
       layout.value === "horizontal"
-        ? "0 5px 0 0"
+        ? "0 4px 0 0"
         : isCollapse.value
           ? "0 auto"
-          : "0 5px 0 0"
+          : "0 4px 0 0"
   };
 });
 
