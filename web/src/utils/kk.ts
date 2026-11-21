@@ -386,6 +386,7 @@ export const AUDIT_ACTION_LABEL: Record<string, string> = {
   agent_upgrade_batch: "批量升级",
   agent_update_failed: "升级失败",
   agent_binary_download: "下载 Agent",
+  agent_ips_update: "IP 白名单变更",
   user_create: "新增用户",
   user_update: "修改用户",
   user_delete: "删除用户",

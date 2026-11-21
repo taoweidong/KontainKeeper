@@ -46,6 +46,15 @@ export const exportAudit = (params?: AuditExportParams) => {
   });
 };
 
+/** 拦截记录导出（QR1124）：按 IP 聚合，参数与 /api/ip-rejects 同筛选语义。 */
+export const exportIpRejects = (params?: { ip?: string; limit?: number }) => {
+  return http.request<Blob>("get", "/api/export/ip-rejects", {
+    params,
+    responseType: "blob",
+    timeout: 0
+  });
+};
+
 /** 主机清单导出：资产盘点场景，一次性导出全量摘要列。
  *
  * 参数与 `/api/containers` 同源（QR-S36）：页面上筛完 2 台却导出 50 台的报表没有
