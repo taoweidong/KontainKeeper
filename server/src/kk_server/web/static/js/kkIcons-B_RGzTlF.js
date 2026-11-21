@@ -1,1 +1,0 @@
-import{R as o}from"./search-line-ULkz_aIL.js";import{z as n,h as a,g as c,f as I,A as e,e as t,p as r,B as m,C as i,D as C,E as p}from"./menu-CN12UOXT.js";const _={metal:p,vm:C,container:i},S={cpu:m,mem:r,disk:t,disk_io:e,net:I,proc:c,user:a,sys:n};function f(s){return typeof s=="string"&&!s.includes(":")&&o.has(s)}export{S as C,_ as H,f as m};

@@ -1,0 +1,1 @@
+import{J as n,o,n as a,m as c,K as I,l as e,x as t,L as r,R as m,M as i,N as C,O as u}from"./hooks-Baog8-z5.js";const _={metal:u,vm:C,container:i},p={cpu:r,mem:t,disk:e,disk_io:I,net:c,proc:a,user:o,sys:n};function N(s){return typeof s=="string"&&!s.includes(":")&&m.has(s)}export{p as C,_ as H,N as m};
