@@ -15,6 +15,9 @@
  *  语义裁决（QR1120-W31）：原第 3 组锁 `handRefreshToken` 的两条用例已随死代码删除——
  *  后端无 refresh 接口、全仓无调用方，http 拦截器对 401 统一登出兜底，锁一个不存在的
  *  动作没有意义；`refreshTokenApi` 同删（api/user.spec.ts 同步裁决）。
+ *  语义裁决（QR1122-W18）：push 目标从裸 "/login" 改为带 redirect query 的对象
+ *  （会话过期回跳原页，登录页自身除外）——次序不变量与副作用清单不变，
+ *  第 1 组锁的 push 断言同步改为对象形态，并补「登录页不附 redirect」用例。
  *  jsdom + 真 pinia；`@/router`、`@/utils/auth`、`@/api/user`、`./multiTags` 全部桩掉，
  *  否则会把整张路由/cookie/api 依赖图拖进来。
  */
@@ -32,6 +35,7 @@ const h = vi.hoisted(() => ({
   resetRouter: vi.fn(),
   handleTags: vi.fn(),
   mem: {} as Record<string, any>,
+  currentRoute: { fullPath: "/hosts/monitor" },
   routerArrays: [{ path: "/welcome", name: "Welcome", meta: { title: "首页" } }]
 }));
 
@@ -43,10 +47,11 @@ vi.mock("../utils", async () => {
     routerArrays: h.routerArrays,
     constantMenus: [],
     router: {
-      push: (to: string) => {
+      push: (to: unknown) => {
         h.order.push("router.push");
         h.routerPush(to);
-      }
+      },
+      currentRoute: { value: h.currentRoute }
     },
     resetRouter: () => {
       h.order.push("resetRouter");
@@ -105,6 +110,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.order.length = 0;
   h.mem = {};
+  h.currentRoute.fullPath = "/hosts/monitor";
   clearPolls(); // 定时器是模块级全局，逐条清掉免相互依赖
   setActivePinia(store);
   useUserStoreHook().$reset(); // store 实例在本文件内共享，逐条复位免相互依赖
@@ -127,11 +133,21 @@ describe("logOut：次序与副作用", () => {
       "resetRouter",
       "router.push"
     ]);
-    expect(h.routerPush).toHaveBeenCalledWith("/login");
+    // QR1122-W18：带现场 redirect（当前路由 /hosts/monitor），登录页自身除外
+    expect(h.routerPush).toHaveBeenCalledWith({
+      path: "/login",
+      query: { redirect: "/hosts/monitor" }
+    });
     expect(h.handleTags).toHaveBeenCalledWith("equal", h.routerArrays);
     expect(s.username).toBe("");
     expect(s.roles).toEqual([]);
     expect(s.permissions).toEqual([]);
+  });
+
+  it("当前已在登录页时不附 redirect（QR1122-W18，防套娃）", () => {
+    h.currentRoute.fullPath = "/login";
+    useUserStoreHook().logOut();
+    expect(h.routerPush).toHaveBeenCalledWith("/login");
   });
 
   it("logoutApi 还在途时就已完成全部本地清理（fire-and-forget，不许 await 网络）", () => {

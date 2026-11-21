@@ -1,6 +1,5 @@
 import { defineStore } from "pinia";
 import {
-  type cacheType,
   type userType,
   store,
   router,
@@ -88,7 +87,14 @@ export const useUserStore = defineStore("pure-user", {
       removeToken();
       useMultiTagsStoreHook().handleTags("equal", [...routerArrays]);
       resetRouter();
-      router.push("/login");
+      // 会话过期带现场回跳（QR1122-W18）：401 登出后登录页读 redirect 回原页，
+      // 运维不再丢失 500 台勾选 / 正在看的详情。登录页自身不附 redirect 防套娃；
+      // 次序不变量（QR29-W1）不受影响——push 仍是最后一步。
+      const cur = router.currentRoute?.value?.fullPath || "";
+      const redirect = cur && !cur.startsWith("/login") ? cur : "";
+      router.push(
+        redirect ? { path: "/login", query: { redirect } } : "/login"
+      );
     }
     // handRefreshToken 已删（QR1120-W31）：后端无 refresh 接口、全仓无调用方，
     // http 拦截器对 401 统一清 token 跳登录，死分支不再保留。

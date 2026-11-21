@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import Motion from "./utils/motion";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { message } from "@/utils/message";
 import { errText } from "@/utils/kk";
 import { loginRules } from "./utils/rule";
+import { resolveRedirect } from "./utils/redirect";
 import { ref, reactive, toRaw } from "vue";
 import { debounce } from "@pureadmin/utils";
 import { useNav } from "@/layout/hooks/useNav";
@@ -14,18 +15,18 @@ import { useUserStoreHook } from "@/store/modules/user";
 import { initRouter, getTopMenu } from "@/router/utils";
 import { bg, avatar, illustration } from "./utils/static";
 import { useRenderIcon } from "@/components/ReIcon/src/hooks";
+import { IconLock, IconUserFill } from "@/utils/kkIcons";
 import { useDataThemeChange } from "@/layout/hooks/useDataThemeChange";
 
 import dayIcon from "@/assets/svg/day.svg?component";
 import darkIcon from "@/assets/svg/dark.svg?component";
-import Lock from "~icons/ri/lock-fill";
-import User from "~icons/ri/user-3-fill";
 
 defineOptions({
   name: "Login"
 });
 
 const router = useRouter();
+const route = useRoute();
 const loading = ref(false);
 const disabled = ref(false);
 const ruleFormRef = ref<FormInstance>();
@@ -59,8 +60,10 @@ const onLogin = async (formEl: FormInstance | undefined) => {
             // 获取后端路由
             return initRouter().then(() => {
               disabled.value = true;
+              // 会话过期回跳（QR1122-W18）：logOut 附的 redirect 经站内闸
+              // 解析后回原页；无 redirect 或非法值回落首个菜单页
               router
-                .push(getTopMenu(true).path)
+                .push(resolveRedirect(route.query, getTopMenu(true).path))
                 .then(() => {
                   message("登录成功", { type: "success" });
                 })
@@ -100,7 +103,7 @@ useEventListener(document, "keydown", ({ code }) => {
 <template>
   <div class="select-none">
     <img :src="bg" class="wave" />
-    <div class="flex-c absolute right-5 top-3">
+    <div class="flex-c absolute right-4 top-3">
       <!-- 主题 -->
       <el-switch
         v-model="dataTheme"
@@ -142,7 +145,7 @@ useEventListener(document, "keydown", ({ code }) => {
                   v-model="ruleForm.username"
                   clearable
                   placeholder="账号"
-                  :prefix-icon="useRenderIcon(User)"
+                  :prefix-icon="useRenderIcon(IconUserFill)"
                 />
               </el-form-item>
             </Motion>
@@ -154,7 +157,7 @@ useEventListener(document, "keydown", ({ code }) => {
                   clearable
                   show-password
                   placeholder="密码"
-                  :prefix-icon="useRenderIcon(Lock)"
+                  :prefix-icon="useRenderIcon(IconLock)"
                 />
               </el-form-item>
             </Motion>

@@ -14,7 +14,7 @@
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   grid-gap: 18rem;
-  padding: 0 2rem;
+  padding: 0 var(--kk-pad-x);
 }
 
 .img {
@@ -38,19 +38,21 @@
   width: 360px;
 }
 
+/* logo 盒宽对齐表单宽（QR1122-W14）：原 350/360 错位 */
 .avatar {
-  width: 350px;
+  width: 360px;
   height: 80px;
 }
 
+/* 标题收口全站设计令牌（QR1122-W14）：#999→EP 次级文字色，
+   Consolas 独立栈→--kk-font-num，200%→--kk-font-stat；
+   uppercase 对中文标题无效，删 */
 .login-form h2 {
-  text-transform: uppercase;
   margin: var(--kk-space-lg) 0;
-  color: #999;
-  font:
-    bold 200% Consolas,
-    Monaco,
-    monospace;
+  font-family: var(--kk-font-num);
+  font-size: var(--kk-font-stat);
+  font-weight: bold;
+  color: var(--el-text-color-secondary);
 }
 
 @media screen and (max-width: 1180px) {
@@ -64,7 +66,7 @@
 
   .login-form h2 {
     font-size: 2.4rem;
-    margin: 8px 0;
+    margin: var(--kk-space) 0;
   }
 
   .img img {
@@ -72,7 +74,7 @@
   }
 
   .avatar {
-    width: 280px;
+    width: 290px;
     height: 80px;
   }
 }
@@ -93,4 +95,15 @@
   .login-box {
     justify-content: center;
   }
+}
+
+/* 暗色适配（QR1122-W14）：bg.png 是亮色波浪 raster，暗色下左侧一大块
+   恒亮最刺眼——直接隐藏（零素材改动）；插图降 opacity 保留轮廓。
+   品牌 logo 不动。表单组件由 EP 暗色变量自动适配。 */
+html.dark .wave {
+  display: none;
+}
+
+html.dark .img {
+  opacity: 0.6;
 }
