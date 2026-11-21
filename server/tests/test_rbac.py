@@ -66,7 +66,7 @@ async def test_seed_and_auth_menus(api):
     names = {m["name"] for m in body["menus"]}
     assert {"Welcome", "Home", "Hosts", "HostMonitor", "CommandShell",
             "AuditIndex", "SystemStats", "Rbac", "SysUser", "SysRole",
-            "SysMenu"} <= names
+            "SysMenu", "SysIpWhitelist", "IpRejects"} <= names
     # 二阶段：路由注册数据（path/component）随菜单下发，前端据此动态注册
     by_name = {m["name"]: m for m in body["menus"]}
     assert by_name["Welcome"]["path"] == "/welcome"
@@ -80,7 +80,8 @@ async def test_seed_and_auth_menus(api):
     r = await api.client.get("/api/auth/menus", headers=ops_h)
     ops_names = {m["name"] for m in r.json()["menus"]}
     assert "HostMonitor" in ops_names and "HostUpdate" in ops_names
-    assert not ({"Rbac", "SysUser", "SysRole", "SysMenu"} & ops_names)
+    assert not ({"Rbac", "SysUser", "SysRole", "SysMenu",
+                 "SysIpWhitelist", "IpRejects"} & ops_names)
     # 登录响应自带角色
     r = await api.client.post("/api/login", json={"username": "ops1",
                                                   "password": "ops-pass-1"})

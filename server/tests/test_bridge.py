@@ -408,16 +408,45 @@ def test_parse_ip_whitelist_rejects_garbage():
 
 
 def test_production_requires_whitelist():
-    """KK_ENV=production 必须显式配置 KK_AGENT_IPS：不配等于对所有上报放行。"""
-    with pytest.raises(RuntimeError, match="KK_AGENT_IPS"):
-        load_settings({"KK_ENV": "production",
-                       "KK_ADMIN_PASS": "x" * 20,
-                       "KK_WEB_DIR": "/tmp/noweb"})
-    # 配了就能过
-    s = load_settings({"KK_ENV": "production", "KK_AGENT_IPS": "10.0.0.0/24",
-                       "KK_ADMIN_PASS": "x" * 20,
-                       "KK_WEB_DIR": "/tmp/noweb"})
-    assert len(s.agent_ips) == 1
+    """QR1124 裁决：生产白名单校验挪到 lifespan 建库后（ensure_whitelist_configured），
+    「已配」= env KK_AGENT_IPS 或 DB 启用规则任一非空——界面配置真正可用。
+    load_settings 是同步纯函数拿不到 DB，不再 raise（原 env-only 锁同步改写）。
+    空白名单=放行所有的开发语义不变；生产两者皆空才拒启动。"""
+    import asyncio
+
+    from kk_server.config import ensure_whitelist_configured
+    from kk_server.models.store import Store
+
+    prod = {"KK_ENV": "production", "KK_ADMIN_PASS": "x" * 20,
+            "KK_WEB_DIR": "/tmp/noweb"}
+    # env 空：load_settings 不再 raise（校验已挪走）
+    s = load_settings(prod)
+    assert s.agent_ips == []
+
+    async def db_check():
+        store = Store("sqlite+aiosqlite:///:memory:")
+        await store.setup()
+        # env 空 + DB 空 → 拒
+        with pytest.raises(RuntimeError, match="白名单"):
+            await ensure_whitelist_configured(s, store, prod)
+        # DB 有启用规则 → 放行（界面配置生效）
+        await store.add_ip_rule("10.0.0.0/24")
+        await ensure_whitelist_configured(s, store, prod)
+        # 停用全部规则 → 又拒（DB 无启用规则）
+        rules = await store.list_ip_rules()
+        await store.update_ip_rule(rules[0]["id"], enabled=False)
+        with pytest.raises(RuntimeError, match="白名单"):
+            await ensure_whitelist_configured(s, store, prod)
+        await store.close()
+
+    asyncio.run(db_check())
+
+    # env 配了 → 放行（无需 DB，store=None 也安全：env 非空提前返回）
+    s2 = load_settings({**prod, "KK_AGENT_IPS": "10.0.0.0/24"})
+    assert len(s2.agent_ips) == 1
+    asyncio.run(ensure_whitelist_configured(s2, None, prod))
+    # 非生产 → 恒放行
+    asyncio.run(ensure_whitelist_configured(s, None, {"KK_ENV": "dev"}))
 
 
 # ---- A4：上报间隔下限检测（P1-4）----

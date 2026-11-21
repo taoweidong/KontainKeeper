@@ -27,7 +27,8 @@ async def _truncate_and_seed(store) -> None:
         await conn.exec_driver_sql(
             "TRUNCATE kk_audit, kk_commands, kk_containers, kk_heartbeats, "
             "kk_hourly, kk_updates, kk_sessions, kk_admins, kk_role_menus, "
-            "kk_roles, kk_menus, kk_kv RESTART IDENTITY CASCADE")
+            "kk_roles, kk_menus, kk_kv, kk_ip_rules, kk_ip_rejects "
+            "RESTART IDENTITY CASCADE")
     await store.seed_rbac()
 
 
