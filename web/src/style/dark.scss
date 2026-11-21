@@ -14,9 +14,8 @@ html.dark {
   /* switch关闭状态下的color 需要时可取用 */
   --pure-switch-off-color: #ffffff3f;
 
-  .navbar,
-  .tags-view,
-  .contextmenu,
+  /* .navbar/.tags-view/.contextmenu 项已摘（QR1123-W6/W9）：源头变量化后
+     EP 暗色变量自适应；侧栏/横向头/logo 项保留（压平 8 套预设的语义覆盖） */
   .sidebar-container,
   .horizontal-header,
   .sidebar-logo-container,
@@ -43,12 +42,7 @@ html.dark {
     }
 
     .scroll-item {
-      .el-icon-close {
-        &:hover {
-          color: rgb(255 255 255 / 85%) !important;
-          background-color: rgb(255 255 255 / 12%);
-        }
-      }
+      /* 关闭钮 hover 补丁已删（QR1123-W6）：源头改 EP 变量自适应 */
 
       .chrome-tab {
         .tag-title {
@@ -68,12 +62,8 @@ html.dark {
     }
   }
 
-  /* 系统配置面板 */
+  /* 系统配置面板（el-divider__text 自引用 no-op 已删，QR1123-W9） */
   .right-panel-items {
-    .el-divider__text {
-      --el-bg-color: var(--el-bg-color);
-    }
-
     .el-divider--horizontal {
       border-top: none;
     }
@@ -90,58 +80,22 @@ html.dark {
     transition: background-color 0.25s cubic-bezier(0.7, 0.3, 0.1, 1);
   }
 
+  /* 保留（QR1123-W9 红线）：lay-tag 的 li 级 hover 源规则是 teleport 死规则，
+     此补丁是暗色下唯一的下拉 hover 覆盖——删它全站下拉暗色变 EP 蓝底 */
   .el-dropdown-menu__item:not(.is-disabled):hover {
     background: transparent;
   }
 
-  /* 全局覆盖element-plus的el-dialog、el-drawer、el-message-box、el-notification组件右上角关闭图标的样式，表现更鲜明 */
-  .el-icon {
-    &.el-dialog__close,
-    &.el-drawer__close,
-    &.el-message-box__close,
-    &.el-notification__closeBtn {
-      &:hover {
-        color: rgb(255 255 255 / 85%) !important;
-        background-color: rgb(255 255 255 / 12%);
+  /* 关闭钮族暗色补丁已删（QR1123-W7）：element-plus.scss 源头变量化，
+     EP 暗色变量自适应，附带覆盖 el-tour/upload 关闭钮 */
 
-        .pure-dialog-svg {
-          color: rgb(255 255 255 / 85%) !important;
-        }
-      }
-    }
-  }
+  /* pure-message 暗色补丁已删（QR1123-W5）：源头类名摘除，EP toast 暗色
+     经 dark/css-vars 自适应，无需补丁 */
 
-  /* 克隆并自定义 ElMessage 样式，不会影响 ElMessage 原本样式，在 src/utils/message.ts 中调用自定义样式 ElMessage 方法即可，整体浅色风格在 src/style/element-plus.scss 文件进行了适配 */
-  .pure-message {
-    background-color: rgb(36 37 37) !important;
-    background-image: initial !important;
-    box-shadow:
-      rgb(13 13 13 / 12%) 0 3px 6px -4px,
-      rgb(13 13 13 / 8%) 0 6px 16px 0,
-      rgb(13 13 13 / 5%) 0 9px 28px 8px !important;
-
-    & .el-message__content {
-      color: $color-white !important;
-      pointer-events: all !important;
-      background-image: initial !important;
-    }
-
-    & .el-message__closeBtn {
-      &:hover {
-        color: rgb(255 255 255 / 85%);
-        background-color: rgb(255 255 255 / 12%);
-      }
-    }
-  }
-
-  /* 自定义菜单搜索样式 */
+  /* 自定义菜单搜索样式（footer 阴影补丁已删，QR1123-W7：源头第一层变量化，
+     第二层蓝调投影暗亮通用；search-footer-item 补丁保留——SearchFooter.vue
+     源文字色与键帽阴影未收口） */
   .pure-search-dialog {
-    .el-dialog__footer {
-      box-shadow:
-        0 -1px 0 0 #555a64,
-        0 -3px 6px 0 rgb(69 98 155 / 12%);
-    }
-
     .search-footer {
       .search-footer-item {
         color: rgb(235 235 235 / 60%);
@@ -153,7 +107,7 @@ html.dark {
     }
   }
 
-  /* ReSegmented 组件 */
+  /* ReSegmented 组件（源未收口，补丁保留） */
   .pure-segmented {
     color: rgb(255 255 255 / 65%);
     background-color: #000;
@@ -167,16 +121,5 @@ html.dark {
     }
   }
 
-  /* 仿 el-scrollbar 滚动条样式 支持大多数浏览器，如Chrome、Edge、Firefox、Safari等 */
-  .pure-scrollbar {
-    scrollbar-color: rgb(63 64 66) transparent;
-
-    ::-webkit-scrollbar-thumb {
-      background-color: rgb(63 64 66);
-    }
-
-    ::-webkit-scrollbar-thumb:hover {
-      background: rgb(92 93 96);
-    }
-  }
+  /* pure-scrollbar 暗色补丁已删（QR1123-W7）：源头变量化，EP 暗色自适应 */
 }

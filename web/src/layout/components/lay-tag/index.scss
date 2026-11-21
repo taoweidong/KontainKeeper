@@ -25,8 +25,9 @@
   width: 100%;
   font-size: 14px;
   color: var(--el-text-color-primary);
-  background: #fff;
-  box-shadow: 0 0 1px #888;
+  /* 源头变量化（QR1123-W6）：暗色经 EP 变量自适应，dark.scss 补丁变冗余 */
+  background: var(--el-bg-color);
+  box-shadow: 0 0 1px var(--el-border-color);
 
   .scroll-item {
     position: relative;
@@ -65,8 +66,8 @@
         color 0.12s;
 
       &:hover {
-        color: rgb(0 0 0 / 88%) !important;
-        background-color: rgb(0 0 0 / 6%);
+        color: var(--el-text-color-primary) !important;
+        background-color: var(--el-fill-color);
       }
     }
   }
@@ -129,7 +130,7 @@
     white-space: nowrap;
     outline: 0;
     list-style-type: none;
-    background: #fff;
+    background: var(--el-bg-color-overlay);
     border-radius: 4px;
     box-shadow: 0 2px 8px rgb(0 0 0 / 15%);
 
@@ -153,46 +154,21 @@
   }
 }
 
-.el-dropdown-menu {
-  li {
-    display: flex;
-    align-items: center;
-    width: 100%;
-    margin: 0;
-    cursor: pointer;
-
-    svg {
-      display: block;
-      margin-right: 0.5em;
-    }
-  }
-}
-
-.el-dropdown-menu__item:not(.is-disabled):hover {
-  color: #606266;
-  background: #f0f0f0;
-}
-
-:deep(.el-dropdown-menu__item) i {
-  margin-right: 10px;
-}
-
+/* teleport 死规则已删（QR1123-W6）：el-dropdown-menu teleported 到 body，
+   ElDropdownItem 根是 Fragment（patchFlag=64），scopeId 向上传递在 Fragment
+   断链——li 拿不到 data-v，以下 li 级 scoped 规则永不命中（编译产物实证）：
+   .el-dropdown-menu li / li svg、__item:hover、__item--divided::before、
+   __item.is-disabled、:deep(__item) i（图标是 svg 无 <i>，无对象）。
+   暗色下拉 hover 的唯一覆盖是 dark.scss 的 transparent 补丁（保留）。
+   下面这条 :deep 经 ul 根（单元素，拿到 data-v）命中，是活规则，保留。 */
 :deep(.el-dropdown-menu__item--divided) {
   margin: 1px 0;
 }
 
-.el-dropdown-menu__item--divided::before {
-  margin: 0;
-}
-
-.el-dropdown-menu__item.is-disabled {
-  cursor: not-allowed;
-}
-
 .scroll-item.is-active {
   position: relative;
-  color: #fff;
-  box-shadow: 0 0 0.7px #888;
+  color: var(--el-color-white);
+  box-shadow: 0 0 0.7px var(--el-border-color);
 
   .chrome-tab {
     z-index: 10;
@@ -237,7 +213,7 @@
 }
 
 .arrow-left {
-  box-shadow: 5px 0 5px -6px #ccc;
+  box-shadow: 5px 0 5px -6px var(--el-border-color-lighter);
 
   &:hover {
     cursor: w-resize;
@@ -245,8 +221,8 @@
 }
 
 .arrow-right {
-  border-right: 0.5px solid #ccc;
-  box-shadow: -5px 0 5px -6px #ccc;
+  border-right: 0.5px solid var(--el-border-color-lighter);
+  box-shadow: -5px 0 5px -6px var(--el-border-color-lighter);
 
   &:hover {
     cursor: e-resize;
@@ -264,11 +240,11 @@
 
 /* 卡片模式下鼠标移出隐藏蓝色边框 */
 .card-out {
-  color: #666;
+  color: var(--el-text-color-regular);
   border: none;
 
   .tag-title {
-    color: #666;
+    color: var(--el-text-color-regular);
   }
 }
 

@@ -20,10 +20,7 @@
   margin-left: 2px !important;
 }
 
-/* 自定义 popover 的类名 */
-.pure-popper {
-  padding: 0 !important;
-}
+/* pure-popper 死类名已删（QR1123-W7）：全仓无 popper-class 使用方 */
 
 /* nprogress 适配 element-plus 的主题色 */
 #nprogress {
@@ -90,44 +87,22 @@
       color 0.2s;
 
     &:hover {
-      color: rgb(0 0 0 / 88%) !important;
+      /* EP 变量自适应亮暗（QR1123-W7）：dark.scss 补丁变冗余；
+         附带治好 el-tour/upload 关闭钮暗色 hover（旧补丁未覆盖它们） */
+      color: var(--el-text-color-primary) !important;
       text-decoration: none;
-      background-color: rgb(0 0 0 / 6%);
+      background-color: var(--el-fill-color);
 
       .pure-dialog-svg {
-        color: rgb(0 0 0 / 88%) !important;
+        color: var(--el-text-color-primary) !important;
       }
     }
   }
 }
 
-/* 克隆并自定义 ElMessage 样式，不会影响 ElMessage 原本样式，在 src/utils/message.ts 中调用自定义样式 ElMessage 方法即可，整体暗色风格在 src/style/dark.scss 文件进行了适配 */
-.pure-message {
-  background: #fff !important;
-  border-width: 0 !important;
-  box-shadow:
-    0 3px 6px -4px #0000001f,
-    0 6px 16px #00000014,
-    0 9px 28px 8px #0000000d !important;
-
-  & .el-message__content {
-    color: #000000d9 !important;
-    pointer-events: all !important;
-    background-image: initial !important;
-  }
-
-  & .el-message__closeBtn {
-    outline: none;
-    border-radius: 4px;
-    transition:
-      background-color 0.2s,
-      color 0.2s;
-
-    &:hover {
-      background-color: rgb(0 0 0 / 6%);
-    }
-  }
-}
+/* pure-message 覆盖已删（QR1123-W5）：message.ts 摘掉 customClass 后类名无
+   来源，toast 回归 EP 类型色（暗色经 EP dark css-vars 自适应），antd 风
+   白底黑字三层阴影与「颜色派生 EP 变量」语言相悖。dark.scss 补丁同删。 */
 
 /* 自定义菜单搜索样式 */
 .pure-search-dialog {
@@ -156,14 +131,16 @@
     padding: 10px 20px;
     margin: auto -16px -16px;
     box-shadow:
-      0 -1px 0 0 #e0e3e8,
+      0 -1px 0 0 var(--el-border-color-light),
       0 -3px 6px 0 rgb(69 98 155 / 12%);
   }
 }
 
-/* 仿 el-scrollbar 滚动条样式，支持大多数浏览器，如Chrome、Edge、Firefox、Safari等。整体暗色风格在 src/style/dark.scss 文件进行了适配 */
+/* 仿 el-scrollbar 滚动条样式（QR1123-W7 变量化）：唯一消费面是三个导航
+   折叠态子菜单弹出浮层（popper-class）；全站 el-scrollbar 走 EP 自有变量。
+   暗色经 EP 变量自适应，dark.scss 补丁变冗余 */
 .pure-scrollbar {
-  scrollbar-color: rgb(221 222 224) transparent; /* 滑块颜色、轨道颜色 */
+  scrollbar-color: var(--el-border-color) transparent; /* 滑块颜色、轨道颜色 */
 
   /* Firefox */
   scrollbar-width: thin; /* 可选值为 'auto', 'thin', 'none' */
@@ -178,12 +155,12 @@
 
   /* 滚动条滑块 */
   ::-webkit-scrollbar-thumb {
-    background-color: rgb(221 222 224);
+    background-color: var(--el-border-color);
     border-radius: 4px;
   }
 
   /* 滚动条滑块：hover状态 */
   ::-webkit-scrollbar-thumb:hover {
-    background: rgb(199 201 203); /* 滑块hover颜色 */
+    background: var(--el-border-color-darker); /* 滑块hover颜色 */
   }
 }

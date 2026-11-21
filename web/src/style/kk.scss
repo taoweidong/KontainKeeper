@@ -289,14 +289,6 @@
   margin-bottom: 0;
 }
 
-/* 页头读数条（kk-stat）里的类别图标（QR1121）：与标题图标同口径 */
-.kk-stat .el-icon {
-  margin-right: var(--kk-space-sm);
-  font-size: 14px;
-  color: var(--el-text-color-secondary);
-  vertical-align: -2px;
-}
-
 .kk-actions {
   display: flex;
   flex-wrap: wrap;
@@ -334,26 +326,23 @@
   color: var(--el-text-color-primary);
 }
 
-/* 标题/读数里的图标（QR1121）：只做类别标记，14px 单色次级灰，不抢数字主角；
-   严重度仍由圆点四档承载，图标不着饱和色。 */
-.kk-h4 > .el-icon {
-  margin-right: var(--kk-space-sm);
-  font-size: 14px;
-  color: var(--el-text-color-secondary);
-  vertical-align: -2px;
-}
-
-.kk-band__readout > .el-icon {
-  font-size: 14px;
-  color: var(--el-text-color-secondary);
-}
-
-/* 表格行内类别图标（monitor 类型列等，QR1121）：与标题图标同口径 */
+/* 类别图标统一口径（QR1123-W10 合并四份同值规则）：只做类别标记，
+   14px 单色次级灰，不抢数字主角；严重度仍由圆点四档承载，图标不着饱和色。
+   页面级复制（collect/welcome 的 scoped 图标规则）已收编为挂 kk-type-icon。 */
+.kk-h4 > .el-icon,
+.kk-stat .el-icon,
 .kk-type-icon {
   margin-right: var(--kk-space-sm);
   font-size: 14px;
   color: var(--el-text-color-secondary);
   vertical-align: -2px;
+}
+
+/* 仪表带读数是 inline-flex baseline 对齐：vertical-align 不适用，
+   间距由 readout 自身 gap 供给，不加 margin-right（防双重间距） */
+.kk-band__readout > .el-icon {
+  font-size: 14px;
+  color: var(--el-text-color-secondary);
 }
 
 /* 详情页：描述列表与图表。分隔全部交给后一块的上间距，避免相邻块各写
@@ -362,9 +351,27 @@
   margin-bottom: 0;
 }
 
+/* 顶间距由 detail 图表小节标题的 kk-mt-lg 供给（QR1123-W2），不再自带 */
 .kk-chart {
   height: 300px;
-  margin: var(--kk-space-lg) 0 0;
+}
+
+/* 图表空态占位（QR1123-W10 从 detail scoped 下沉）：与 .kk-chart 同高，
+   切换时不跳布局；顶间距同样由小节标题供给 */
+.kk-chart-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 300px;
+  font-size: 13px;
+  color: var(--el-text-color-placeholder);
+}
+
+/* el-row 窄屏堆叠纵向缝（QR1123-W10 从 detail/system scoped 下沉）：
+   gutter 只管横向，row-gap 补纵向（el-row 是 flex） */
+.kk-page--grow > .el-row,
+.kk-system-body > .el-row {
+  row-gap: var(--kk-space-lg);
 }
 
 /* 总览页：表头统计数字 */

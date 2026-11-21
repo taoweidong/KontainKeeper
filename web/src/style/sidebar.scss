@@ -48,7 +48,9 @@
     height: 100vh;
     min-height: 100%;
     margin-left: $sideBarWidth;
-    background: #f0f2f5;
+    /* EP 页底变量（QR1123-W8）：亮色 #f2f3f5 与原 #f0f2f5 每通道差 ≤2，
+       暗色 #0a0a0a 只影响露底缝隙（.app-main #020409 独立暗底保留） */
+    background: var(--el-bg-color-page);
 
     /* main-content 属性动画 */
     transition: margin-left var(--pure-transition-duration);
@@ -627,7 +629,9 @@ body[layout="vertical"] {
   /* 设置 */
   .set-icon {
     &:hover {
-      background: #f6f6f6;
+      /* EP fill 变量自适应亮暗（QR1123-W8）：navbar-bg-hover 的 dark:hover
+         硬编码半边随之摘除；navbar 恒白底，不跟 8 套侧栏预设的 menu-hover */
+      background: var(--el-fill-color-light);
     }
   }
 }

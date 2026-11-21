@@ -41,6 +41,8 @@
   @apply flex justify-between items-center;
 }
 
+/* dark:hover 硬编码半边已摘（QR1123-W8）：sidebar.scss 顶栏 hover 改
+   --el-fill-color-light 后暗色自适应；dark:text-white 半边保留（图标对比色） */
 @utility navbar-bg-hover {
-  @apply dark:text-white dark:hover:bg-[#242424]!;
+  @apply dark:text-white;
 }
