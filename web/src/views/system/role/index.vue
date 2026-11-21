@@ -350,7 +350,6 @@ onMounted(load);
               show-checkbox
               default-expand-all
               :props="{ label: 'label', children: 'children' }"
-              style="width: 100%"
             />
           </div>
         </el-form-item>

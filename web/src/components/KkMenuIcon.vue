@@ -12,7 +12,23 @@ defineProps<{ icon: string }>();
   <el-icon v-if="menuIconKnown(icon)">
     <component :is="useRenderIcon(icon)" />
   </el-icon>
-  <span v-else class="kk-sub" title="未注册图标，侧边栏不会显示">{{
-    icon || "-"
-  }}</span>
+  <span
+    v-else
+    class="kk-sub kk-menu-icon-raw"
+    title="未注册图标，侧边栏不会显示"
+    >{{ icon || "-" }}</span
+  >
 </template>
+
+<style scoped>
+/* 长串溢出保护（QR1122-W7）：图标列宽 90 / 弹窗 append 位都不许被撑破；
+   文本内容不变（opt1121-rbac 锁「显原串」），title 已给全值与提示 */
+.kk-menu-icon-raw {
+  display: inline-block;
+  overflow: hidden;
+  max-width: 100%;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+</style>

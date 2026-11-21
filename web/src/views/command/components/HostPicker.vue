@@ -231,7 +231,7 @@ watch(
           v-model="keyword"
           placeholder="按主机名 / 镜像搜索"
           clearable
-          style="width: 240px"
+          class="kk-search-w"
         />
         <div class="kk-actions">
           <el-checkbox v-model="onlyOnline" @change="syncTableSelection"
@@ -275,6 +275,7 @@ watch(
         </el-table-column>
         <template #empty>
           <el-empty
+            :image-size="60"
             :description="
               listRead
                 ? '没有匹配的主机，试试清除搜索或关闭「仅在线」'

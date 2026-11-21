@@ -19,6 +19,7 @@ import {
 } from "@/utils/kkIcons";
 import {
   ageText,
+  brokerStateClass,
   cmdStateClass,
   durText,
   errText,
@@ -327,7 +328,8 @@ onMounted(() => {
       <template #header>
         <div class="kk-band">
           <div class="kk-band__fleet">
-            <span class="kk-state" :class="{ 'kk-state--idle': !brokerUp }">
+            <!-- 四态圆点（QR1122-W12）：断开是告警给红点，未知/未启动保持空心 -->
+            <span :class="brokerStateClass(!!stats, !!broker, brokerUp)">
               {{ linkText }}
             </span>
             <span class="kk-band__readout">
@@ -557,5 +559,10 @@ onMounted(() => {
    包进 body 层后在这里等价复刻（el-row 夹心也覆盖到） */
 .kk-system-body > * + * {
   margin-top: var(--kk-space-lg);
+}
+
+/* <992px 两栏堆叠时的纵向缝（QR1122-W5）：gutter 只管横向 */
+.kk-system-body > .el-row {
+  row-gap: var(--kk-space-lg);
 }
 </style>

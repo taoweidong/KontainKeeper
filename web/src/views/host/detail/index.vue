@@ -131,14 +131,14 @@ onBeforeUnmount(() => {
             <span class="kk-ml" :class="hostStateClass(detail)">
               {{ hostStateText(detail) }}
             </span>
-            <el-tag
+            <!-- 告警圆点与同页 kk-meter--alert 同语言（QR1122-W4）：
+                 不再用红 tag，严重度词汇全站统一 -->
+            <span
               v-if="detail.disk_alert"
-              class="kk-ml"
-              size="small"
-              type="danger"
+              class="kk-state kk-state--bad kk-bad kk-ml"
             >
               磁盘告警
-            </el-tag>
+            </span>
             <span class="kk-sub kk-ml"
               >最近心跳 {{ ageText(detail.age_sec) }}</span
             >
@@ -261,6 +261,7 @@ onBeforeUnmount(() => {
             type="info"
             effect="plain"
             class="kk-label-tag"
+            :title="`${k}: ${v}`"
           >
             {{ k }}: {{ v }}
           </el-tag>
@@ -463,8 +464,21 @@ onBeforeUnmount(() => {
   color: var(--el-text-color-placeholder);
 }
 
-/* 标签 tag 间距（QR1121）：四档尺度，窄屏换行不贴边 */
+/* 标签 tag 间距（QR1121）：四档尺度，窄屏换行不贴边。
+   长 k:v 溢出保护（QR1122）：max-width + 内容 ellipsis，title 已给全值 */
 .kk-label-tag {
+  max-width: 100%;
   margin: 0 var(--kk-space-sm) var(--kk-space-sm) 0;
+
+  :deep(.el-tag__content) {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+/* 窄屏堆叠时两栏小节的纵向缝（QR1122-W5）：gutter 只管横向 */
+.kk-page--grow > .el-row {
+  row-gap: var(--kk-space-lg);
 }
 </style>

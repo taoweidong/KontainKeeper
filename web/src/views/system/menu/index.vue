@@ -140,8 +140,9 @@ onMounted(load);
             <el-tag v-if="row.built_in" class="kk-ml" size="small" type="info"
               >内置</el-tag
             >
-            <el-tag v-if="!row.enabled" class="kk-ml" size="small" type="danger"
-              >已停用</el-tag
+            <!-- 停用是管理动作不是告警（QR1122-W13）：空心灰点，不挪用 danger 红 -->
+            <span v-if="!row.enabled" class="kk-state kk-state--idle kk-ml"
+              >已停用</span
             >
             <el-tag
               v-else-if="!row.show_link"
@@ -155,7 +156,7 @@ onMounted(load);
         </el-table-column>
         <!-- 图标预览列（QR1121）：icon 字段此前不渲染，填错字符串侧边栏才暴露；
              KkMenuIcon 离线白名单闸——已知显图标，未知显原串 + 提示 -->
-        <el-table-column label="图标" width="90">
+        <el-table-column label="图标" width="90" show-overflow-tooltip>
           <template #default="{ row }">
             <KkMenuIcon :icon="row.icon" />
           </template>

@@ -94,8 +94,8 @@ export default defineComponent({
 
     const iconClass = computed(() => {
       return [
-        "text-black",
-        "dark:text-white",
+        // EP 文字变量自适应暗色（QR1122-W6），不再纯黑纯白 + dark: 双写
+        "text-text_color_primary",
         "duration-100",
         "hover:text-primary!",
         "cursor-pointer",
@@ -111,8 +111,8 @@ export default defineComponent({
         "px-[11px]",
         "border-b-[1px]",
         "border-solid",
-        "border-[#dcdfe6]",
-        "dark:border-[#303030]"
+        // EP 边框变量跟随 8 套主题预设（QR1122-W6），替代 light/dark 字面量双写
+        "border-[var(--el-border-color)]"
       ];
     });
 

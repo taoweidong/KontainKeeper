@@ -217,7 +217,7 @@ onMounted(() => {
     <el-row :gutter="16" class="stat-row">
       <el-col :xs="12" :sm="6">
         <el-card
-          shadow="hover"
+          shadow="never"
           class="stat-card clickable"
           v-bind="press(() => go('/hosts/monitor'))"
         >
@@ -234,7 +234,7 @@ onMounted(() => {
       </el-col>
       <el-col :xs="12" :sm="6">
         <el-card
-          shadow="hover"
+          shadow="never"
           class="stat-card clickable"
           :class="{ 'stat-warn': alerts > 0 }"
           v-bind="press(() => go('/hosts/monitor'))"
@@ -262,7 +262,7 @@ onMounted(() => {
       </el-col>
       <el-col :xs="12" :sm="6">
         <el-card
-          shadow="hover"
+          shadow="never"
           class="stat-card clickable"
           v-bind="press(() => go('/command/shell'))"
         >
@@ -286,7 +286,7 @@ onMounted(() => {
       </el-col>
       <el-col :xs="12" :sm="6">
         <el-card
-          shadow="hover"
+          shadow="never"
           class="stat-card clickable"
           v-bind="press(gotoUpdate)"
         >
@@ -303,7 +303,7 @@ onMounted(() => {
             <el-icon><component :is="useRenderIcon(IconVersion)" /></el-icon
             >Agent 当前版本
           </div>
-          <div class="stat-sub text-overflow">
+          <div class="stat-sub text-overflow" :title="agentVerText">
             {{ agentVerText }}
           </div>
         </el-card>
@@ -496,6 +496,12 @@ onMounted(() => {
    详情页同源）；块间距由 .kk-page--grow > * + * 统一给 16px——本页不再自带
    padding/margin（QR1121 清理了原先两条只有注释的空规则）。 */
 
+/* xs=12 窄屏两行堆叠时的纵向缝（QR1122-W5）：gutter 只管横向，
+   el-row 是 flex，row-gap 生效 */
+.stat-row {
+  row-gap: var(--kk-space-lg);
+}
+
 .stat-card {
   text-align: center;
   cursor: default;
@@ -504,12 +510,14 @@ onMounted(() => {
     padding: var(--kk-space-lg) var(--kk-space);
   }
 
+  /* hover 收口为扁平（QR1122-W19）：原 shadow=hover + 上浮 2px 与全站
+     「不靠阴影」语言相悖，改边框主色（与 quick-link 入口同写法） */
   &.clickable {
     cursor: pointer;
-    transition: transform 0.15s;
+    transition: border-color 0.15s;
 
     &:hover {
-      transform: translateY(-2px);
+      border-color: var(--el-color-primary);
     }
   }
 
@@ -523,10 +531,13 @@ onMounted(() => {
     line-height: 1.2;
   }
 
-  /* 版本字符串不是数字：小一档 + 溢出保护，长版本号不撑破卡片 */
+  /* 版本字符串不是数字：小一档 + 溢出保护，长版本号不撑破卡片。
+     line-height 1.8 使 16×1.8=28.8 与 24px 档（24×1.2）等高，
+     四卡横排 label/sub 基线对齐（QR1122-W2） */
   .stat-value--ver {
     overflow: hidden;
     font-size: 16px;
+    line-height: 1.8;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -599,7 +610,7 @@ onMounted(() => {
 .right-col {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--kk-space-lg);
 
   .panel {
     margin-bottom: 0;

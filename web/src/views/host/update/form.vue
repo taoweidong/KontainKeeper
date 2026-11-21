@@ -14,6 +14,8 @@
  */
 import { ref, watchEffect } from "vue";
 import type { FormInstance, FormRules, UploadUserFile } from "element-plus";
+import { useRenderIcon } from "@/components/ReIcon/src/hooks";
+import { IconUpload } from "@/utils/kkIcons";
 import { message } from "@/utils/message";
 import { mbText } from "@/utils/kk";
 
@@ -106,7 +108,9 @@ function onRemove() {
         :on-change="onChange"
         :on-remove="onRemove"
       >
-        <el-button>选择 kk-agent 二进制</el-button>
+        <el-button :icon="useRenderIcon(IconUpload)"
+          >选择 kk-agent 二进制</el-button
+        >
         <template #tip>
           <div class="el-upload__tip kk-sub">
             单文件上限 64MB；上传成功即替换待分发版本，服务端保留上一版供回滚。

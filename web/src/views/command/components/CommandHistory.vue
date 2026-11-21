@@ -288,7 +288,10 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
       <template #footer>
         <div class="kk-toolbar">
           <span class="kk-sub">点击列表其他行可连续查看，列表不会被遮挡</span>
-          <el-button type="primary" @click="downloadOut"
+          <el-button
+            type="primary"
+            :icon="useRenderIcon(IconDownload)"
+            @click="downloadOut"
             >下载此条输出</el-button
           >
         </div>

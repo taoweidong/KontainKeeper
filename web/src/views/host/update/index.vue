@@ -220,13 +220,19 @@ async function onRollback() {
           <span v-if="current?.uploaded_at" class="kk-sub">
             {{ ageText(Math.max(0, nowSec() - current.uploaded_at)) }}上传
           </span>
+          <!-- 二进制指纹读数（QR1122-W9）：size/sha256 此前只在上传 toast
+               一闪而过，页头常驻可核对；title 给 sha256 全值 -->
+          <span v-if="current?.sha256" class="kk-sub" :title="current.sha256">
+            {{ mbText(current.size / 1024 / 1024) }} · sha256
+            {{ current.sha256.slice(0, 12) }}…
+          </span>
           <!-- 新鲜度读数统一口径（QR1121-W8）：不再显静态「每 N 秒」 -->
           <span class="kk-sync" :class="{ 'kk-sync--stale': pollFailed }">
             {{ syncReadout(pollFailed, lastLoadedAt) }}
           </span>
         </div>
         <div class="kk-actions">
-          <el-select v-model="interval" style="width: 120px">
+          <el-select v-model="interval" class="kk-select-w">
             <el-option label="5 秒" :value="5" />
             <el-option label="10 秒" :value="10" />
             <el-option label="30 秒" :value="30" />

@@ -2,7 +2,13 @@
 import { computed, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useRenderIcon } from "@/components/ReIcon/src/hooks";
-import { IconBack, IconDisk, IconMem, IconRefresh } from "@/utils/kkIcons";
+import {
+  IconBack,
+  IconDisk,
+  IconMem,
+  IconRefresh,
+  IconSave
+} from "@/utils/kkIcons";
 import { DISK_ALERT_PCT, pctText, syncReadout, tsText } from "@/utils/kk";
 import { readChartColors, useChartTheme } from "@/utils/kkChart";
 import {
@@ -181,7 +187,7 @@ function gotoDetail() {
               :max="100"
               :controls="false"
               placeholder="未设置"
-              style="width: 76px"
+              class="kk-num-input-w"
             />
             <span class="kk-sub">磁盘上限</span>
             <!-- placeholder 的全局阈值与 DISK_ALERT_PCT 单一真相（QR1121） -->
@@ -191,12 +197,17 @@ function gotoDetail() {
               :max="100"
               :controls="false"
               :placeholder="`全局 ${DISK_ALERT_PCT}`"
-              style="width: 76px"
+              class="kk-num-input-w"
             />
-            <el-button type="primary" :loading="saving" @click="saveLimits">
+            <el-button
+              type="primary"
+              :icon="useRenderIcon(IconSave)"
+              :loading="saving"
+              @click="saveLimits"
+            >
               保存上限
             </el-button>
-            <el-select v-model="hours" style="width: 120px">
+            <el-select v-model="hours" class="kk-select-w">
               <el-option
                 v-for="o in HOUR_OPTIONS"
                 :key="o.value"

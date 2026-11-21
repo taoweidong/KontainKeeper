@@ -9,6 +9,7 @@ import {
   IconDownload,
   IconHost,
   IconOnline,
+  IconSend,
   IconUpgrade
 } from "@/utils/kkIcons";
 import { collectItemText, kkHeaderCellStyle, nOr, tsText } from "@/utils/kk";
@@ -122,7 +123,7 @@ const {
           </el-tooltip>
         </div>
         <div class="kk-actions">
-          <el-select v-model="interval" style="width: 120px">
+          <el-select v-model="interval" class="kk-select-w">
             <el-option label="5 秒" :value="5" />
             <el-option label="10 秒" :value="10" />
             <el-option label="30 秒" :value="30" />
@@ -170,7 +171,7 @@ const {
             v-model="protoVer"
             placeholder="全部"
             clearable
-            style="width: 104px"
+            style="width: 110px"
           >
             <el-option label="v4" value="4" />
             <el-option label="v3" value="3" />
@@ -270,7 +271,12 @@ const {
           @sort-change="onSortChange"
         >
           <template #empty>
-            <el-empty :description="emptyText" />
+            <!-- 空态插图与 audit/update/history 统一（QR1122-W3） -->
+            <el-empty
+              class="kk-empty"
+              :image-size="60"
+              :description="emptyText"
+            />
           </template>
         </pure-table>
       </template>
@@ -294,6 +300,7 @@ const {
         <el-button @click="dialog.visible = false">取消</el-button>
         <el-button
           type="primary"
+          :icon="useRenderIcon(IconSend)"
           :loading="dialog.submitting"
           @click="submitCollect"
         >
