@@ -31,7 +31,11 @@ const h = vi.hoisted(() => ({
   alert: vi.fn()
 }));
 
-vi.mock("vue-router", () => ({ useRoute: () => h.route }));
+// useRouter 随 QR1121 主机列下钻进入 hook，mock 同步补全（锁语义不变）
+vi.mock("vue-router", () => ({
+  useRoute: () => h.route,
+  useRouter: () => ({ push: vi.fn() })
+}));
 vi.mock("element-plus", () => ({
   ElMessageBox: { confirm: h.confirm, alert: h.alert }
 }));

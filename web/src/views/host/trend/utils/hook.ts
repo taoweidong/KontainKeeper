@@ -17,7 +17,8 @@ import {
   type MetricPoint,
   type MetricsResult
 } from "@/api/containers";
-import { errText, pctText } from "@/utils/kk";
+import { errText, nowSec, pctText } from "@/utils/kk";
+import { DEFAULT_CHART_COLORS, type ChartColors } from "@/utils/kkChart";
 import { usePolls, useSeq } from "@/utils/kkPoll";
 
 /**
@@ -74,8 +75,9 @@ export function isBreach(
 
 /** 图表 option 组装（纯函数，可测）。
  *  - 两个 series 共用一条 0–100 的 y 轴（百分比口径的直白好处）；
- *  - 上限线用 markLine：EP danger 默认色 #f56c6c——echarts 不解析 CSS 变量，
- *    写字面量并注明来源，改主题时这里要跟着 kk.scss 的 --kk-alert 对一遍；
+ *  - 上限线用 markLine，颜色走 colors.alert（QR1121-W12）：运行时由调用方
+ *    读 --kk-alert 注入，暗色/换主题不再脱节；不传 colors 回落 EP danger
+ *    默认字面量 #f56c6c（既有纯函数锁的输出逐字不变）；
  *  - x 轴文案由调用方注入的 fmt 做一次性格式化（FE-16：热路径不新建 Intl）。 */
 export function buildTrendOption(
   points: MetricPoint[],
@@ -84,12 +86,17 @@ export function buildTrendOption(
     lineName: string;
     limit: number | null;
     fmt: (ts: number) => string;
+    colors?: ChartColors;
   }
 ): echarts.EChartsCoreOption {
+  const colors = opts.colors ?? DEFAULT_CHART_COLORS;
   const data = points.map(p => p[opts.key]);
   return {
     tooltip: {
       trigger: "axis",
+      backgroundColor: colors.tooltipBg,
+      borderColor: colors.tooltipBorder,
+      textStyle: { color: colors.text },
       // 百分比口径统一一位小数 + %（QR1120-W16）；null 点显示 - 而不是 0
       valueFormatter: (v: number | null) => pctText(v)
     },
@@ -97,13 +104,16 @@ export function buildTrendOption(
     xAxis: {
       type: "category",
       data: points.map(p => opts.fmt(p.ts)),
-      boundaryGap: false
+      boundaryGap: false,
+      axisLabel: { color: colors.text },
+      axisLine: { lineStyle: { color: colors.axisLine } }
     },
     yAxis: {
       type: "value",
       min: 0,
       max: 100,
-      axisLabel: { formatter: "{value}%" }
+      axisLabel: { formatter: "{value}%", color: colors.text },
+      splitLine: { lineStyle: { color: colors.splitLine } }
     },
     series: [
       {
@@ -119,11 +129,11 @@ export function buildTrendOption(
         markLine: {
           symbol: "none",
           silent: true,
-          lineStyle: { color: "#f56c6c", type: "dashed" },
+          lineStyle: { color: colors.alert, type: "dashed" },
           label: {
             formatter: "告警上限 {c}%",
             position: "insideEndTop",
-            color: "#f56c6c"
+            color: colors.alert
           },
           data: opts.limit === null ? [] : [{ yAxis: opts.limit }]
         }
@@ -145,6 +155,8 @@ export function useHostTrend() {
   const pollFailed = ref(false);
   /** 读到过真值没有：与「这条主机确实没有序列数据」分开说（QR-W16） */
   const read = ref(false);
+  /** 最近一次成功加载时刻：页头新鲜度读数走 syncReadout 统一口径（QR1121-W8） */
+  const lastLoadedAt = ref(0);
 
   /** 上限编辑态：表单初始值来自 metrics 的单机覆盖原值（null = 未自定义） */
   const memInput = ref<number | null>(null);
@@ -174,6 +186,7 @@ export function useHostTrend() {
       metrics.value = data;
       read.value = true;
       pollFailed.value = false;
+      lastLoadedAt.value = nowSec();
       if (!silent && syncInputs) {
         // QR-W17：静默轮询不回填输入框——运维正在改告警上限时，30s 轮询会把
         // 编辑中的值打回原值，极易点出「以为保存了新值、实际保存旧值」的操作。
@@ -208,6 +221,7 @@ export function useHostTrend() {
     memInput.value = null;
     diskInput.value = null;
     pollFailed.value = false;
+    lastLoadedAt.value = 0;
     load();
   });
 
@@ -247,6 +261,7 @@ export function useHostTrend() {
     loading,
     pollFailed,
     read,
+    lastLoadedAt,
     emptyText,
     memInput,
     diskInput,

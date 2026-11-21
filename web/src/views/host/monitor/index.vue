@@ -2,8 +2,16 @@
 import { ref } from "vue";
 import { PureTableBar } from "@/components/RePureTableBar";
 import { useRenderIcon } from "@/components/ReIcon/src/hooks";
-import DownloadIcon from "~icons/ep/download";
-import { nOr, tsText } from "@/utils/kk";
+import {
+  IconAlert,
+  IconCollect,
+  IconCommand,
+  IconDownload,
+  IconHost,
+  IconOnline,
+  IconUpgrade
+} from "@/utils/kkIcons";
+import { collectItemText, kkHeaderCellStyle, nOr, tsText } from "@/utils/kk";
 import { useMonitor } from "./utils/hook";
 
 defineOptions({ name: "HostMonitor" });
@@ -72,6 +80,7 @@ const {
             />
           </span>
           <span class="kk-band__readout"
+            ><el-icon><component :is="useRenderIcon(IconHost)" /></el-icon
             ><b>{{ nOr(read, total) }}</b
             >台主机</span
           >
@@ -83,14 +92,17 @@ const {
             <el-tag size="small" type="info">已筛选</el-tag>
           </el-tooltip>
           <span class="kk-band__readout"
+            ><el-icon><component :is="useRenderIcon(IconOnline)" /></el-icon
             ><b>{{ nOr(read, online) }}</b
             >在线</span
           >
           <span class="kk-band__readout kk-band__readout--alert">
+            <el-icon><component :is="useRenderIcon(IconAlert)" /></el-icon>
             <b>{{ nOr(read, alerts) }}</b
             >磁盘告警
           </span>
           <span class="kk-band__readout kk-band__readout--stale">
+            <el-icon><component :is="useRenderIcon(IconUpgrade)" /></el-icon>
             <b>{{ nOr(read, outdated) }}</b
             >待升级
           </span>
@@ -184,12 +196,17 @@ const {
       <span class="kk-sub">已选 {{ selection.length }} 台</span>
       <el-button
         type="primary"
+        :icon="useRenderIcon(IconCollect)"
         :disabled="!selection.length"
         @click="openCollect"
       >
         批量采集
       </el-button>
-      <el-button :disabled="!selection.length" @click="openCommandCenter">
+      <el-button
+        :icon="useRenderIcon(IconCommand)"
+        :disabled="!selection.length"
+        @click="openCommandCenter"
+      >
         批量执行命令
       </el-button>
       <!-- 升级按钮只对选中的落后主机开放：
@@ -198,6 +215,7 @@ const {
              进入页面后 selection 已被预填好。 -->
       <el-button
         type="warning"
+        :icon="useRenderIcon(IconUpgrade)"
         :disabled="!selection.length || !selection.some(h => h.agent_outdated)"
         @click="gotoUpgrade"
       >
@@ -217,7 +235,7 @@ const {
       <template #buttons>
         <el-button
           type="primary"
-          :icon="useRenderIcon(DownloadIcon)"
+          :icon="useRenderIcon(IconDownload)"
           :loading="exporting"
           @click="onExport"
           >导出清单</el-button
@@ -246,10 +264,7 @@ const {
           :pagination="pagination"
           :row-class-name="rowClass"
           :default-sort="{ prop: 'last_seen', order: 'descending' }"
-          :header-cell-style="{
-            background: 'var(--el-fill-color-light)',
-            color: 'var(--el-text-color-primary)'
-          }"
+          :header-cell-style="kkHeaderCellStyle"
           @selection-change="onSelectionChange"
           @row-click="onRowClick"
           @sort-change="onSortChange"
@@ -268,7 +283,7 @@ const {
     >
       <el-checkbox-group v-model="dialog.items">
         <el-checkbox v-for="it in collectItems" :key="it" :value="it">
-          {{ it }}
+          <span :title="it">{{ collectItemText(it) }}</span>
         </el-checkbox>
       </el-checkbox-group>
       <p class="kk-sub">

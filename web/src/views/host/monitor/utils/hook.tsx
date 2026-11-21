@@ -20,6 +20,13 @@ import {
   listCollectItems
 } from "@/api/commands";
 import { exportHosts } from "@/api/exporting";
+import { useRenderIcon } from "@/components/ReIcon/src/hooks";
+import {
+  HOST_TYPE_ICONS,
+  IconCollect,
+  IconDetail,
+  IconTrend
+} from "@/utils/kkIcons";
 import {
   ageText,
   downloadBlob,
@@ -31,7 +38,6 @@ import {
   mbText,
   mergeHostRows,
   nowSec,
-  OFFLINE_REASON_LABEL,
   pctText
 } from "@/utils/kk";
 import { usePolls, useSeq } from "@/utils/kkPoll";
@@ -405,8 +411,7 @@ export function useMonitor() {
    *  （QR1120-W7），否则复制一次主机名就被拽进详情页。 */
   function onRowClick(row: HostSummary, column: any) {
     if (column?.type === "selection") return;
-    const sel =
-      typeof window !== "undefined" ? window.getSelection?.() : null;
+    const sel = typeof window !== "undefined" ? window.getSelection?.() : null;
     if (sel && !sel.isCollapsed && sel.toString() !== "") return;
     gotoDetail(row.pod);
   }
@@ -467,12 +472,24 @@ export function useMonitor() {
       // 恒为 0 的一列只会教运维「这一列没数据就是没问题」（QR-S38）。
       label: "类型",
       width: 108,
-      cellRenderer: ({ row }) => (
-        <>
-          <span>{HOST_TYPE_LABEL[row.host_type] || "-"}</span>
-          {row.group_name ? <div class="kk-sub">{row.group_name}</div> : null}
-        </>
-      )
+      cellRenderer: ({ row }) => {
+        // 类别图标（QR1121）：v3 主机 host_type 可能为空，查不到只留文字，
+        // 不伪造类别。图标 14px 次级灰（kk-type-icon），不抢文字主角。
+        const TypeIcon = HOST_TYPE_ICONS[row.host_type];
+        return (
+          <>
+            <span>
+              {TypeIcon ? (
+                <el-icon class="kk-type-icon">
+                  <TypeIcon />
+                </el-icon>
+              ) : null}
+              {HOST_TYPE_LABEL[row.host_type] || "-"}
+            </span>
+            {row.group_name ? <div class="kk-sub">{row.group_name}</div> : null}
+          </>
+        );
+      }
     },
     {
       label: "系统 / 地址",
@@ -579,13 +596,15 @@ export function useMonitor() {
     {
       label: "操作",
       fixed: "right",
-      width: 200,
+      // 三枚 link 按钮加图标后放宽 24px（QR1121）：14px 图标 + 6px 图文距 ×3
+      width: 224,
       cellRenderer: ({ row }) => (
         <>
           <el-button
             link
             type="primary"
             class="reset-margin"
+            icon={useRenderIcon(IconDetail)}
             onClick={(e: MouseEvent) => {
               e.stopPropagation();
               gotoDetail(row.pod);
@@ -596,6 +615,7 @@ export function useMonitor() {
           <el-button
             link
             type="primary"
+            icon={useRenderIcon(IconTrend)}
             onClick={(e: MouseEvent) => {
               e.stopPropagation();
               gotoTrend(row.pod);
@@ -606,6 +626,7 @@ export function useMonitor() {
           <el-button
             link
             type="primary"
+            icon={useRenderIcon(IconCollect)}
             onClick={(e: MouseEvent) => {
               e.stopPropagation();
               collectOne(row);

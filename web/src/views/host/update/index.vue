@@ -15,17 +15,32 @@ import { ElMessageBox } from "element-plus";
 import type { FormInstance } from "element-plus";
 
 import { rollbackAgent, uploadAgent } from "@/api/agent";
-import { ageText, errText, mbText, nowSec } from "@/utils/kk";
+import {
+  ageText,
+  cmdStateClass,
+  errText,
+  kkHeaderCellStyle,
+  mbText,
+  nowSec,
+  statusLabel,
+  syncReadout
+} from "@/utils/kk";
 import { message } from "@/utils/message";
 import { PureTableBar } from "@/components/RePureTableBar";
 import { addDialog } from "@/components/ReDialog";
 import { useRenderIcon } from "@/components/ReIcon/src/hooks";
-import UploadIcon from "~icons/ep/upload";
-import RollbackIcon from "~icons/ep/refresh-left";
-import UpgradeIcon from "~icons/ep/arrow-up";
+import {
+  IconAlert,
+  IconDelete,
+  IconPlus,
+  IconRollback,
+  IconUpgrade,
+  IconUpload,
+  IconVersion
+} from "@/utils/kkIcons";
 
 import UploadFormView from "./form.vue";
-import { useHostUpdate } from "./utils/hook";
+import { summaryRows, useHostUpdate } from "./utils/hook";
 
 defineOptions({ name: "HostUpdate" });
 
@@ -35,6 +50,8 @@ const {
   outdated,
   pagedOutdated,
   updates,
+  updatesSummary,
+  lastLoadedAt,
   interval,
   selection,
   offlineSelected,
@@ -183,13 +200,17 @@ async function onRollback() {
 <template>
   <div v-loading="loading" class="kk-main">
     <!-- 页头读数条（W5：pollFailed 进这条读数、不弹 toast；与搜索条同构挂 kk-search-form） -->
-    <div class="kk-search-form bg-bg_color w-full overflow-auto pl-8 pr-8 pt-3 pb-3">
+    <div
+      class="kk-search-form bg-bg_color w-full overflow-auto pl-8 pr-8 pt-3 pb-3"
+    >
       <div class="kk-toolbar">
         <div class="kk-stat">
           <span
+            ><el-icon><component :is="useRenderIcon(IconVersion)" /></el-icon
             >当前版本 <b>{{ fleetInfo.version }}</b></span
           >
           <span>
+            <el-icon><component :is="useRenderIcon(IconAlert)" /></el-icon>
             落后主机
             <b :class="fleetInfo.cls">
               {{ fleetInfo.outdated }}
@@ -199,12 +220,9 @@ async function onRollback() {
           <span v-if="current?.uploaded_at" class="kk-sub">
             {{ ageText(Math.max(0, nowSec() - current.uploaded_at)) }}上传
           </span>
+          <!-- 新鲜度读数统一口径（QR1121-W8）：不再显静态「每 N 秒」 -->
           <span class="kk-sync" :class="{ 'kk-sync--stale': pollFailed }">
-            {{
-              pollFailed
-                ? "自动刷新失败，读数可能已过期"
-                : `每 ${interval} 秒自动刷新`
-            }}
+            {{ syncReadout(pollFailed, lastLoadedAt) }}
           </span>
         </div>
         <div class="kk-actions">
@@ -212,6 +230,8 @@ async function onRollback() {
             <el-option label="5 秒" :value="5" />
             <el-option label="10 秒" :value="10" />
             <el-option label="30 秒" :value="30" />
+            <!-- 停档与 monitor 对齐（QR1121）：setPoll(key,fn,0) 只清不建 -->
+            <el-option label="不自动刷新" :value="0" />
           </el-select>
         </div>
       </div>
@@ -224,7 +244,20 @@ async function onRollback() {
          「搜索条 → 灰缝 → 表格卡」的上下节奏，不再白贴白连成一张大白板 -->
     <div class="bg-bg_color w-full mt-2 mb-2 pl-8 pr-8 pt-3 pb-3">
       <div class="kk-toolbar">
-        <b>升级台账（最近 50 条）</b>
+        <h4 class="kk-h4">
+          <el-icon><component :is="useRenderIcon(IconUpgrade)" /></el-icon
+          >升级台账（最近 50 条）
+        </h4>
+        <!-- 状态汇总读数（QR1121-W13）：summary 取回后此前从未渲染；
+             圆点 + 等宽计数与命令历史同语言，ledgerRead 守卫不补 0 -->
+        <div v-if="ledgerRead" class="kk-stat">
+          <span v-for="s in summaryRows(updatesSummary)" :key="s.status">
+            <span :class="cmdStateClass(s.status)">{{
+              statusLabel(s.status)
+            }}</span>
+            <b>{{ s.count }}</b>
+          </span>
+        </div>
       </div>
       <pure-table
         :data="updates"
@@ -234,10 +267,7 @@ async function onRollback() {
         align-whole="center"
         table-layout="auto"
         :max-height="320"
-        :header-cell-style="{
-          background: 'var(--el-fill-color-light)',
-          color: 'var(--el-text-color-primary)'
-        }"
+        :header-cell-style="kkHeaderCellStyle"
       >
         <template #empty>
           {{ ledgerRead ? "暂无升级记录" : "没读到（升级台账接口不可达）" }}
@@ -250,10 +280,18 @@ async function onRollback() {
          批量升级（推送）按钮按 Step 2 上移到下方 bar 的 #buttons -->
     <div class="kk-select-banner">
       <span class="kk-sub">已选 {{ selection.length }} 台</span>
-      <el-button :disabled="!outdated.length" @click="selectAllOutdated">
+      <el-button
+        :icon="useRenderIcon(IconPlus)"
+        :disabled="!outdated.length"
+        @click="selectAllOutdated"
+      >
         选中所有落后主机
       </el-button>
-      <el-button :disabled="!selection.length" @click="clearSelection">
+      <el-button
+        :icon="useRenderIcon(IconDelete)"
+        :disabled="!selection.length"
+        @click="clearSelection"
+      >
         清空选择
       </el-button>
       <el-tooltip
@@ -276,19 +314,19 @@ async function onRollback() {
       <template #buttons>
         <el-button
           type="primary"
-          :icon="useRenderIcon(UploadIcon)"
+          :icon="useRenderIcon(IconUpload)"
           @click="openUploadDialog"
           >上传新版本</el-button
         >
         <el-button
-          :icon="useRenderIcon(RollbackIcon)"
+          :icon="useRenderIcon(IconRollback)"
           :disabled="!hasLatest"
           @click="onRollback"
           >回滚待分发</el-button
         >
         <el-button
           type="warning"
-          :icon="useRenderIcon(UpgradeIcon)"
+          :icon="useRenderIcon(IconUpgrade)"
           :disabled="!selection.length || !hasLatest"
           :loading="upgrading"
           @click="onUpgrade"
@@ -321,16 +359,13 @@ async function onRollback() {
           :data="pagedOutdated"
           :columns="dynamicColumns"
           :pagination="pagination"
-          :header-cell-style="{
-            background: 'var(--el-fill-color-light)',
-            color: 'var(--el-text-color-primary)'
-          }"
+          :header-cell-style="kkHeaderCellStyle"
           @select="onSelect"
           @select-all="onSelect"
         >
           <template #empty>
             <el-empty
-              class="min-h-200"
+              class="kk-empty"
               :image-size="60"
               :description="
                 !read

@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { computed, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { useRouter } from "vue-router";
-import { pctText, tsText } from "@/utils/kk";
+import { useRenderIcon } from "@/components/ReIcon/src/hooks";
+import { IconBack, IconDisk, IconMem, IconRefresh } from "@/utils/kkIcons";
+import { DISK_ALERT_PCT, pctText, syncReadout, tsText } from "@/utils/kk";
+import { readChartColors, useChartTheme } from "@/utils/kkChart";
 import {
   HOUR_OPTIONS,
   isBreach,
@@ -21,6 +24,7 @@ const {
   loading,
   pollFailed,
   read,
+  lastLoadedAt,
   emptyText,
   memInput,
   diskInput,
@@ -28,6 +32,10 @@ const {
   saveLimits,
   load
 } = useHostTrend();
+
+/** 图表配色（QR1121-W12）：运行时读 EP 变量注入 option，
+ *  暗色/主题切换经 useChartTheme 重读重绘（markLine 跟随 --kk-alert） */
+const colors = ref(readChartColors());
 
 /** 时间轴文案：6h/24h 精确到分，7d 精确到小时——格式化器建一次复用（FE-16） */
 const fmt = computed(() => {
@@ -65,7 +73,8 @@ const memChart = useTrendChart(() =>
         key: "mem_pct",
         lineName: "内存使用率",
         limit: memLimit.value,
-        fmt: fmt.value
+        fmt: fmt.value,
+        colors: colors.value
       })
     : null
 );
@@ -75,7 +84,8 @@ const diskChart = useTrendChart(() =>
         key: "disk_pct",
         lineName: "磁盘使用率（多挂载点最大）",
         limit: diskLimit.value,
-        fmt: fmt.value
+        fmt: fmt.value,
+        colors: colors.value
       })
     : null
 );
@@ -87,6 +97,12 @@ watch([series, memLimit, diskLimit, fmt], () => {
   diskChart.render();
 });
 
+useChartTheme(() => {
+  colors.value = readChartColors();
+  memChart.render();
+  diskChart.render();
+});
+
 /** 回详情页（趋势页是详情的下钻，来路锚点放页头） */
 function gotoDetail() {
   router.push({ name: "HostDetail", params: { pod: pod.value } });
@@ -94,15 +110,24 @@ function gotoDetail() {
 </script>
 
 <template>
-  <div class="kk-page">
+  <!-- 首屏遮罩与 welcome/detail/update 同口径（QR1121）：
+       此前 loading 只体现在刷新按钮与空态文案，首屏没有遮罩 -->
+  <div v-loading="loading" class="kk-page">
     <div class="kk-page__body">
       <!-- 页头：主机锚点 + 最新读数（越限给红点）+ 上限编辑 + 时间窗。
            上限编辑框的初始值是单机覆盖原值（未自定义 = 空），
-           磁盘的画线口径（覆盖 ?? 全局 85）由服务端算好放进 metrics 响应 -->
+           磁盘的画线口径（覆盖 ?? 全局 85）由服务端算好放进 metrics 响应。
+           结构对齐 monitor（QR1121）：单层 kk-band（fleet + actions），
+           不再 kk-toolbar 套 kk-band 两层 space-between -->
       <div class="bg-bg_color w-full pl-8 pr-8 pt-3 pb-3">
-        <div class="kk-toolbar">
-          <div class="kk-band">
-            <el-button link type="primary" @click="gotoDetail">
+        <div class="kk-band">
+          <div class="kk-band__fleet">
+            <el-button
+              link
+              type="primary"
+              :icon="useRenderIcon(IconBack)"
+              @click="gotoDetail"
+            >
               {{ pod || "未知主机" }}
             </el-button>
             <!-- 最新读数：一位小数 + %（QR1120-W13），tooltip 标注该点时刻——
@@ -113,6 +138,7 @@ function gotoDetail() {
               placement="bottom"
             >
               <span class="kk-band__readout">
+                <el-icon><component :is="useRenderIcon(IconMem)" /></el-icon>
                 <b>{{ pctText(latest?.mem_pct) }}</b>
                 内存
                 <span
@@ -128,6 +154,7 @@ function gotoDetail() {
               placement="bottom"
             >
               <span class="kk-band__readout">
+                <el-icon><component :is="useRenderIcon(IconDisk)" /></el-icon>
                 <b>{{ pctText(latest?.disk_pct) }}</b>
                 磁盘
                 <span
@@ -142,11 +169,7 @@ function gotoDetail() {
               placement="bottom"
             >
               <span class="kk-sync" :class="{ 'kk-sync--stale': pollFailed }">
-                {{
-                  pollFailed
-                    ? "自动刷新失败，图表可能已过期"
-                    : "每 30 秒自动刷新"
-                }}
+                {{ syncReadout(pollFailed, lastLoadedAt) }}
               </span>
             </el-tooltip>
           </div>
@@ -161,12 +184,13 @@ function gotoDetail() {
               style="width: 76px"
             />
             <span class="kk-sub">磁盘上限</span>
+            <!-- placeholder 的全局阈值与 DISK_ALERT_PCT 单一真相（QR1121） -->
             <el-input-number
               v-model="diskInput"
               :min="1"
               :max="100"
               :controls="false"
-              placeholder="全局 85"
+              :placeholder="`全局 ${DISK_ALERT_PCT}`"
               style="width: 76px"
             />
             <el-button type="primary" :loading="saving" @click="saveLimits">
@@ -180,7 +204,12 @@ function gotoDetail() {
                 :value="o.value"
               />
             </el-select>
-            <el-button :loading="loading" @click="load()">刷新</el-button>
+            <el-button
+              :icon="useRenderIcon(IconRefresh)"
+              :loading="loading"
+              @click="load()"
+              >刷新</el-button
+            >
           </div>
         </div>
       </div>
@@ -191,7 +220,10 @@ function gotoDetail() {
            空态区分「没读到」与「确实没有点」（QR-W16） -->
       <div class="trend-grid">
         <div class="bg-bg_color trend-card">
-          <div class="kk-h4">内存使用率 %</div>
+          <div class="kk-h4">
+            <el-icon><component :is="useRenderIcon(IconMem)" /></el-icon
+            >内存使用率 %
+          </div>
           <div v-if="!read || !series.length" class="trend-empty">
             {{ emptyText }}
           </div>
@@ -202,7 +234,10 @@ function gotoDetail() {
           />
         </div>
         <div class="bg-bg_color trend-card">
-          <div class="kk-h4">磁盘使用率 %（多挂载点取最大）</div>
+          <div class="kk-h4">
+            <el-icon><component :is="useRenderIcon(IconDisk)" /></el-icon
+            >磁盘使用率 %（多挂载点取最大）
+          </div>
           <div v-if="!read || !series.length" class="trend-empty">
             {{ emptyText }}
           </div>
@@ -218,13 +253,25 @@ function gotoDetail() {
 </template>
 
 <style scoped lang="scss">
-/* 双图栅格：宽屏并排各半，窄屏折上下 */
+/* 矮视口兜底（QR1121）：图高有下限后，内容超出固定页高时走 body 滚动，
+   而不是把图压扁；页头横带 flex-shrink:0 不被压缩（与 kk-main 横带同口径） */
+.kk-page__body {
+  overflow: auto;
+}
+
+.kk-page__body > .bg-bg_color {
+  flex-shrink: 0;
+}
+
+/* 双图栅格：宽屏并排各半，窄屏折上下。
+   min-height 是单图下限（220 图 + 标题 + 内边距 ≈ 264）：
+   窄屏折单列后两图各占一行，下限翻倍 + 行距，矮视口由 body 滚动兜底 */
 .trend-grid {
   display: grid;
   flex: 1;
   grid-template-columns: 1fr 1fr;
   gap: var(--kk-space-lg);
-  min-height: 0;
+  min-height: 264px;
   margin-top: var(--kk-space-md);
 }
 
@@ -239,7 +286,7 @@ function gotoDetail() {
 
 .trend-chart {
   flex: 1;
-  min-height: 0;
+  min-height: 220px;
 }
 
 .trend-empty {
@@ -254,6 +301,7 @@ function gotoDetail() {
 @media (width <= 1200px) {
   .trend-grid {
     grid-template-columns: 1fr;
+    min-height: 544px;
   }
 }
 </style>

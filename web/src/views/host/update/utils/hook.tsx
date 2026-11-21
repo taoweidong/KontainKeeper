@@ -1,5 +1,5 @@
 import { computed, h, onMounted, reactive, ref, watch } from "vue";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { ElMessageBox } from "element-plus";
 import type { PaginationProps } from "@pureadmin/table";
 import { message } from "@/utils/message";
@@ -13,12 +13,13 @@ import {
 } from "@/api/agent";
 import {
   ageText,
+  cmdStateClass,
   errText,
   hostStateClass,
   hostStateText,
   mergeHostRows,
+  nowSec,
   statusLabel,
-  statusType,
   tsText,
   upgradeSkipText
 } from "@/utils/kk";
@@ -55,33 +56,22 @@ import { usePolls, useSeq } from "@/utils/kkPoll";
  * 三档都比色块更可扫读；`kk-warn` 不在这里出现——它专指「版本号落后于待分发版本」，
  * 那个语义给「当前版本」列的文字色用（见下）。
  */
-/**
- * 台账状态列的严重度分档：**逐档照搬 `@/utils/kk` 的 `statusType` 返回值**
- * （与 command/components/utils/hook.tsx 同一张映射表，L1-5 评审锁死的口径）：
- *
- * | statusType | 台账状态值 | 圆点 |
- * |---|---|---|
- * | `danger` | failed / timeout | 红点 + 红字 |
- * | `warning` / `primary` | （台账词表今天不产生 sent/running，映射保留防后端扩档） | 琥珀点 |
- * | `success` | done | 默认实心绿点（返回基类，不加变体） |
- * | `info` | pending / queued / 未知 | 空心点 |
- *
- * 不许折叠成「绿/红」两档：`queued`（已排队，重连即升）与 `pending`、`failed` 的
- * 运维动作完全不同，圆点必须分得开。
- */
-const ledgerStateClass = (s: string): string => {
-  switch (statusType(s)) {
-    case "danger":
-      return "kk-state kk-state--bad kk-bad";
-    case "warning":
-    case "primary":
-      return "kk-state kk-state--warn";
-    case "success":
-      return "kk-state";
-    default:
-      return "kk-state kk-state--idle";
-  }
-};
+// 台账状态判级收口到 @/utils/kk 的 cmdStateClass（QR1121-W2，与命令历史同一张
+// 映射表，L1-5 评审锁死的口径）：danger 红点红字 / warning+primary 琥珀 /
+// success 绿 / 其余空心。不许折叠成「绿/红」两档：queued（已排队，重连即升）
+// 与 pending、failed 的运维动作完全不同，圆点必须分得开。
+
+/** 升级汇总读数（QR1121-W13）：UpdatesResult.summary 取回后此前从未渲染。
+ *  按生命周期固定序（待下发→已排队→已完成→失败→超时）过滤有值键——
+ *  比按数字大小排序更合扫读直觉；0 值键不渲染（没发生的事不占版面）。
+ *  纯函数导出供单测直接驱动。 */
+export function summaryRows(
+  summary: Record<string, number>
+): Array<{ status: string; count: number }> {
+  return ["pending", "queued", "done", "failed", "timeout"]
+    .filter(s => Number(summary[s]) > 0)
+    .map(s => ({ status: s, count: Number(summary[s]) }));
+}
 
 /**
  * 表格实例（按结构收窄；pure-table 暴露 getTableRef 拿内层 el-table）。
@@ -102,12 +92,17 @@ type UpdateTableApi = {
 
 export function useHostUpdate() {
   const route = useRoute();
+  const router = useRouter();
   const POLL_KEY = "host-update";
 
   const loading = ref(false);
   const current = ref<AgentCurrent | null>(null);
   const outdated = ref<HostSummary[]>([]);
   const updates = ref<UpdateRow[]>([]);
+  /** 台账状态汇总（QR1121-W13）：台账失败时置 {}，读数区不渲染而不是补 0 */
+  const updatesSummary = ref<Record<string, number>>({});
+  /** 最近一次成功加载时刻：页头新鲜度读数走 syncReadout 统一口径（QR1121-W8） */
+  const lastLoadedAt = ref(0);
   const interval = ref(10);
   const selection = ref<HostSummary[]>([]);
   const upgrading = ref(false);
@@ -189,8 +184,23 @@ export function useHostUpdate() {
       /** row-key=pod 下的跨页勾选保留：分几页勾完再批量下发的老路径不断 */
       reserveSelection: true
     },
-    // 主机名是扫读基准线，左对齐（居中会让每行起点漂移）
-    { label: "主机", prop: "pod", minWidth: 180, align: "left" },
+    // 主机名是扫读基准线，左对齐（居中会让每行起点漂移）。
+    // 下钻入口与 monitor 对齐（QR1121）：此前纯文本，升级页看不到主机详情
+    {
+      label: "主机",
+      prop: "pod",
+      minWidth: 180,
+      align: "left",
+      cellRenderer: ({ row }) => (
+        <el-link
+          type="primary"
+          class="kk-num"
+          onClick={() => gotoDetail(row.pod)}
+        >
+          {row.pod}
+        </el-link>
+      )
+    },
     {
       label: "当前版本",
       width: 120,
@@ -251,9 +261,7 @@ export function useHostUpdate() {
       label: "状态",
       width: 100,
       cellRenderer: ({ row }) => (
-        <span class={ledgerStateClass(row.status)}>
-          {statusLabel(row.status)}
-        </span>
+        <span class={cmdStateClass(row.status)}>{statusLabel(row.status)}</span>
       )
     },
     {
@@ -301,8 +309,10 @@ export function useHostUpdate() {
         hosts.items.filter(h => h.agent_outdated)
       );
       updates.value = upds.items;
+      updatesSummary.value = upds.summary || {};
       read.value = true;
       ledgerRead.value = !missLedger;
+      lastLoadedAt.value = nowSec();
       // 前端分页的 total 跟着清单长度走；升完功的行离开清单后当前页可能越界
       pagination.total = outdated.value.length;
       clampPage();
@@ -521,6 +531,11 @@ export function useHostUpdate() {
     tableRef.value?.getTableRef?.().clearSelection(); // 模型与表格勾选态同步（含跨页残留）
   }
 
+  /** 主机列下钻详情（QR1121）：与 monitor 的主机链接同一条路径 */
+  function gotoDetail(pod: string) {
+    router.push({ name: "HostDetail", params: { pod } });
+  }
+
   /** 离线台数：横幅的「含离线主机」提示与升级确认共用一个口径 */
   const offlineSelected = computed(
     () => selection.value.filter(h => !h.online).length
@@ -548,6 +563,8 @@ export function useHostUpdate() {
     outdated,
     pagedOutdated,
     updates,
+    updatesSummary,
+    lastLoadedAt,
     interval,
     selection,
     offlineSelected,
@@ -566,6 +583,7 @@ export function useHostUpdate() {
     onUpgrade,
     showSkipped,
     selectAllOutdated,
-    clearSelection
+    clearSelection,
+    gotoDetail
   };
 }
