@@ -18,7 +18,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 
-from .deps import CurrentUser, HostFilters, current_user
+from .deps import AdminUser, CurrentUser, HostFilters, current_user
 from ..models.helpers import clamp
 from ..models.store import DISK_ALERT_PCT
 
@@ -146,6 +146,21 @@ async def export_audit(request: Request, user: CurrentUser, actor: str = "",
                     r.get("action"), r.get("detail")])
     return _csv_response(["id", "ts", "actor", "action", "detail"],
                          out, "审计日志_%s.csv" % time.strftime("%Y%m%d-%H%M%S"))
+
+
+@router.get("/ip-rejects")
+async def export_ip_rejects(request: Request, user: AdminUser, ip: str = "",
+                            limit: int = 5000):
+    """QR1124：拦截记录导出（按 IP 聚合，与列表同筛选语义；管理员可见）。"""
+    store = request.app.state.store
+    limit = _limit(limit)
+    rows = await store.list_ip_rejects(limit=limit, ip=ip or None)
+    await store.add_audit(user, "export",
+                          {"kind": "ip_rejects", "rows": len(rows), "ip": ip})
+    out = [[r.get("ip"), r.get("hits"), r.get("pod"), r.get("kind"),
+            _ts(r.get("first_seen")), _ts(r.get("last_seen"))] for r in rows]
+    return _csv_response(["ip", "hits", "pod", "kind", "first_seen", "last_seen"],
+                         out, "拦截记录_%s.csv" % time.strftime("%Y%m%d-%H%M%S"))
 
 
 @router.get("/hosts")

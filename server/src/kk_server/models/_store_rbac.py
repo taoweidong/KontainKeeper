@@ -47,6 +47,10 @@ _BUILTIN_MENUS = [
     ("SysUser", "Rbac", "用户管理", "", 1, "/rbac/users", f"{_V}/system/user/index.vue", 1),
     ("SysRole", "Rbac", "角色管理", "", 2, "/rbac/roles", f"{_V}/system/role/index.vue", 1),
     ("SysMenu", "Rbac", "菜单管理", "", 3, "/rbac/menus", f"{_V}/system/menu/index.vue", 1),
+    # QR1124：动态 IP 白名单管理 + 拦截记录（挂 Rbac 子树 → admin only，
+    # operator 经 _OPERATOR_MENUS 自动排除，零授权改动；leaf icon 空串随现有 convention）
+    ("SysIpWhitelist", "Rbac", "IP 白名单", "", 4, "/rbac/ip-whitelist", f"{_V}/system/ipwhitelist/index.vue", 1),
+    ("IpRejects", "Rbac", "拦截记录", "", 5, "/rbac/ip-rejects", f"{_V}/system/iprejects/index.vue", 1),
 ]
 
 _BUILTIN_ROLES = [

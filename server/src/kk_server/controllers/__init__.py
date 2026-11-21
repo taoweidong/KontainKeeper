@@ -1,6 +1,6 @@
 """控制器路由注册：REST /api/*。Agent 通道走 MQTT Broker，不再有 WS 端点。"""
 from . import (agent_update, audit, auth, commands, containers, exporting,
-               health, rbac, stats)
+               health, ipwhitelist, rbac, stats)
 
 
 def register(app):
@@ -12,5 +12,6 @@ def register(app):
     app.include_router(audit.router)
     app.include_router(stats.router)
     app.include_router(rbac.router)
+    app.include_router(ipwhitelist.router)
     app.include_router(agent_update.router)
     app.include_router(agent_update.agent_router)
