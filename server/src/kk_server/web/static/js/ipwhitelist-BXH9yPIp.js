@@ -1,0 +1,1 @@
+import{aJ as t}from"./index-B7N0Qlm-.js";const p=()=>t.request("get","/api/system/ip-whitelist"),a=e=>t.request("post","/api/system/ip-whitelist",{data:e}),l=(e,s)=>t.request("put",`/api/system/ip-whitelist/${e}`,{data:s}),u=e=>t.request("delete",`/api/system/ip-whitelist/${e}`),r=e=>t.request("get","/api/ip-rejects",{params:e});export{p as a,a as c,u as d,r as l,l as u};

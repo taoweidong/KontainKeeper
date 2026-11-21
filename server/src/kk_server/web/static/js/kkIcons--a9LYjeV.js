@@ -1,1 +1,0 @@
-import{m as n,w as o,v as a,t as c,p as I,s as e,o as t,n as r,R as m,N as i,O as C,P as p}from"./hooks-DlqJ4Yzx.js";const E={metal:p,vm:C,container:i},_={cpu:r,mem:t,disk:e,disk_io:I,net:c,proc:a,user:o,sys:n};function N(s){return typeof s=="string"&&!s.includes(":")&&m.has(s)}export{_ as C,E as H,N as m};
