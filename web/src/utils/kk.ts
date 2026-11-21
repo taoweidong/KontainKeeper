@@ -274,7 +274,10 @@ function sameDisplay(a: Record<string, any>, b: Record<string, any>): boolean {
 
 /** 全选 = 并集（QR1120-W19）：筛选外的已选（如勾了离线机后开「仅在线」）
  *  不被候选集整体覆盖。HostPicker 的全选按钮走这里。 */
-export function unionSelection(draft: string[], candidates: string[]): string[] {
+export function unionSelection(
+  draft: string[],
+  candidates: string[]
+): string[] {
   return [...new Set([...draft, ...candidates])];
 }
 
@@ -291,3 +294,131 @@ export function invertSelection(
   for (const p of cand) if (!picked.has(p)) next.add(p);
   return [...next];
 }
+
+/** 命令/台账状态 → 圆点类名（QR1121-W2，逐字搬自命令历史 hook 的
+ *  statusStateClass，welcome/detail/统计/更新台账共用同一份判级）。
+ *
+ * 状态列的严重度判级：**逐档照搬 `statusType` 返回值**（五档 el-tag
+ * type 映射到本仓四档圆点），语义一条不许丢——这是 L1-5 评审揪出的那类回归：
+ * `.kk-state::before` 默认圆点是 `var(--kk-live)`（绿 = 在线/健康），只改文字色的
+ * `.kk-bad` 不动圆点，于是 `failed`/`timeout`/`lost` 会顶着绿色健康点说「一切正常」。
+ *
+ * | statusType | 状态值 | 圆点 |
+ * |---|---|---|
+ * | `danger` | failed / timeout / lost | 红点 + 红字（`--bad` 上色圆点，`kk-bad` 上色文字） |
+ * | `warning` | sent | 琥珀点（已下发等结果） |
+ * | `primary` | running | 琥珀点（与 sent 同档，见下） |
+ * | `success` | done | 默认实心绿点（返回基类，不加变体） |
+ * | `info` | pending / queued / 未知 | 空心点（未开始，不是错误也不是健康） |
+ *
+ * `primary`（running）与 `warning`（sent）并进同一档琥珀点，是本仓状态语言的取舍：
+ * `kk.scss` 的四档词汇（绿/红/琥珀/空心）里没有蓝色圆点，而 `running` 与 `sent` 的
+ * 严重度本来就相同——都是「未终态、等结果」，也正是 `hasActive` 与 3s 快轮询要一起
+ * 捞的那一档；两者的**文字**仍由 `statusLabel` 分别给出「执行中 / 已下发」，finer 区分
+ * 没有丢。另两条禁区：`kk-warn` 在本仓专指「Agent 版本落后于待分发版本」，`kk-state--updating`
+ * 是方点、承载 B6「更新中」语义——都不许挪用去表达命令严重度。
+ */
+export function cmdStateClass(s: string): string {
+  switch (statusType(s)) {
+    case "danger":
+      return "kk-state kk-state--bad kk-bad";
+    case "warning":
+    case "primary":
+      return "kk-state kk-state--warn";
+    case "success":
+      return "kk-state";
+    default:
+      return "kk-state kk-state--idle";
+  }
+}
+
+/** 轮询页新鲜度读数统一口径（QR1121-W8）：monitor 的「已同步 · 时刻」信息量
+ *  最高，detail/trend/update 原先显静态「每 N 秒自动刷新」——刷新失败时用户
+ *  看不出数据已过期。三态：失败变冷文案 / 尚未同步 / 已同步 · 时刻。 */
+export function syncReadout(failed: boolean, lastLoadedAt: number): string {
+  if (failed) return "刷新失败，数据可能已过期";
+  if (!lastLoadedAt) return "尚未同步";
+  return `已同步 · ${tsText(lastLoadedAt)}`;
+}
+
+/** 采集项中文（QR1121-W3）：键集与服务端 COLLECT_ITEMS 白名单同口径
+ *  （config.py），未知项原样回显——后端加新项前端不崩也不编文案。 */
+export const COLLECT_ITEM_LABEL: Record<string, string> = {
+  cpu: "CPU",
+  mem: "内存",
+  disk: "磁盘",
+  disk_io: "磁盘 IO",
+  net: "网卡",
+  proc: "进程",
+  user: "登录用户",
+  sys: "系统信息"
+};
+
+export const collectItemText = (item: string): string =>
+  COLLECT_ITEM_LABEL[item] || item;
+
+/** 审计动作中文（QR1121-W4）：键集穷举后端 store.add_audit 的实际动作
+ *  （auth/commands/agent_update/exporting/rbac/containers/mqtt_bridge），
+ *  未知动作原样回显以便排障。**只管文字，不碰判级**——严重度仍走
+ *  audit hook 的 actionStateClass(raw) 四档，映射命中与否不影响圆点颜色。 */
+export const AUDIT_ACTION_LABEL: Record<string, string> = {
+  login_ok: "登录成功",
+  login_fail: "登录失败",
+  login_locked: "登录锁定",
+  login_disabled: "禁用账号登录",
+  logout: "登出",
+  command_create: "下发命令",
+  command_blocked: "命令拦截",
+  export: "导出",
+  agent_upload: "上传 Agent",
+  agent_rollback: "回滚 Agent",
+  agent_prev_lost: "旧版二进制丢失",
+  agent_upgrade_batch: "批量升级",
+  agent_update_failed: "升级失败",
+  agent_binary_download: "下载 Agent",
+  user_create: "新增用户",
+  user_update: "修改用户",
+  user_delete: "删除用户",
+  role_create: "新增角色",
+  role_update: "修改角色",
+  role_delete: "删除角色",
+  menu_update: "修改菜单",
+  host_limits_set: "设置主机上限",
+  ip_rejected: "IP 白名单拒绝",
+  proto_mismatch: "协议版本不匹配",
+  host_mismatch: "主机身份不匹配",
+  hb_unknown_host: "未知主机心跳",
+  interval_violation: "心跳间隔违规",
+  result_unknown_cmd: "未知命令结果",
+  result_mismatch: "结果归属不匹配",
+  update_result_mismatch: "升级结果不匹配"
+};
+
+export const auditActionText = (action: string): string =>
+  AUDIT_ACTION_LABEL[action] || action;
+
+/** 命令类型中文（QR1121-W19）：收编 welcome 内联 kindLabel，
+ *  命令历史/详情/首页共用一份。未知类型原样回显。 */
+export const kindText = (kind: string): string =>
+  ({ shell: "命令", collect: "采集", plugin_reload: "插件重载" })[kind] || kind;
+
+/** 审计明细长值截断（QR1121-W16）：>120 字符截断加 …，full 留完整值供
+ *  tooltip 展开。字符串化口径与明细列原渲染逐字一致
+ *  （typeof v === "object" ? JSON.stringify(v) : String(v)），
+ *  短值的 text === full，渲染路径不变（QR1120-W26 结构锁）。 */
+export function detailValueText(v: unknown): {
+  text: string;
+  full: string;
+  truncated: boolean;
+} {
+  const full = typeof v === "object" ? JSON.stringify(v) : String(v);
+  const truncated = full.length > 120;
+  return { text: truncated ? full.slice(0, 120) + "…" : full, full, truncated };
+}
+
+/** 表头单元格样式（QR1121）：monitor/update 曾各内联一份同样的对象，
+ *  收口为常量。颜色走 EP 变量，light/dark 与主题预设天然适配。 */
+export const kkHeaderCellStyle: Readonly<Record<string, string>> = {
+  background: "var(--el-fill-color-light)",
+  color: "var(--el-text-color-primary)"
+};

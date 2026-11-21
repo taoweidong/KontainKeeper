@@ -8,14 +8,20 @@ import { describe, expect, it } from "vitest";
 import {
   ageText,
   argvText,
+  auditActionText,
+  cmdStateClass,
+  collectItemText,
+  detailValueText,
   durText,
   elapsedText,
   errText,
+  kindText,
   mbText,
   nOr,
   numText,
   statusLabel,
   statusType,
+  syncReadout,
   tsText,
   upgradeSkipText
 } from "./kk";
@@ -180,21 +186,23 @@ import {
 import type { HostSummary } from "@/api/containers";
 
 const host = (over: Record<string, unknown> = {}): HostSummary =>
-  ({ online: true, status_reason: "", ...over } as HostSummary);
+  ({ online: true, status_reason: "", ...over }) as HostSummary;
 
 describe("hostStateClass/hostStateText：B6 的 updating 方点不能丢", () => {
   it("在线 = 默认实心绿点；自更新窗口 = 方点变体 + 「更新中」；其余离线 = 空心「离线」", () => {
     expect(hostStateClass(host())).toBe("kk-state");
     expect(hostStateText(host())).toBe("在线");
 
-    expect(hostStateClass(host({ online: false, status_reason: "updating" }))).toBe(
-      "kk-state kk-state--updating"
-    );
-    expect(hostStateText(host({ online: false, status_reason: "updating" }))).toBe(
-      "更新中"
-    );
+    expect(
+      hostStateClass(host({ online: false, status_reason: "updating" }))
+    ).toBe("kk-state kk-state--updating");
+    expect(
+      hostStateText(host({ online: false, status_reason: "updating" }))
+    ).toBe("更新中");
 
-    expect(hostStateClass(host({ online: false }))).toBe("kk-state kk-state--idle");
+    expect(hostStateClass(host({ online: false }))).toBe(
+      "kk-state kk-state--idle"
+    );
     expect(hostStateText(host({ online: false }))).toBe("离线");
     expect(hostStateText(host({ online: false, status_reason: "weird" }))).toBe(
       "离线"
@@ -238,7 +246,7 @@ describe("fillPct：计量条 0–100 钳制（QR29-W5 / QR1120-W15）", () => {
 });
 
 describe("pctText：百分比读数统一带 %（QR1120-W14）", () => {
-  it("有限值带 %，没读到仍是 -（不渲染 \"-%\"）", () => {
+  it('有限值带 %，没读到仍是 -（不渲染 "-%"）', () => {
     expect(pctText(33.45)).toBe("33.5%");
     expect(pctText(0)).toBe("0.0%"); // 读到 0 是真值
     expect(pctText(87, 0)).toBe("87%");
@@ -313,5 +321,118 @@ describe("unionSelection / invertSelection：选择集语义", () => {
     expect(invertSelection([], ["a", "b"])).toEqual(["a", "b"]);
     expect(invertSelection(["a", "b"], ["a", "b"])).toEqual([]);
     expect(invertSelection(["off1"], [])).toEqual(["off1"]);
+  });
+});
+
+// ---- QR1121：全站词汇统一收口到 kk.ts 的共享映射 ----
+
+describe("cmdStateClass：命令状态四档圆点（QR1121-W2）", () => {
+  it("逐档对账命令历史旧表：danger 红点红字 / warning+primary 琥珀 / success 绿 / 其余空心", () => {
+    // 与 views/command/components/utils/hook.tsx 原 statusStateClass 逐字一致，
+    // 提取共享后类名不许漂移（welcome/detail/统计/更新台账共用这份判级）
+    expect(cmdStateClass("failed")).toBe("kk-state kk-state--bad kk-bad");
+    expect(cmdStateClass("timeout")).toBe("kk-state kk-state--bad kk-bad");
+    expect(cmdStateClass("lost")).toBe("kk-state kk-state--bad kk-bad");
+    expect(cmdStateClass("sent")).toBe("kk-state kk-state--warn");
+    expect(cmdStateClass("running")).toBe("kk-state kk-state--warn");
+    expect(cmdStateClass("done")).toBe("kk-state");
+    expect(cmdStateClass("pending")).toBe("kk-state kk-state--idle");
+    expect(cmdStateClass("queued")).toBe("kk-state kk-state--idle");
+    expect(cmdStateClass("未知状态")).toBe("kk-state kk-state--idle");
+  });
+
+  it("与 statusType 五档逐档联动（判级唯一真相仍是 statusType）", () => {
+    for (const s of [
+      "done",
+      "failed",
+      "timeout",
+      "lost",
+      "running",
+      "sent",
+      "pending",
+      "queued"
+    ]) {
+      const t = statusType(s);
+      const expected =
+        t === "danger"
+          ? "kk-state kk-state--bad kk-bad"
+          : t === "warning" || t === "primary"
+            ? "kk-state kk-state--warn"
+            : t === "success"
+              ? "kk-state"
+              : "kk-state kk-state--idle";
+      expect(cmdStateClass(s)).toBe(expected);
+    }
+  });
+});
+
+describe("syncReadout：轮询新鲜度三态（QR1121-W8）", () => {
+  it("失败变冷文案优先于一切（数据可能已过期必须说出来）", () => {
+    expect(syncReadout(true, 0)).toBe("刷新失败，数据可能已过期");
+    expect(syncReadout(true, 1690000000)).toBe("刷新失败，数据可能已过期");
+  });
+
+  it("尚未同步 / 已同步 · 时刻", () => {
+    expect(syncReadout(false, 0)).toBe("尚未同步");
+    const t = syncReadout(false, 1690000000);
+    expect(t.startsWith("已同步 · ")).toBe(true);
+    expect(t).toContain(tsText(1690000000));
+  });
+});
+
+describe("collectItemText：采集项中文（QR1121-W3）", () => {
+  it("白名单八项有中文，未知项原串兜底（后端加新项不编文案）", () => {
+    expect(collectItemText("cpu")).toBe("CPU");
+    expect(collectItemText("mem")).toBe("内存");
+    expect(collectItemText("disk")).toBe("磁盘");
+    expect(collectItemText("disk_io")).toBe("磁盘 IO");
+    expect(collectItemText("net")).toBe("网卡");
+    expect(collectItemText("proc")).toBe("进程");
+    expect(collectItemText("user")).toBe("登录用户");
+    expect(collectItemText("sys")).toBe("系统信息");
+    expect(collectItemText("gpu")).toBe("gpu");
+  });
+});
+
+describe("auditActionText：审计动作中文（QR1121-W4）", () => {
+  it("已知动作映射中文，未知原样回显；只管文字不碰判级", () => {
+    expect(auditActionText("login_ok")).toBe("登录成功");
+    expect(auditActionText("login_locked")).toBe("登录锁定");
+    expect(auditActionText("command_blocked")).toBe("命令拦截");
+    expect(auditActionText("agent_upgrade_batch")).toBe("批量升级");
+    expect(auditActionText("ip_rejected")).toBe("IP 白名单拒绝");
+    expect(auditActionText("some_new_action")).toBe("some_new_action");
+  });
+});
+
+describe("kindText：命令类型中文（QR1121-W19）", () => {
+  it("收编 welcome 内联 kindLabel，三键 + 兜底", () => {
+    expect(kindText("shell")).toBe("命令");
+    expect(kindText("collect")).toBe("采集");
+    expect(kindText("plugin_reload")).toBe("插件重载");
+    expect(kindText("future_kind")).toBe("future_kind");
+  });
+});
+
+describe("detailValueText：审计明细长值截断（QR1121-W16）", () => {
+  it("短值 text === full 不截断（W26 短值渲染结构锁的前提）", () => {
+    const r = detailValueText("shell");
+    expect(r).toEqual({ text: "shell", full: "shell", truncated: false });
+  });
+
+  it("字符串化口径与原渲染逐字一致：对象 JSON 化", () => {
+    const r = detailValueText({ a: 1 });
+    expect(r.full).toBe('{"a":1}');
+    expect(r.truncated).toBe(false);
+  });
+
+  it(">120 字符截断加 …，full 留完整值供 tooltip", () => {
+    const long = "x".repeat(121);
+    const r = detailValueText(long);
+    expect(r.truncated).toBe(true);
+    expect(r.text).toBe("x".repeat(120) + "…");
+    expect(r.full).toBe(long);
+    // 恰好 120 不截断（阈值是 >120）
+    expect(detailValueText("x".repeat(120)).truncated).toBe(false);
   });
 });

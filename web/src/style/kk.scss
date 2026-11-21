@@ -43,6 +43,12 @@
   --kk-font-num:
     ui-monospace, sfmono-regular, menlo, consolas, "liberation mono", monospace;
 
+  /* 统计卡大数字尺度（QR1121）：welcome 统计卡原先硬编码 30px，与仪表带
+     读数 16px 是两套无承载的尺度。收口为唯一刻度 24px——比仪表带大一档
+     撑得起首页主角，又不至于压过卡片标题。版本字符串不走这档（见 welcome
+     的 stat-value--ver 变体，长版本号要 ellipsis）。 */
+  --kk-font-stat: 24px;
+
   /* 四档状态。饱和色只留给「告警」与「待升级」，所以它们真的刺眼；
      在线用绿、离线用空心冷灰——离线不是错误，是一种运维场景。 */
   --kk-live: var(--el-color-success);
@@ -260,6 +266,20 @@
   justify-content: space-between;
 }
 
+/* 工具行里的小节标题（QR1121）：kk-h4 自带的块级下间距在 flex 行内
+   会把标题顶偏，行内场景清掉（块级场景仍由 kk-h4 本体供给） */
+.kk-toolbar .kk-h4 {
+  margin-bottom: 0;
+}
+
+/* 页头读数条（kk-stat）里的类别图标（QR1121）：与标题图标同口径 */
+.kk-stat .el-icon {
+  margin-right: var(--kk-space-sm);
+  font-size: 14px;
+  color: var(--el-text-color-secondary);
+  vertical-align: -2px;
+}
+
 .kk-actions {
   display: flex;
   flex-wrap: wrap;
@@ -297,6 +317,28 @@
   color: var(--el-text-color-primary);
 }
 
+/* 标题/读数里的图标（QR1121）：只做类别标记，14px 单色次级灰，不抢数字主角；
+   严重度仍由圆点四档承载，图标不着饱和色。 */
+.kk-h4 > .el-icon {
+  margin-right: var(--kk-space-sm);
+  font-size: 14px;
+  color: var(--el-text-color-secondary);
+  vertical-align: -2px;
+}
+
+.kk-band__readout > .el-icon {
+  font-size: 14px;
+  color: var(--el-text-color-secondary);
+}
+
+/* 表格行内类别图标（monitor 类型列等，QR1121）：与标题图标同口径 */
+.kk-type-icon {
+  margin-right: var(--kk-space-sm);
+  font-size: 14px;
+  color: var(--el-text-color-secondary);
+  vertical-align: -2px;
+}
+
 /* 详情页：描述列表与图表。分隔全部交给后一块的上间距，避免相邻块各写
    一半导致 8+16=24 这种拍脑袋值。 */
 .kk-desc {
@@ -329,11 +371,20 @@
   color: var(--el-color-danger) !important;
 }
 
-/* 命令中心：输出查看框 */
+/* 空态容器最小高（QR1121）：替代三页复制的 `min-h-200` 笔误——Tailwind v4
+   下它是 200×0.25rem = 800px，1366×768 表体可视约 467px 时空态比表体还高，
+   会在表内产生滚动/顶满。本意是 200px，收口为类。 */
+.kk-empty {
+  min-height: 200px;
+}
+
+/* 命令中心：输出查看框。间距与字体栈收口（QR1121）：原 padding 10px 不在
+   四档尺度内；Consolas/Monaco 栈与全站读数栈 --kk-font-num 在离线 Linux
+   部署落点不同，统一走公共等宽栈。 */
 .kk-out {
-  padding: 10px;
+  padding: var(--kk-space);
   margin: 0;
-  font-family: Consolas, Monaco, monospace;
+  font-family: var(--kk-font-num);
   font-size: 12px;
   line-height: 1.6;
   word-break: break-all;
@@ -361,7 +412,7 @@
  * 空心 = 离线（含自更新窗口），实心 = 在线；更新中给方点，与 B6 的 status_reason 对齐。 */
 .kk-state {
   display: inline-flex;
-  gap: 6px;
+  gap: var(--kk-space-sm);
   align-items: center;
   font-size: 12px;
   color: var(--el-text-color-regular);
@@ -453,8 +504,11 @@
   background: var(--kk-live);
 }
 
+/* 「尚可」档用中性灰而非 --kk-idle（QR1121）：disabled 灰看起来像「禁用」，
+   与 low 档琥珀的语义梯度不顺；secondary 是「降级但仍可读」的中性档。
+   类名不变（tickState 的 cls 字符串有测试锁），只改 CSS。 */
 .kk-ticks--mid i.on {
-  background: var(--kk-idle);
+  background: var(--el-text-color-secondary);
 }
 
 .kk-ticks--low i.on {
@@ -467,7 +521,7 @@
 .kk-band {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px 24px;
+  gap: var(--kk-space-md) var(--kk-space-lg);
   align-items: center;
   justify-content: space-between;
 }
@@ -529,7 +583,7 @@
  * 后端真的宕了时噪音会把有意义的错误淹掉，所以状态进页头、toast 只留给手动刷新。 */
 .kk-sync {
   display: inline-flex;
-  gap: 5px;
+  gap: var(--kk-space-sm);
   align-items: center;
   font-size: 12px;
   color: var(--el-text-color-secondary);

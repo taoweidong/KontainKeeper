@@ -1,12 +1,15 @@
 import { defineConfig } from "vitest/config";
 import vue from "@vitejs/plugin-vue";
 import vueJsx from "@vitejs/plugin-vue-jsx";
+import Icons from "unplugin-icons/vite";
 import { fileURLToPath, URL } from "node:url";
 
 export default defineConfig({
   // 业务代码里的 JSX/TSX（如 `views/audit/utils/hook.tsx`）与 .vue 单测需要这两个插件，
   // 与 `build/plugins.ts` 的 `vue()` + `vueJsx()` 保持同一套解析规则。
-  plugins: [vue(), vueJsx()],
+  // Icons 与 build/plugins.ts 同参（QR1121）：业务页经 `@/utils/kkIcons` 导入
+  // `~icons/*` 编译期图标，缺这条插件会在收集阶段就报 "Failed to load ~icons/…"。
+  plugins: [vue(), vueJsx(), Icons({ compiler: "vue3", scale: 1 })],
   resolve: {
     // 与 vite.config.ts 的 `alias["@"]` 同尺：被测模块之间用 `@/` 互相引用，
     // 缺这条别名会在收集阶段就报 "Failed to load @/utils/http"。
@@ -31,7 +34,11 @@ export default defineConfig({
         "src/store/modules/**/*.ts",
         "src/views/**/utils/*.tsx"
       ],
-      exclude: ["src/**/*.spec.ts", "src/**/*.spec.tsx", "src/utils/http/types.ts"]
+      exclude: [
+        "src/**/*.spec.ts",
+        "src/**/*.spec.tsx",
+        "src/utils/http/types.ts"
+      ]
     },
     // 与 pnpm build 同尺：CI 的红灯必须能复现本地红灯
     reporters: "default"
