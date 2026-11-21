@@ -3,9 +3,8 @@ import { ref } from "vue";
 import { useAuditLog } from "./utils/hook";
 import { PureTableBar } from "@/components/RePureTableBar";
 import { useRenderIcon } from "@/components/ReIcon/src/hooks";
-import SearchIcon from "~icons/ri/search-line";
-import RefreshIcon from "~icons/ep/refresh";
-import DownloadIcon from "~icons/ep/download";
+import { IconDownload, IconRefresh, IconSearch } from "@/utils/kkIcons";
+import { AUDIT_ACTION_LABEL, kkHeaderCellStyle } from "@/utils/kk";
 
 defineOptions({ name: "AuditLog" });
 
@@ -16,6 +15,7 @@ const {
   dataList,
   loading,
   read,
+  hasFilter,
   exporting,
   pagination,
   onSearch,
@@ -23,6 +23,12 @@ const {
   onExport,
   resetFields
 } = useAuditLog();
+
+/** 动作筛选选项（QR1121-W14）：中文 + 原串，值下推原串（后端精确匹配） */
+const actionOptions = Object.entries(AUDIT_ACTION_LABEL).map(([value, zh]) => ({
+  value,
+  label: `${zh}（${value}）`
+}));
 
 function onSelectionChange(rows: any[]) {
   // 审计页无批量操作：保留回调仅为 PureTableBar 的 tableRef 契约稳定
@@ -45,17 +51,43 @@ function onSelectionChange(rows: any[]) {
           class="w-45!"
         />
       </el-form-item>
+      <!-- 操作者/动作独立筛选（QR1121-W14）：API 早已支持精确匹配下推，
+           此前只能靠关键字模糊匹配。操作者逐字输入走防抖，动作下拉立即归位。 -->
+      <el-form-item label="操作者：" prop="actor">
+        <el-input
+          v-model="form.actor"
+          placeholder="精确匹配"
+          clearable
+          class="w-32!"
+        />
+      </el-form-item>
+      <el-form-item label="动作：" prop="action">
+        <el-select
+          v-model="form.action"
+          placeholder="全部"
+          clearable
+          filterable
+          class="w-45!"
+        >
+          <el-option
+            v-for="o in actionOptions"
+            :key="o.value"
+            :label="o.label"
+            :value="o.value"
+          />
+        </el-select>
+      </el-form-item>
       <el-form-item>
         <!-- 搜索统一归第 1 页再查（QR1120-W33）：关键字防抖本就归位，点搜索却按当前页
              查是遗留的不一致——在第 5 页点搜索会「查不到刚输的关键字」。归位语义收在
              hook 的 reloadFirstPage，模板不自己拼 currentPage = 1。 -->
         <el-button
           type="primary"
-          :icon="useRenderIcon(SearchIcon)"
+          :icon="useRenderIcon(IconSearch)"
           @click="reloadFirstPage"
           >搜索</el-button
         >
-        <el-button :icon="useRenderIcon(RefreshIcon)" @click="resetFields"
+        <el-button :icon="useRenderIcon(IconRefresh)" @click="resetFields"
           >重置</el-button
         >
       </el-form-item>
@@ -73,7 +105,7 @@ function onSelectionChange(rows: any[]) {
       <template #buttons>
         <el-button
           type="primary"
-          :icon="useRenderIcon(DownloadIcon)"
+          :icon="useRenderIcon(IconDownload)"
           :loading="exporting"
           @click="onExport"
           >导出 CSV</el-button
@@ -101,20 +133,17 @@ function onSelectionChange(rows: any[]) {
           :data="dataList"
           :columns="dynamicColumns"
           :pagination="pagination"
-          :header-cell-style="{
-            background: 'var(--el-fill-color-light)',
-            color: 'var(--el-text-color-primary)'
-          }"
+          :header-cell-style="kkHeaderCellStyle"
           @selection-change="onSelectionChange"
           @page-current-change="() => onSearch()"
         >
           <template #empty>
             <el-empty
-              class="min-h-200"
+              class="kk-empty"
               :image-size="60"
               :description="
                 read
-                  ? form.keyword.trim()
+                  ? hasFilter
                     ? '该筛选条件下没有匹配记录'
                     : '暂无审计记录'
                   : '没读到（审计接口不可达）'

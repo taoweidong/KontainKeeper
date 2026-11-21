@@ -1,9 +1,23 @@
-import { onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import {
+  computed,
+  onBeforeUnmount,
+  onMounted,
+  reactive,
+  ref,
+  watch
+} from "vue";
 import type { PaginationProps } from "@pureadmin/table";
 import { message } from "@/utils/message";
 import { listAudit, parseDetail, type AuditRow } from "@/api/audit";
 import { exportAudit } from "@/api/exporting";
-import { downloadBlob, errText, fileStamp, tsText } from "@/utils/kk";
+import {
+  auditActionText,
+  detailValueText,
+  downloadBlob,
+  errText,
+  fileStamp,
+  tsText
+} from "@/utils/kk";
 import { useSeq } from "@/utils/kkPoll";
 
 /**
@@ -47,7 +61,9 @@ const actionStateClass = (a: string) => {
  * 不再单独持有原页面的 `limit`/`offset` 两个 ref（Task 6 裁决）。
  */
 export function useAuditLog() {
-  const form = reactive({ keyword: "" });
+  /** actor/action 独立筛选（QR1121-W14）：API 早已支持精确匹配下推
+   *  （store._audit_filters），此前只有关键字模糊匹配一条路。 */
+  const form = reactive({ keyword: "", actor: "", action: "" });
   const loading = ref(false);
   const exporting = ref(false);
   const dataList = ref<AuditRow[]>([]);
@@ -78,9 +94,20 @@ export function useAuditLog() {
     {
       label: "动作",
       width: 180,
-      cellRenderer: ({ row }) => (
-        <span class={actionStateClass(row.action)}>{row.action}</span>
-      )
+      cellRenderer: ({ row }) => {
+        // 中文映射只管文字，判级仍走 actionStateClass(raw) 四档（QR1121-W4）。
+        // 根节点必须是带 class 的 span（columns[3] 结构锁）：原串提示用 native
+        // title 而非 el-tooltip 包裹——包一层会把根节点换成 tooltip，锁就破了。
+        const label = auditActionText(row.action);
+        return (
+          <span
+            class={actionStateClass(row.action)}
+            title={label === row.action ? undefined : row.action}
+          >
+            {label}
+          </span>
+        );
+      }
     },
     {
       label: "明细",
@@ -88,17 +115,34 @@ export function useAuditLog() {
       align: "left",
       cellRenderer: ({ row }) => (
         <>
-          {Object.entries(detailOf(row)).map(([k, v]) => (
-            <span key={k} class="kk-kv">
-              <b>{k}</b>:{" "}
-              {typeof v === "object" ? JSON.stringify(v) : String(v)}
-            </span>
-          ))}
+          {Object.entries(detailOf(row)).map(([k, v]) => {
+            // 长值截断 + tooltip 展开（QR1121-W16）：短值渲染路径逐字不变
+            // （QR1120-W26 结构锁查 spans[i].children[0].children[0] 键名），
+            // 仅 truncated 时值节点包一层 tooltip，键名节点不动。
+            const d = detailValueText(v);
+            return (
+              <span key={k} class="kk-kv">
+                <b>{k}</b>:{" "}
+                {d.truncated ? (
+                  <el-tooltip content={d.full} placement="top">
+                    <span>{d.text}</span>
+                  </el-tooltip>
+                ) : (
+                  d.text
+                )}
+              </span>
+            );
+          })}
           {!row.detail && <span class="kk-sub">-</span>}
         </>
       )
     }
   ];
+
+  /** 任一筛选生效：空态要说「这个条件下没匹配」，不是「从来没记录」（QR-W16） */
+  const hasFilter = computed(
+    () => !!(form.keyword.trim() || form.actor.trim() || form.action)
+  );
 
   /** 明细一次性解析（QR1120-W26）：原先 cellRenderer 每次渲染都 JSON.parse，
    *  200 行 × 翻页/刷新/密度切换全是重复解析。改为 load 成功后整批预解析，
@@ -120,11 +164,14 @@ export function useAuditLog() {
     const isLatest = beginLoad();
     loading.value = true;
     try {
-      // 关键字下推后端（store._audit_filters），与导出共用同一套语义：所见即所得
+      // 关键字/操作者/动作下推后端（store._audit_filters），与导出共用同一套语义：
+      // 所见即所得。actor/action 是精确匹配（后端口径），空值下推 undefined
       const data = await listAudit({
         limit: pagination.pageSize,
         offset: (pagination.currentPage - 1) * pagination.pageSize,
-        keyword: form.keyword.trim() || undefined
+        keyword: form.keyword.trim() || undefined,
+        actor: form.actor.trim() || undefined,
+        action: form.action || undefined
       });
       if (!isLatest()) return;
       dataList.value = data.items;
@@ -154,14 +201,22 @@ export function useAuditLog() {
     onSearch();
   }
 
-  /** 关键字 300ms 防抖：输入停顿才打后端（原页行为保持） */
+  /** 关键字/操作者 300ms 防抖：输入停顿才打后端（原关键字行为保持，actor 同族）。
+   *  动作是下拉选择不是逐字输入，立即归位重载（QR1121-W15）。 */
   let kwTimer: ReturnType<typeof setTimeout> | null = null;
+  watch([() => form.keyword, () => form.actor], () => {
+    if (kwTimer) clearTimeout(kwTimer);
+    kwTimer = setTimeout(reloadFirstPage, 300);
+  });
+  /** resetting 闸：resetFields 同步清空三字段时压住 action 的立即重载，
+   *  由 resetFields 自己统一发一发（flush:sync 让闸在赋值期间有效）。 */
+  let resetting = false;
   watch(
-    () => form.keyword,
+    () => form.action,
     () => {
-      if (kwTimer) clearTimeout(kwTimer);
-      kwTimer = setTimeout(reloadFirstPage, 300);
-    }
+      if (!resetting) reloadFirstPage();
+    },
+    { flush: "sync" }
   );
   onBeforeUnmount(() => {
     if (kwTimer) clearTimeout(kwTimer);
@@ -176,9 +231,11 @@ export function useAuditLog() {
   async function onExport() {
     exporting.value = true;
     try {
-      // 导出带上当前关键字与条数：审计是追溯凭证，导出范围必须与页面所见一致
+      // 导出带上当前全部筛选与条数：审计是追溯凭证，导出范围必须与页面所见一致
       const blob = await exportAudit({
         keyword: form.keyword.trim() || undefined,
+        actor: form.actor.trim() || undefined,
+        action: form.action || undefined,
         limit: pagination.pageSize
       });
       downloadBlob(blob, `审计日志_${fileStamp()}.csv`);
@@ -190,14 +247,25 @@ export function useAuditLog() {
   }
 
   /**
-   * 重置：清空关键字并回到第 1 页。关键字若从有值变空，交给防抖那一路统一重载
-   * （避免与归位 emit 叠加成两发）；若本就为空、防抖不会触发，则直接归位重载。
+   * 重置：清空三字段并回到第 1 页，任何路径只发一发（QR1121-W15）。
+   * 文本字段（keyword/actor）有值 → 交给防抖那一路统一重载（原关键字语义保持）；
+   * 全空或仅 action 有值 → 直接归位重载。resetting 闸压住 action 的同步 watch，
+   * 避免「清空 action 立即一发 + 防抖又一发」叠加。
    */
   function resetFields() {
-    if (form.keyword !== "") {
-      form.keyword = "";
+    const hadText = form.keyword !== "" || form.actor !== "";
+    if (kwTimer) {
+      clearTimeout(kwTimer);
+      kwTimer = null;
+    }
+    resetting = true;
+    form.keyword = "";
+    form.actor = "";
+    form.action = "";
+    resetting = false;
+    if (hadText) {
+      kwTimer = setTimeout(reloadFirstPage, 300);
     } else {
-      if (kwTimer) clearTimeout(kwTimer);
       reloadFirstPage();
     }
   }
@@ -210,6 +278,7 @@ export function useAuditLog() {
     dataList,
     loading,
     read,
+    hasFilter,
     exporting,
     pagination,
     onSearch,

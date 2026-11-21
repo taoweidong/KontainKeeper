@@ -7,13 +7,23 @@ import {
   type HealthResult,
   type StatsResult
 } from "@/api/system";
+import { useRenderIcon } from "@/components/ReIcon/src/hooks";
+import {
+  IconClock,
+  IconCommand,
+  IconDb,
+  IconHost,
+  IconNet,
+  IconRefresh,
+  IconUpgrade
+} from "@/utils/kkIcons";
 import {
   ageText,
+  cmdStateClass,
   durText,
   errText,
   nowSec,
   statusLabel,
-  statusType,
   tsText
 } from "@/utils/kk";
 import { usePolls, useSeq } from "@/utils/kkPoll";
@@ -310,7 +320,9 @@ onMounted(() => {
 </script>
 
 <template>
-  <div v-loading="loading" class="kk-page--grow">
+  <!-- 遮罩下移（QR1121）：页头卡含刷新控制本身，手动刷新时不该被自己的遮罩盖住；
+       其余内容包一层 body 承接遮罩，卡片间距节奏由 kk-system-body 保持 -->
+  <div class="kk-page--grow">
     <el-card shadow="never" class="kk-card">
       <template #header>
         <div class="kk-band">
@@ -319,11 +331,13 @@ onMounted(() => {
               {{ linkText }}
             </span>
             <span class="kk-band__readout">
+              <el-icon><component :is="useRenderIcon(IconHost)" /></el-icon>
               主机
               <b>{{ dash(hosts.total) }}</b>
               <span class="kk-sub">在线 {{ dash(hosts.online) }}</span>
             </span>
             <span class="kk-band__readout">
+              <el-icon><component :is="useRenderIcon(IconCommand)" /></el-icon>
               在途命令
               <b>{{ dash(cmdInFlight) }}</b>
             </span>
@@ -333,10 +347,12 @@ onMounted(() => {
                 'kk-band__readout--stale': (stats?.agents_outdated ?? 0) > 0
               }"
             >
+              <el-icon><component :is="useRenderIcon(IconUpgrade)" /></el-icon>
               待升级
               <b>{{ stats?.agents_outdated ?? "—" }}</b>
             </span>
             <span class="kk-band__readout">
+              <el-icon><component :is="useRenderIcon(IconClock)" /></el-icon>
               最近一帧
               <b>{{ lastMsgText }}</b>
             </span>
@@ -348,7 +364,12 @@ onMounted(() => {
               <el-option :value="30" label="30 秒" />
               <el-option :value="60" label="60 秒" />
             </el-select>
-            <el-button size="small" class="kk-ml" @click="load(false)">
+            <el-button
+              size="small"
+              class="kk-ml"
+              :icon="useRenderIcon(IconRefresh)"
+              @click="load(false)"
+            >
               立即刷新
             </el-button>
             <span
@@ -373,134 +394,155 @@ onMounted(() => {
       </p>
     </el-card>
 
-    <el-row :gutter="16">
-      <el-col :xs="24" :md="12">
-        <el-card shadow="never" class="kk-card">
-          <h4 class="kk-h4">主机与 Agent 版本</h4>
-          <el-descriptions :column="1" border size="small" class="kk-desc">
-            <el-descriptions-item label="登记主机">
-              <span class="kk-num">{{ dash(hosts.total) }}</span>
-            </el-descriptions-item>
-            <el-descriptions-item label="在线">
-              <span class="kk-num">{{ dash(hosts.online) }}</span>
-              <span class="kk-sub kk-ml">离线 {{ dash(offline) }}</span>
-            </el-descriptions-item>
-            <el-descriptions-item label="待分发版本">
-              {{
-                stats
-                  ? stats.agent_latest_ver || "还没上传过版本"
-                  : "—（没读到）"
-              }}
-            </el-descriptions-item>
-            <el-descriptions-item label="落后于该版本">
-              <span :class="{ 'kk-warn': (stats?.agents_outdated ?? 0) > 0 }">
-                {{ stats?.agents_outdated ?? "—" }}
-              </span>
-              <span class="kk-sub kk-ml">比较由服务端做，前端只报数</span>
-            </el-descriptions-item>
-            <el-descriptions-item label="升级汇总">
-              <span class="kk-kv">
-                在途
-                <b class="kk-num">{{ dash(stats?.updates?.in_flight ?? 0) }}</b>
-              </span>
-              <span class="kk-kv">
-                完成 <b class="kk-num">{{ dash(stats?.updates?.done ?? 0) }}</b>
-              </span>
-              <span class="kk-kv">
-                失败
-                <b class="kk-num">{{ dash(stats?.updates?.failed ?? 0) }}</b>
-              </span>
-              <span class="kk-kv">
-                超时
-                <b class="kk-num">{{ dash(stats?.updates?.timeout ?? 0) }}</b>
-              </span>
-            </el-descriptions-item>
-          </el-descriptions>
-        </el-card>
-      </el-col>
+    <div v-loading="loading" class="kk-system-body">
+      <el-row :gutter="16">
+        <el-col :xs="24" :md="12">
+          <el-card shadow="never" class="kk-card">
+            <h4 class="kk-h4">
+              <el-icon><component :is="useRenderIcon(IconHost)" /></el-icon
+              >主机与 Agent 版本
+            </h4>
+            <el-descriptions :column="1" border size="small" class="kk-desc">
+              <el-descriptions-item label="登记主机">
+                <span class="kk-num">{{ dash(hosts.total) }}</span>
+              </el-descriptions-item>
+              <el-descriptions-item label="在线">
+                <span class="kk-num">{{ dash(hosts.online) }}</span>
+                <span class="kk-sub kk-ml">离线 {{ dash(offline) }}</span>
+              </el-descriptions-item>
+              <el-descriptions-item label="待分发版本">
+                {{
+                  stats
+                    ? stats.agent_latest_ver || "还没上传过版本"
+                    : "—（没读到）"
+                }}
+              </el-descriptions-item>
+              <el-descriptions-item label="落后于该版本">
+                <span :class="{ 'kk-warn': (stats?.agents_outdated ?? 0) > 0 }">
+                  {{ stats?.agents_outdated ?? "—" }}
+                </span>
+                <span class="kk-sub kk-ml">比较由服务端做，前端只报数</span>
+              </el-descriptions-item>
+              <el-descriptions-item label="升级汇总">
+                <span class="kk-kv">
+                  在途
+                  <b class="kk-num">{{
+                    dash(stats?.updates?.in_flight ?? 0)
+                  }}</b>
+                </span>
+                <span class="kk-kv">
+                  完成
+                  <b class="kk-num">{{ dash(stats?.updates?.done ?? 0) }}</b>
+                </span>
+                <span class="kk-kv">
+                  失败
+                  <b class="kk-num">{{ dash(stats?.updates?.failed ?? 0) }}</b>
+                </span>
+                <span class="kk-kv">
+                  超时
+                  <b class="kk-num">{{ dash(stats?.updates?.timeout ?? 0) }}</b>
+                </span>
+              </el-descriptions-item>
+            </el-descriptions>
+          </el-card>
+        </el-col>
 
-      <el-col :xs="24" :md="12">
-        <el-card shadow="never" class="kk-card">
-          <h4 class="kk-h4">命令积压（按状态）</h4>
-          <div v-if="!stats" class="kk-sub">
-            这一次请求没拿到读数，所以这里既不是「没有积压」也不是「全是 0」。
-          </div>
-          <div v-else-if="!cmdRows.length" class="kk-sub">
-            还没有命令下发过。在「命令中心」下发后，这里才会出现状态分布。
-          </div>
-          <template v-else>
-            <span v-for="r in cmdRows" :key="r.status" class="kk-kv">
-              <el-tag size="small" :type="statusType(r.status)">
-                {{ statusLabel(r.status) }}
-              </el-tag>
-              <b class="kk-num kk-ml">{{ r.n }}</b>
-            </span>
-            <p class="kk-sub kk-mt">
-              「在途」= 待下发 + 已排队 + 已下发 +
-              执行中。这个数字降不下去就是积压， 先去看下面的丢弃帧与判超时。
-            </p>
-          </template>
-        </el-card>
-      </el-col>
-    </el-row>
+        <el-col :xs="24" :md="12">
+          <el-card shadow="never" class="kk-card">
+            <h4 class="kk-h4">
+              <el-icon><component :is="useRenderIcon(IconCommand)" /></el-icon
+              >命令积压（按状态）
+            </h4>
+            <div v-if="!stats" class="kk-sub">
+              这一次请求没拿到读数，所以这里既不是「没有积压」也不是「全是 0」。
+            </div>
+            <div v-else-if="!cmdRows.length" class="kk-sub">
+              还没有命令下发过。在「命令中心」下发后，这里才会出现状态分布。
+            </div>
+            <template v-else>
+              <!-- 圆点四档与命令历史同语言（QR1121-W2）：running 不再蓝 tag，
+                 跨页扫读同一套状态词汇 -->
+              <span v-for="r in cmdRows" :key="r.status" class="kk-kv">
+                <span :class="cmdStateClass(r.status)">{{
+                  statusLabel(r.status)
+                }}</span>
+                <b class="kk-num kk-ml">{{ r.n }}</b>
+              </span>
+              <p class="kk-sub kk-mt">
+                「在途」= 待下发 + 已排队 + 已下发 +
+                执行中。这个数字降不下去就是积压， 先去看下面的丢弃帧与判超时。
+              </p>
+            </template>
+          </el-card>
+        </el-col>
+      </el-row>
 
-    <el-card shadow="never" class="kk-card">
-      <h4 class="kk-h4">库行数</h4>
-      <span class="kk-kv">
-        心跳明细
-        <b class="kk-num">{{ stats?.storage?.heartbeats ?? "—" }}</b>
-        <span v-if="storageDelta" class="kk-sub kk-ml">
-          近 {{ durText(storageDelta.span) }} {{ storageDelta.hb >= 0 ? "+" : ""
-          }}{{ storageDelta.hb }} 行
+      <el-card shadow="never" class="kk-card">
+        <h4 class="kk-h4">
+          <el-icon><component :is="useRenderIcon(IconDb)" /></el-icon>库行数
+        </h4>
+        <span class="kk-kv">
+          心跳明细
+          <b class="kk-num">{{ stats?.storage?.heartbeats ?? "—" }}</b>
+          <span v-if="storageDelta" class="kk-sub kk-ml">
+            近 {{ durText(storageDelta.span) }}
+            {{ storageDelta.hb >= 0 ? "+" : "" }}{{ storageDelta.hb }} 行
+          </span>
         </span>
-      </span>
-      <span class="kk-kv">
-        小时聚合
-        <b class="kk-num">{{ stats?.storage?.hourly ?? "—" }}</b>
-        <span v-if="storageDelta" class="kk-sub kk-ml">
-          {{ storageDelta.hourly >= 0 ? "+" : "" }}{{ storageDelta.hourly }} 行
+        <span class="kk-kv">
+          小时聚合
+          <b class="kk-num">{{ stats?.storage?.hourly ?? "—" }}</b>
+          <span v-if="storageDelta" class="kk-sub kk-ml">
+            {{ storageDelta.hourly >= 0 ? "+" : ""
+            }}{{ storageDelta.hourly }} 行
+          </span>
         </span>
-      </span>
-      <p class="kk-sub">
-        单次读数看不出增速，所以增量按两次刷新的间隔算。心跳明细涨得比预期快，
-        通常是某批机器把上报间隔调小了——对上「间隔违规」那一行就能定位。
-      </p>
-    </el-card>
+        <p class="kk-sub">
+          单次读数看不出增速，所以增量按两次刷新的间隔算。心跳明细涨得比预期快，
+          通常是某批机器把上报间隔调小了——对上「间隔违规」那一行就能定位。
+        </p>
+      </el-card>
 
-    <el-card shadow="never" class="kk-card">
-      <h4 class="kk-h4">Broker 计数器</h4>
-      <div v-if="!stats" class="kk-sub">
-        这一次请求没拿到读数——下面的表因此是空的，不代表计数器全是 0。
-      </div>
-      <div v-else-if="!counters" class="kk-sub">
-        服务端没有 MQTT 桥对象（未装配或还没连上），这组数一个都没有——
-        这跟「每个计数器都是 0」不是同一件事。
-      </div>
-      <el-table v-else :data="counterRows" size="small">
-        <el-table-column prop="name" label="计数器" width="120" />
-        <el-table-column label="值" width="90">
-          <template #default="{ row }">
-            <span
-              class="kk-num"
-              :class="{
-                'kk-warn': row.alert && typeof row.value === 'number' && row.value > 0
-              }"
-            >
-              {{ row.value }}
-            </span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="hint" label="什么值该担心" min-width="260" />
-      </el-table>
-      <p class="kk-sub kk-mt">
-        「旧协议帧」是决定能不能设
-        <b>KK_DROP_PROTO_V3</b> 的唯一依据，别在它非零时关窗口。
-        它是进程内累计值（缺陷账本 <b>QR-S31</b>）：存量 Agent 全部升级完之后
-        <b>重启服务端</b>，再看它是否仍为 0 ——
-        重启前的读数不作数，因为那里面还混着
-        升级之前收到的帧。这一格没有拿到读数（上面两行的空态）时同样不能当作 0。
-      </p>
-    </el-card>
+      <el-card shadow="never" class="kk-card">
+        <h4 class="kk-h4">
+          <el-icon><component :is="useRenderIcon(IconNet)" /></el-icon>Broker
+          计数器
+        </h4>
+        <div v-if="!stats" class="kk-sub">
+          这一次请求没拿到读数——下面的表因此是空的，不代表计数器全是 0。
+        </div>
+        <div v-else-if="!counters" class="kk-sub">
+          服务端没有 MQTT 桥对象（未装配或还没连上），这组数一个都没有——
+          这跟「每个计数器都是 0」不是同一件事。
+        </div>
+        <el-table v-else :data="counterRows" size="small">
+          <el-table-column prop="name" label="计数器" width="120" />
+          <el-table-column label="值" width="90">
+            <template #default="{ row }">
+              <span
+                class="kk-num"
+                :class="{
+                  'kk-warn':
+                    row.alert && typeof row.value === 'number' && row.value > 0
+                }"
+              >
+                {{ row.value }}
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="hint" label="什么值该担心" min-width="260" />
+        </el-table>
+        <p class="kk-sub kk-mt">
+          「旧协议帧」是决定能不能设
+          <b>KK_DROP_PROTO_V3</b> 的唯一依据，别在它非零时关窗口。
+          它是进程内累计值（缺陷账本 <b>QR-S31</b>）：存量 Agent 全部升级完之后
+          <b>重启服务端</b>，再看它是否仍为 0 ——
+          重启前的读数不作数，因为那里面还混着
+          升级之前收到的帧。这一格没有拿到读数（上面两行的空态）时同样不能当作
+          0。
+        </p>
+      </el-card>
+    </div>
   </div>
 </template>
 
@@ -509,5 +551,11 @@ onMounted(() => {
    但本页不用 el-select 的默认 100% 宽 */
 .kk-interval {
   width: 120px;
+}
+
+/* 遮罩下移后的卡片节奏（QR1121）：原由 kk-page--grow > * + * 供给，
+   包进 body 层后在这里等价复刻（el-row 夹心也覆盖到） */
+.kk-system-body > * + * {
+  margin-top: var(--kk-space-lg);
 }
 </style>
