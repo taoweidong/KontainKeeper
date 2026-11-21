@@ -6,7 +6,7 @@
  * 「怎么显示、给谁显示的开关」，不是「有哪些页面」。
  */
 import { computed, onMounted, reactive, ref } from "vue";
-import { ElMessage } from "element-plus";
+import { message } from "@/utils/message";
 
 import KkMenuIcon from "@/components/KkMenuIcon.vue";
 import { useRenderIcon } from "@/components/ReIcon/src/hooks";
@@ -66,7 +66,7 @@ async function load() {
     loadFailed.value = false;
   } catch (e: any) {
     loadFailed.value = true;
-    ElMessage.error("加载菜单失败：" + errText(e));
+    message("加载菜单失败：" + errText(e), { type: "error" });
   } finally {
     loading.value = false;
   }
@@ -84,7 +84,7 @@ function openEdit(row: RbacMenu) {
 
 async function submit() {
   if (!form.title.trim()) {
-    ElMessage.warning("标题不能为空");
+    message("标题不能为空", { type: "warning" });
     return;
   }
   dialog.saving = true;
@@ -96,11 +96,11 @@ async function submit() {
       show_link: form.show_link,
       enabled: form.enabled
     });
-    ElMessage.success(`已更新菜单 ${dialog.target}`);
+    message(`已更新菜单 ${dialog.target}`, { type: "success" });
     dialog.visible = false;
     await load();
   } catch (e: any) {
-    ElMessage.error("保存失败：" + errText(e));
+    message("保存失败：" + errText(e), { type: "error" });
   } finally {
     dialog.saving = false;
   }
@@ -144,11 +144,13 @@ onMounted(load);
             <span v-if="!row.enabled" class="kk-state kk-state--idle kk-ml"
               >已停用</span
             >
+            <!-- 隐藏页是属性不是告警（QR1123-W11）：warning 琥珀→info 中性，
+                 与 QR1122-W13「已停用」裁决同理 -->
             <el-tag
               v-else-if="!row.show_link"
               class="kk-ml"
               size="small"
-              type="warning"
+              type="info"
             >
               不出侧边栏
             </el-tag>

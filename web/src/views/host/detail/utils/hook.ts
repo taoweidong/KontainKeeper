@@ -1,7 +1,7 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useWindowSize } from "@vueuse/core";
-import { ElMessage } from "element-plus";
+import { message } from "@/utils/message";
 
 import {
   getHost,
@@ -129,6 +129,9 @@ export function buildDetailOption(
       {
         name: "CPU %",
         type: "line",
+        // 双轴线色（QR1123-W1）：CPU = EP 主色、内存 = EP 成功色，
+        // 色相间距大且暗色下都是全强度可读色；主题预设跟随
+        color: colors.line,
         showSymbol: false,
         smooth: true,
         areaStyle: { opacity: 0.15 },
@@ -137,6 +140,7 @@ export function buildDetailOption(
       {
         name: "内存 MB",
         type: "line",
+        color: colors.lineAlt,
         yAxisIndex: 1,
         showSymbol: false,
         smooth: true,
@@ -243,7 +247,8 @@ export function useHostDetail() {
       // 手动刷新失败同样要变冷（QR-W17，与 system/welcome 口径一致）——
       // 这台主机挂着看曲线，绿色「已同步」会把旧数据谎报成新鲜读数。
       pollFailed.value = true;
-      if (!silent) ElMessage.error("加载指标序列失败：" + errText(e));
+      if (!silent)
+        message("加载指标序列失败：" + errText(e), { type: "error" });
     }
   }
 
@@ -266,7 +271,8 @@ export function useHostDetail() {
       // QR1121-W9：404 与不可达分流，不许把网络错误谎报成「主机不存在」
       hostError.value =
         e?.response?.status === 404 ? "notfound" : "unreachable";
-      if (!silent) ElMessage.error("加载主机详情失败：" + errText(e));
+      if (!silent)
+        message("加载主机详情失败：" + errText(e), { type: "error" });
     } finally {
       if (isLatest()) loading.value = false;
     }
@@ -288,7 +294,7 @@ export function useHostDetail() {
         `指标_${pod.value}_${hours.value}h_${fileStamp()}.csv`
       );
     } catch (e: any) {
-      ElMessage.error("导出失败：" + errText(e));
+      message("导出失败：" + errText(e), { type: "error" });
     } finally {
       exporting.value = false;
     }
@@ -302,14 +308,16 @@ export function useHostDetail() {
       const r = await upgradeHosts([detail.value.pod]);
       if (r.accepted.length) {
         const a = r.accepted[0];
-        ElMessage.success(a.queued ? `已排队，主机上线后自动补投` : `已下发`);
+        message(a.queued ? `已排队，主机上线后自动补投` : `已下发`, {
+          type: "success"
+        });
       } else if (r.skipped.length) {
         // 跳过原因要说人话：只报「已跳过」运维会以为是失败并反复重试
-        ElMessage.warning(upgradeSkipText(r.skipped[0].reason));
+        message(upgradeSkipText(r.skipped[0].reason), { type: "warning" });
       }
       await load();
     } catch (e: any) {
-      ElMessage.error("升级失败：" + errText(e));
+      message("升级失败：" + errText(e), { type: "error" });
     } finally {
       upgrading.value = false;
     }

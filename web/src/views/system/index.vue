@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { ElMessage } from "element-plus";
+import { message } from "@/utils/message";
 import {
   getHealth,
   getStats,
@@ -301,7 +301,7 @@ async function load(silent = false) {
     // 与其余轮询页同一条红线：自动刷新失败不刷 toast，只把同步读数变冷（W5）。
     // 手动刷新失败同样要变冷——数据确实过期了，区别只在多一条 toast 说明原因。
     pollFailed.value = true;
-    if (!silent) ElMessage.error("加载系统统计失败：" + errText(e));
+    if (!silent) message("加载系统统计失败：" + errText(e), { type: "error" });
   } finally {
     if (isLatest()) loading.value = false;
   }
@@ -360,7 +360,7 @@ onMounted(() => {
             </span>
           </div>
           <div class="kk-actions">
-            <el-select v-model="interval" size="small" class="kk-interval">
+            <el-select v-model="interval" size="small" class="kk-select-w">
               <el-option :value="0" label="停止刷新" />
               <el-option :value="10" label="10 秒" />
               <el-option :value="30" label="30 秒" />
@@ -549,20 +549,12 @@ onMounted(() => {
 </template>
 
 <style scoped>
-/* 刷新间隔下拉：宽度与其余页的 120px 档一致（总览/详情/更新页同款），
-   但本页不用 el-select 的默认 100% 宽 */
-.kk-interval {
-  width: 120px;
-}
+/* 刷新间隔下拉宽度收编共享档 kk-select-w（QR1123-W11），scoped 重复定义删除 */
 
 /* 遮罩下移后的卡片节奏（QR1121）：原由 kk-page--grow > * + * 供给，
-   包进 body 层后在这里等价复刻（el-row 夹心也覆盖到） */
+   包进 body 层后在这里等价复刻（el-row 夹心也覆盖到）。
+   el-row 纵向缝已下沉全局 kk.scss（QR1123-W10） */
 .kk-system-body > * + * {
   margin-top: var(--kk-space-lg);
-}
-
-/* <992px 两栏堆叠时的纵向缝（QR1122-W5）：gutter 只管横向 */
-.kk-system-body > .el-row {
-  row-gap: var(--kk-space-lg);
 }
 </style>

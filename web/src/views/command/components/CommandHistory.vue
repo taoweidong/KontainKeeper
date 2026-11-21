@@ -12,7 +12,7 @@ import { ref } from "vue";
 import type { CommandRow } from "@/api/commands";
 import { PureTableBar } from "@/components/RePureTableBar";
 import { useRenderIcon } from "@/components/ReIcon/src/hooks";
-import { IconDownload, IconRefresh } from "@/utils/kkIcons";
+import { IconCommand, IconDownload, IconRefresh } from "@/utils/kkIcons";
 import { kkHeaderCellStyle, tsText } from "@/utils/kk";
 
 import { useCommandHistory } from "./utils/hook";
@@ -124,7 +124,12 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
     >
       <template #title>
         <div class="flex min-w-0 items-center gap-2">
-          <b class="shrink-0">执行历史</b>
+          <b class="shrink-0">
+            <!-- #title 槽不走 bar 的 titleIcon prop（QR1123-W3），槽内自接 -->
+            <el-icon class="kk-type-icon"
+              ><component :is="useRenderIcon(IconCommand)" /></el-icon
+            >执行历史
+          </b>
           <span v-if="batchStat" class="kk-sub truncate">
             该批次 {{ batchStat.total }} 台： 完成 {{ batchStat.done || 0 }} ·
             失败 {{ batchStat.failed || 0 }} · 超时

@@ -313,6 +313,7 @@ async function onRollback() {
 
     <PureTableBar
       title="待升级主机（落后于待分发版本）"
+      :title-icon="IconUpgrade"
       :columns="columns"
       :table-ref="tableRef?.getTableRef()"
       @refresh="load()"

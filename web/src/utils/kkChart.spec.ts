@@ -55,6 +55,19 @@ describe("chartColorsFromVars：变量值表组装配色（QR1121-W6）", () => 
     expect(c.tooltipBg).toBe("#1d1e1f");
     expect(c.alert).toBe("#f89898");
   });
+
+  it("线色键走 EP 主色/成功色（QR1123-W1）：注入生效、缺省回落", () => {
+    const c = chartColorsFromVars({
+      "--el-color-primary": "#8b5cf6",
+      "--el-color-success": "#22c55e"
+    });
+    expect(c.line).toBe("#8b5cf6");
+    expect(c.lineAlt).toBe("#22c55e");
+    // 缺省回落 EP 默认（与 DEFAULT 三处同步：类型/常量/VAR_KEYS）
+    const d = chartColorsFromVars({});
+    expect(d.line).toBe("#409eff");
+    expect(d.lineAlt).toBe("#67c23a");
+  });
 });
 
 describe("readChartColors：node 环境兜底", () => {

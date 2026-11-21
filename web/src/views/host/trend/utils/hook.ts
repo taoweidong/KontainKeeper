@@ -119,6 +119,9 @@ export function buildTrendOption(
       {
         name: opts.lineName,
         type: "line",
+        // 线色走 EP 主色（QR1123-W1）：8 套主题预设跟随，areaStyle 与
+        // legend/tooltip marker 同色继承；两图各自单序列，mem/disk 由标题区分
+        color: colors.line,
         showSymbol: false,
         smooth: true,
         areaStyle: { opacity: 0.15 },

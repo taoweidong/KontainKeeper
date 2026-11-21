@@ -221,14 +221,10 @@ export function hostStateText(row: HostStateInput): string {
   return OFFLINE_REASON_LABEL[row.status_reason || ""] || "离线";
 }
 
-/** 在线三态 → el-tag 类型（QR1120-W10）：仍用标签词汇的页面（HostPicker 已选
- *  标签）与圆点词汇共用同一份三态判定，updating 不再被显成普通离线。 */
-export function hostStateTagType(
-  row: HostStateInput
-): "success" | "warning" | "info" {
-  if (row.online) return "success";
-  return row.status_reason === "updating" ? "warning" : "info";
-}
+/** hostStateTagType 已删（QR1123-W4 裁决）：HostPicker 已选 chip 改「中性 tag
+ *  壳 + 内嵌 kk-state 圆点」后，在线三态→el-tag 类型的映射全仓无消费方。
+ *  三态判定的唯一真相是 hostStateClass/hostStateText（圆点词汇），
+ *  QR1120-W10 锁随函数同删（kk.spec.ts docstring 有裁决记录）。 */
 
 /** Broker 链路状态 → 圆点类名（QR1122-W12，system 统计与 welcome 共用）。
  *  四态分开说（QR-W16 红线）：没读数 ≠ 桥接未启动 ≠ 断开 ≠ 连着。

@@ -9,7 +9,7 @@
 抽屉不再打第二遍全量接口（QR-W7）。
 */
 import { computed, ref, watch } from "vue";
-import { ElMessage } from "element-plus";
+import { message } from "@/utils/message";
 
 import { listHosts, type HostSummary } from "@/api/containers";
 import { useRenderIcon } from "@/components/ReIcon/src/hooks";
@@ -17,7 +17,6 @@ import { IconHost } from "@/utils/kkIcons";
 import {
   errText,
   hostStateClass,
-  hostStateTagType,
   hostStateText,
   invertSelection,
   pctText,
@@ -127,7 +126,7 @@ async function loadHosts() {
     read.value = true;
   } catch (e: any) {
     if (!isLatest()) return;
-    ElMessage.error("加载主机列表失败：" + errText(e));
+    message("加载主机列表失败：" + errText(e), { type: "error" });
   } finally {
     if (isLatest()) loading.value = false;
   }
@@ -202,13 +201,16 @@ watch(
       <el-button :icon="useRenderIcon(IconHost)" @click="open">
         选择主机（已选 {{ selected.length }} 台）
       </el-button>
-      <!-- 在线三态（QR1120-W10）：自更新窗口显「更新中」琥珀标签，不是普通离线 -->
+      <!-- 中性 tag 壳 + 内嵌圆点三态（QR1123-W4）：状态语义统一走 kk-state
+           （绿实心=在线/琥珀方点=更新中/灰空心=离线），与 monitor/detail 同语言；
+           closable 与 @close 契约不变 -->
       <el-tag
         v-for="h in shown"
         :key="h.pod"
         size="small"
         closable
-        :type="hostStateTagType(h)"
+        type="info"
+        effect="plain"
         @close="
           emit(
             'update:pods',
@@ -216,7 +218,9 @@ watch(
           )
         "
       >
-        {{ h.pod }} · {{ hostStateText(h) }}
+        <span :class="hostStateClass(h)"
+          >{{ h.pod }} · {{ hostStateText(h) }}</span
+        >
       </el-tag>
       <el-tag v-if="restCount" size="small" type="info"
         >+{{ restCount }}</el-tag

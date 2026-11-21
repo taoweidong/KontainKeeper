@@ -3,7 +3,12 @@ import { ref } from "vue";
 import { useAuditLog } from "./utils/hook";
 import { PureTableBar } from "@/components/RePureTableBar";
 import { useRenderIcon } from "@/components/ReIcon/src/hooks";
-import { IconDownload, IconRefresh, IconSearch } from "@/utils/kkIcons";
+import {
+  IconAudit,
+  IconDownload,
+  IconRefresh,
+  IconSearch
+} from "@/utils/kkIcons";
 import { AUDIT_ACTION_LABEL, kkHeaderCellStyle } from "@/utils/kk";
 
 defineOptions({ name: "AuditLog" });
@@ -97,6 +102,7 @@ function onSelectionChange(rows: any[]) {
          不再是固定 500ms 的假转圈。 -->
     <PureTableBar
       title="审计日志"
+      :title-icon="IconAudit"
       :columns="columns"
       :loading="loading"
       :table-ref="tableRef?.getTableRef()"

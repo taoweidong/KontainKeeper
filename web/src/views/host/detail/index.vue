@@ -15,12 +15,16 @@ import {
   IconBack,
   IconCollect,
   IconCommand,
+  IconCpu,
   IconDisk,
+  IconDiskIo,
   IconDownload,
+  IconMem,
   IconNet,
   IconProc,
   IconRefresh,
   IconRetry,
+  IconSys,
   IconTrend,
   IconUpgrade,
   IconUser
@@ -160,7 +164,7 @@ onBeforeUnmount(() => {
               @click="gotoMonitor"
               >总览</el-button
             >
-            <el-select v-model="hours" style="width: 120px">
+            <el-select v-model="hours" class="kk-select-w">
               <el-option label="近 6 小时" :value="6" />
               <el-option label="近 24 小时" :value="24" />
               <el-option label="近 7 天" :value="168" />
@@ -206,21 +210,42 @@ onBeforeUnmount(() => {
         <el-descriptions-item label="上报间隔"
           >{{ detail.hb_interval }} 秒</el-descriptions-item
         >
-        <el-descriptions-item label="系统">
+        <!-- 四个指标 label 补类别图标（QR1123-W2）：与采集项词汇同源 -->
+        <el-descriptions-item>
+          <template #label>
+            <el-icon class="kk-type-icon"
+              ><component :is="useRenderIcon(IconSys)" /></el-icon
+            >系统
+          </template>
           {{ detail.metrics?.os || detail.metrics?.kernel || "-" }}
         </el-descriptions-item>
-        <el-descriptions-item label="CPU">
+        <el-descriptions-item>
+          <template #label>
+            <el-icon class="kk-type-icon"
+              ><component :is="useRenderIcon(IconCpu)" /></el-icon
+            >CPU
+          </template>
           {{ numText(detail.metrics?.cpu) }}% ·
           {{ detail.metrics?.cpu_cores ?? "-" }} 核 · load
           {{ detail.metrics?.load ?? "-" }}
         </el-descriptions-item>
-        <el-descriptions-item label="内存">
+        <el-descriptions-item>
+          <template #label>
+            <el-icon class="kk-type-icon"
+              ><component :is="useRenderIcon(IconMem)" /></el-icon
+            >内存
+          </template>
           {{ mbText(detail.metrics?.mem_mb) }} /
           {{ mbText(detail.metrics?.mem_total_mb) }} （{{
             numText(detail.metrics?.mem_pct, 0)
           }}%）
         </el-descriptions-item>
-        <el-descriptions-item label="磁盘 IO">
+        <el-descriptions-item>
+          <template #label>
+            <el-icon class="kk-type-icon"
+              ><component :is="useRenderIcon(IconDiskIo)" /></el-icon
+            >磁盘 IO
+          </template>
           读 {{ numText(detail.metrics?.disk_read_mb, 2) }} MB/s · 写
           {{ numText(detail.metrics?.disk_write_mb, 2) }} MB/s
         </el-descriptions-item>
@@ -286,6 +311,12 @@ onBeforeUnmount(() => {
         </div>
       </template>
 
+      <!-- 图表小节标题（QR1123-W2）：与同页其余小节同构；顶间距由 kk-mt-lg
+           供给，.kk-chart / .kk-chart-empty 的 margin-top 同步收掉防叠缝 -->
+      <h4 class="kk-h4 kk-mt-lg">
+        <el-icon><component :is="useRenderIcon(IconTrend)" /></el-icon
+        >资源曲线（CPU % / 内存 MB）
+      </h4>
       <!-- 空数据占位（QR1120-W17）：与趋势页 trend-empty 同族；
            图表容器用 v-show 保活，echarts 实例与 ResizeObserver 不重建 -->
       <div v-if="chartEmpty" class="kk-chart-empty">
@@ -453,16 +484,7 @@ onBeforeUnmount(() => {
 <!-- 通用类（kk-toolbar/kk-desc/kk-chart/kk-h4 等）统一在 style/kk.scss -->
 
 <style scoped lang="scss">
-/* 图表空数据占位（QR1120-W17）：高度与 .kk-chart 同口径，切换时不跳布局 */
-.kk-chart-empty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 300px;
-  margin: var(--kk-space-lg) 0 0;
-  font-size: 13px;
-  color: var(--el-text-color-placeholder);
-}
+/* 图表空态占位与 el-row 纵向缝已下沉全局 kk.scss（QR1123-W10） */
 
 /* 标签 tag 间距（QR1121）：四档尺度，窄屏换行不贴边。
    长 k:v 溢出保护（QR1122）：max-width + 内容 ellipsis，title 已给全值 */
@@ -475,10 +497,5 @@ onBeforeUnmount(() => {
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-}
-
-/* 窄屏堆叠时两栏小节的纵向缝（QR1122-W5）：gutter 只管横向 */
-.kk-page--grow > .el-row {
-  row-gap: var(--kk-space-lg);
 }
 </style>

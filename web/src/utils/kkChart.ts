@@ -21,18 +21,27 @@ export type ChartColors = {
   tooltipBorder: string;
   /** 告警上限 markLine（--kk-alert） */
   alert: string;
+  /** 主序列线色（QR1123-W1）：EP 主色，8 套主题预设跟随。
+   *  series.color 一键管线色/areaStyle/legend 与 tooltip marker。 */
+  line: string;
+  /** 次序列线色（detail 双轴第二条）：EP 成功色。不用 primary-light-3——
+   *  暗色下 light-N 实为 darken（useDataThemeChange），深底对比度更差。 */
+  lineAlt: string;
 };
 
 /** 亮色字面量兜底：与 element-plus theme-chalk 默认值逐字一致
- *  （alert = EP danger 默认 #f56c6c）。node 环境 / 变量读不到时用，
- *  保证 buildTrendOption 不传 colors 的既有纯函数锁输出不变。 */
+ *  （alert = EP danger 默认 #f56c6c，line/lineAlt = EP primary/success 默认）。
+ *  node 环境 / 变量读不到时用，保证 buildTrendOption 不传 colors 的既有
+ *  纯函数锁输出不变。 */
 export const DEFAULT_CHART_COLORS: ChartColors = {
   text: "#606266",
   axisLine: "#dcdfe6",
   splitLine: "#ebeef5",
   tooltipBg: "#ffffff",
   tooltipBorder: "#e4e7ed",
-  alert: "#f56c6c"
+  alert: "#f56c6c",
+  line: "#409eff",
+  lineAlt: "#67c23a"
 };
 
 /** CSS 变量名 → ChartColors 键 的映射（唯一真相，改口径只改这里） */
@@ -42,7 +51,9 @@ const VAR_KEYS: Record<keyof ChartColors, string> = {
   splitLine: "--el-border-color-lighter",
   tooltipBg: "--el-bg-color-overlay",
   tooltipBorder: "--el-border-color-light",
-  alert: "--kk-alert"
+  alert: "--kk-alert",
+  line: "--el-color-primary",
+  lineAlt: "--el-color-success"
 };
 
 /** 纯函数：从 CSS 变量值表组装配色（QR1121-W6）。

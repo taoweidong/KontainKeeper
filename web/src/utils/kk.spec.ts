@@ -177,7 +177,6 @@ import {
   OFFLINE_REASON_LABEL,
   fillPct,
   hostStateClass,
-  hostStateTagType,
   hostStateText,
   invertSelection,
   mergeHostRows,
@@ -214,16 +213,9 @@ describe("hostStateClass/hostStateText：B6 的 updating 方点不能丢", () =>
     expect(OFFLINE_REASON_LABEL).toEqual({ updating: "更新中" });
   });
 
-  it("hostStateTagType：标签词汇与圆点词汇同一份三态（QR1120-W10）", () => {
-    expect(hostStateTagType(host())).toBe("success");
-    expect(
-      hostStateTagType(host({ online: false, status_reason: "updating" }))
-    ).toBe("warning");
-    expect(hostStateTagType(host({ online: false }))).toBe("info");
-    expect(hostStateTagType(host({ online: false, status_reason: "x" }))).toBe(
-      "info"
-    );
-  });
+  // hostStateTagType 锁已随函数删除（QR1123-W4 裁决）：HostPicker chip 改
+  // 中性壳 + kk-state 圆点后该映射无消费方，QR1120-W10「标签与圆点同一份
+  // 三态」的目的由 hostStateClass 独占承载（上方锁保持）。
 });
 
 // ---- QR1120-W15：fillPct 抽到公共层（monitor/detail 共用，防护口径不变）----

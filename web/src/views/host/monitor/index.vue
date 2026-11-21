@@ -229,6 +229,7 @@ const {
 
     <PureTableBar
       title="主机总览"
+      :title-icon="IconHost"
       :columns="columns"
       :table-ref="tableRef?.getTableRef()"
       @refresh="load()"

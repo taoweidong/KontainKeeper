@@ -35,6 +35,12 @@ const props = {
     type: String,
     default: "列表"
   },
+  /** 标题类别图标（QR1123-W3，additive 可选）：传入图标组件时渲染在标题前，
+   *  不传保持原样；走 #title 槽的页面不受影响（槽自行决定标题形态）。 */
+  titleIcon: {
+    type: [Object, Function] as PropType<any>,
+    default: undefined
+  },
   /** 对于树形表格，如果想启用展开和折叠功能，传入当前表格的ref即可 */
   tableRef: {
     type: Object as PropType<any>
@@ -87,7 +93,10 @@ export default defineComponent({
         return {
           background:
             s === size.value ? useEpThemeStoreHook().epThemeColor : "",
-          color: s === size.value ? "#fff" : "var(--el-text-color-primary)"
+          color:
+            s === size.value
+              ? "var(--el-color-white)"
+              : "var(--el-text-color-primary)"
         };
       };
     });
@@ -295,7 +304,14 @@ export default defineComponent({
             {slots?.title ? (
               slots.title()
             ) : (
-              <p class="font-bold truncate">{props.title}</p>
+              <p class="font-bold truncate">
+                {props.titleIcon ? (
+                  <el-icon class="kk-type-icon">
+                    <props.titleIcon />
+                  </el-icon>
+                ) : null}
+                {props.title}
+              </p>
             )}
             <div class="flex items-center justify-around">
               {slots?.buttons ? (
