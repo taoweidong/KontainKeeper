@@ -11,7 +11,7 @@
 */
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { ElMessage } from "element-plus";
+import { message } from "@/utils/message";
 
 import { createCommand } from "@/api/commands";
 import { listHosts, type HostSummary } from "@/api/containers";
@@ -52,7 +52,7 @@ async function loadHosts() {
     hosts.value = (await listHosts("summary")).items;
     hostsRead.value = true;
   } catch (e: any) {
-    ElMessage.error("加载主机列表失败：" + errText(e));
+    message("加载主机列表失败：" + errText(e), { type: "error" });
   }
 }
 
@@ -105,7 +105,7 @@ watch(
 );
 
 async function submitShell() {
-  if (!shellForm.pods.length) return ElMessage.warning("请选择主机");
+  if (!shellForm.pods.length) return message("请选择主机", { type: "warning" });
   if (!(await confirmDispatch(picked.value))) return;
   submitting.value = true;
   try {
@@ -119,23 +119,25 @@ async function submitShell() {
         .split("\n")
         .map(s => s.trim())
         .filter(Boolean);
-      if (!argv.length) return ElMessage.warning("argv 模式至少填一行参数");
+      if (!argv.length)
+        return message("argv 模式至少填一行参数", { type: "warning" });
       body.argv = argv;
       body.use_shell = false;
     } else {
-      if (!shellForm.cmdline.trim()) return ElMessage.warning("请填写命令行");
+      if (!shellForm.cmdline.trim())
+        return message("请填写命令行", { type: "warning" });
       body.cmdline = shellForm.cmdline.trim();
       body.use_shell = true;
     }
     const res = await createCommand(body as any);
-    ElMessage.success(`已下发 ${res.items.length} 条命令`);
+    message(`已下发 ${res.items.length} 条命令`, { type: "success" });
     // 定位到该批次：下发即看到进度，不需要滚动去找
     history.value?.focusBatch(
       res.batch_id,
       res.items.map(i => i.id)
     );
   } catch (e: any) {
-    ElMessage.error("下发失败：" + errText(e));
+    message("下发失败：" + errText(e), { type: "error" });
   } finally {
     submitting.value = false;
   }

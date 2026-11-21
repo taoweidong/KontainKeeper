@@ -20,9 +20,8 @@ const h = vi.hoisted(() => ({
   upgradeHosts: vi.fn(),
   exportMetrics: vi.fn(),
   push: vi.fn(),
-  error: vi.fn(),
-  success: vi.fn(),
-  warning: vi.fn(),
+  // QR1123-W5：hook 迁 message() 单一入口，mock 随之换（原 ElMessage 三 spy）
+  message: vi.fn(),
   winWidth: { value: 1400 }
 }));
 
@@ -34,9 +33,7 @@ vi.mock("@vueuse/core", async () => {
   const { ref } = await import("vue");
   return { useWindowSize: () => ({ width: ref(h.winWidth.value) }) };
 });
-vi.mock("element-plus", () => ({
-  ElMessage: { error: h.error, success: h.success, warning: h.warning }
-}));
+vi.mock("@/utils/message", () => ({ message: h.message }));
 vi.mock("@/utils/http", () => ({ http: { request: vi.fn() } }));
 vi.mock("@/api/containers", () => ({
   getHost: (...a: any[]) => h.getHost(...a),
@@ -106,7 +103,7 @@ beforeEach(() => {
   h.upgradeHosts.mockReset();
   h.exportMetrics.mockReset();
   h.push.mockReset();
-  h.error.mockReset();
+  h.message.mockReset();
   h.getHost.mockResolvedValue(detailOf());
   h.getHostMetrics.mockResolvedValue({
     pod: "h1",
@@ -245,6 +242,21 @@ describe("W11：buildDetailOption 纯函数", () => {
 
     const def = buildDetailOption(pts, 24) as any;
     expect(def.xAxis.axisLabel.color).toBe(DEFAULT_CHART_COLORS.text);
+  });
+
+  it("双轴线色（QR1123-W1）：CPU=主色、内存=成功色，注入与回落", () => {
+    const themed = {
+      ...DEFAULT_CHART_COLORS,
+      line: "#8b5cf6",
+      lineAlt: "#22c55e"
+    };
+    const opt = buildDetailOption(pts, 24, themed) as any;
+    expect(opt.series[0].color).toBe("#8b5cf6");
+    expect(opt.series[1].color).toBe("#22c55e");
+
+    const def = buildDetailOption(pts, 24) as any;
+    expect(def.series[0].color).toBe(DEFAULT_CHART_COLORS.line);
+    expect(def.series[1].color).toBe(DEFAULT_CHART_COLORS.lineAlt);
   });
 });
 

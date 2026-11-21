@@ -5,7 +5,8 @@
  * 菜单树节点 = 后端菜单表（与前端路由 name 一一对应），勾选即授权。
  */
 import { computed, nextTick, onMounted, reactive, ref } from "vue";
-import { ElMessage, ElMessageBox } from "element-plus";
+import { ElMessageBox } from "element-plus";
+import { message } from "@/utils/message";
 import type { FormInstance, FormRules } from "element-plus";
 import type { ElTree } from "element-plus";
 
@@ -92,7 +93,7 @@ async function load() {
     loadFailed.value = false;
   } catch (e: any) {
     loadFailed.value = true;
-    ElMessage.error("加载角色列表失败：" + errText(e));
+    message("加载角色列表失败：" + errText(e), { type: "error" });
   } finally {
     loading.value = false;
   }
@@ -154,28 +155,29 @@ async function submit() {
             // 两段式无原子性（QR1120-W32）：角色已建成、授权这一步挂了。
             // 此时重试「新增」必撞 409，提示必须指向「编辑该角色补授权」，
             // 并关框刷新让那个无授权角色立刻可见可编辑。
-            ElMessage.error(
+            message(
               `角色 ${form.label} 已创建，但菜单授权失败：${errText(e)}。` +
-                `请在列表中「编辑」该角色补授权（直接重试新增会撞 409）。`
+                `请在列表中「编辑」该角色补授权（直接重试新增会撞 409）。`,
+              { type: "error" }
             );
             dialog.visible = false;
             await load();
             return;
           }
         }
-        ElMessage.success(`已创建角色 ${form.label}`);
+        message(`已创建角色 ${form.label}`, { type: "success" });
       } else {
         await updateRole(dialog.target, {
           label: form.label,
           remark: form.remark,
           menus: menuNames
         });
-        ElMessage.success(`已更新角色 ${form.label}`);
+        message(`已更新角色 ${form.label}`, { type: "success" });
       }
       dialog.visible = false;
       await load();
     } catch (e: any) {
-      ElMessage.error("保存失败：" + errText(e));
+      message("保存失败：" + errText(e), { type: "error" });
     } finally {
       dialog.saving = false;
     }
@@ -200,10 +202,10 @@ async function onRemove(row: RbacRole) {
   }
   try {
     await deleteRole(row.name);
-    ElMessage.success(`已删除角色 ${row.label}`);
+    message(`已删除角色 ${row.label}`, { type: "success" });
     await load();
   } catch (e: any) {
-    ElMessage.error("删除失败：" + errText(e));
+    message("删除失败：" + errText(e), { type: "error" });
   }
 }
 

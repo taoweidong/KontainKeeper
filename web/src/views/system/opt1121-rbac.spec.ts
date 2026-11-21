@@ -32,12 +32,16 @@ const hMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("element-plus", () => ({
-  ElMessage: {
-    error: hMocks.msgError,
-    success: hMocks.msgSuccess,
-    warning: hMocks.msgWarning
-  },
   ElMessageBox: { confirm: hMocks.confirm }
+}));
+// QR1123-W5：三页迁 message() 单一入口；mock 按 type 分发到既有 per-type spy
+vi.mock("@/utils/message", () => ({
+  message: (msg: any, params?: any) => {
+    const t = params?.type ?? "info";
+    if (t === "success") return hMocks.msgSuccess(msg);
+    if (t === "warning") return hMocks.msgWarning(msg);
+    return hMocks.msgError(msg);
+  }
 }));
 vi.mock("@/api/rbac", () => ({
   listUsers: (...a: any[]) => hMocks.listUsers(...a),

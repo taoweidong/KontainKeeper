@@ -5,7 +5,8 @@
  * 路由守卫拦非授权角色，接口侧另有 AdminUser 依赖兜底。
  */
 import { onMounted, reactive, ref } from "vue";
-import { ElMessage, ElMessageBox } from "element-plus";
+import { ElMessageBox } from "element-plus";
+import { message } from "@/utils/message";
 import type { FormInstance, FormRules } from "element-plus";
 
 import { useRenderIcon } from "@/components/ReIcon/src/hooks";
@@ -78,7 +79,7 @@ async function load() {
     loadFailed.value = false;
   } catch (e: any) {
     loadFailed.value = true;
-    ElMessage.error("加载用户列表失败：" + errText(e));
+    message("加载用户列表失败：" + errText(e), { type: "error" });
   } finally {
     loading.value = false;
   }
@@ -117,19 +118,19 @@ async function submit() {
           password: form.password,
           role: form.role
         });
-        ElMessage.success(`已创建用户 ${form.username}`);
+        message(`已创建用户 ${form.username}`, { type: "success" });
       } else {
         await updateUser(form.username, {
           role: form.role,
           enabled: form.enabled,
           ...(form.password ? { password: form.password } : {})
         });
-        ElMessage.success(`已更新用户 ${form.username}`);
+        message(`已更新用户 ${form.username}`, { type: "success" });
       }
       dialog.visible = false;
       await load();
     } catch (e: any) {
-      ElMessage.error("保存失败：" + errText(e));
+      message("保存失败：" + errText(e), { type: "error" });
     } finally {
       dialog.saving = false;
     }
@@ -154,10 +155,10 @@ async function onRemove(row: RbacUser) {
   }
   try {
     await deleteUser(row.username);
-    ElMessage.success(`已删除用户 ${row.username}`);
+    message(`已删除用户 ${row.username}`, { type: "success" });
     await load();
   } catch (e: any) {
-    ElMessage.error("删除失败：" + errText(e));
+    message("删除失败：" + errText(e), { type: "error" });
   }
 }
 

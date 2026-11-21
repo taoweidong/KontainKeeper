@@ -6,7 +6,7 @@
 */
 import { computed, onMounted, reactive, ref } from "vue";
 import { useRoute } from "vue-router";
-import { ElMessage } from "element-plus";
+import { message } from "@/utils/message";
 
 import {
   createCommand,
@@ -53,7 +53,7 @@ async function loadHosts() {
     hosts.value = (await listHosts("summary")).items;
     hostsRead.value = true;
   } catch (e: any) {
-    ElMessage.error("加载主机列表失败：" + errText(e));
+    message("加载主机列表失败：" + errText(e), { type: "error" });
   }
 }
 
@@ -76,15 +76,17 @@ async function loadItems() {
     // 预勾的三项属于已失效的清单，留着它们等于凭空下发
     collectForm.items = [];
     itemsFailed.value = true;
-    ElMessage.error("加载采集项失败：" + errText(e));
+    message("加载采集项失败：" + errText(e), { type: "error" });
   } finally {
     itemsLoading.value = false;
   }
 }
 
 async function submitCollect() {
-  if (!collectForm.pods.length) return ElMessage.warning("请选择主机");
-  if (!collectForm.items.length) return ElMessage.warning("请勾选采集项");
+  if (!collectForm.pods.length)
+    return message("请选择主机", { type: "warning" });
+  if (!collectForm.items.length)
+    return message("请勾选采集项", { type: "warning" });
   if (!(await confirmDispatch(picked.value, "下发采集"))) return;
   submitting.value = true;
   try {
@@ -93,13 +95,13 @@ async function submitCollect() {
       kind: "collect",
       items: collectForm.items
     });
-    ElMessage.success(`已下发 ${res.items.length} 条采集命令`);
+    message(`已下发 ${res.items.length} 条采集命令`, { type: "success" });
     history.value?.focusBatch(
       res.batch_id,
       res.items.map(i => i.id)
     );
   } catch (e: any) {
-    ElMessage.error("下发失败：" + errText(e));
+    message("下发失败：" + errText(e), { type: "error" });
   } finally {
     submitting.value = false;
   }
@@ -135,7 +137,7 @@ onMounted(async () => {
           >
             <el-checkbox v-for="it in items" :key="it" :value="it">
               <span class="kk-collect-item" :title="it">
-                <el-icon v-if="COLLECT_ITEM_ICONS[it]" :size="14">
+                <el-icon v-if="COLLECT_ITEM_ICONS[it]" class="kk-type-icon">
                   <component :is="COLLECT_ITEM_ICONS[it]" />
                 </el-icon>
                 {{ collectItemText(it) }}
@@ -184,15 +186,8 @@ onMounted(async () => {
 
 <style scoped>
 /* 勾选区最小高（QR1121）：清单在途时 v-loading 的 spinner 有落点，
-   不与「清单为空」混为一谈 */
+   不与「清单为空」混为一谈。图标口径收编全局 kk-type-icon（QR1123-W10） */
 .kk-collect-items {
   min-height: 80px;
-}
-
-/* 采集项图标只做类别标记：14px 次级灰，不抢文案（与 kk-h4 图标同口径） */
-.kk-collect-item .el-icon {
-  margin-right: var(--kk-space-sm);
-  color: var(--el-text-color-secondary);
-  vertical-align: -2px;
 }
 </style>

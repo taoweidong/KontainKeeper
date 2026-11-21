@@ -38,12 +38,17 @@ const hMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("element-plus", () => ({
-  ElMessage: {
-    error: hMocks.msgError,
-    success: hMocks.msgSuccess,
-    warning: hMocks.msgWarning
-  },
   ElMessageBox: { confirm: hMocks.confirm }
+}));
+// QR1123-W5：三页迁 message() 单一入口；mock 按 type 分发到既有 per-type spy，
+// 下方 msgError/msgSuccess 断言零改写
+vi.mock("@/utils/message", () => ({
+  message: (msg: any, params?: any) => {
+    const t = params?.type ?? "info";
+    if (t === "success") return hMocks.msgSuccess(msg);
+    if (t === "warning") return hMocks.msgWarning(msg);
+    return hMocks.msgError(msg);
+  }
 }));
 vi.mock("@/api/rbac", () => ({
   listUsers: (...a: any[]) => hMocks.listUsers(...a),
@@ -101,10 +106,7 @@ const ElDialog = defineComponent({
   },
   setup(_, { slots }) {
     return () =>
-      h("div", { class: "dialog-stub" }, [
-        slots.default?.(),
-        slots.footer?.()
-      ]);
+      h("div", { class: "dialog-stub" }, [slots.default?.(), slots.footer?.()]);
   }
 });
 const ElForm = defineComponent({
@@ -346,9 +348,7 @@ describe("W32：角色创建两段式的失败指引", () => {
   /** 打开新增角色弹窗并填表保存（el-form.validate 替身恒真） */
   async function createRoleWithMenus(w: ReturnType<typeof mount>) {
     // 「新增角色」按钮
-    const addBtn = w
-      .findAll("button")
-      .find(b => b.text() === "新增角色");
+    const addBtn = w.findAll("button").find(b => b.text() === "新增角色");
     await addBtn!.trigger("click");
     await settle();
 
@@ -360,9 +360,7 @@ describe("W32：角色创建两段式的失败指引", () => {
     hMocks.checkedKeys = ["host"];
     await settle();
 
-    const saveBtn = w
-      .findAll("button")
-      .find(b => b.text().trim() === "保存");
+    const saveBtn = w.findAll("button").find(b => b.text().trim() === "保存");
     await saveBtn!.trigger("click");
     await settle();
   }

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
-import { ElMessage } from "element-plus";
+import { message } from "@/utils/message";
 
 import { listHosts, type HostSummary } from "@/api/containers";
 import {
@@ -165,7 +165,7 @@ async function load(silent = false) {
     if (!isLatest()) return;
     // 手动失败同样要让读数变冷：数据确实可能已过期，区别只是多一条 toast
     pollFailed.value = true;
-    if (!silent) ElMessage.error("加载汇总数据失败：" + errText(e));
+    if (!silent) message("加载汇总数据失败：" + errText(e), { type: "error" });
   } finally {
     if (isLatest()) loading.value = false;
   }
@@ -223,7 +223,8 @@ onMounted(() => {
         >
           <div class="stat-value">{{ nOr(hostsRead, hosts.length) }}</div>
           <div class="stat-label">
-            <el-icon><component :is="useRenderIcon(IconHost)" /></el-icon
+            <el-icon class="kk-type-icon"
+              ><component :is="useRenderIcon(IconHost)" /></el-icon
             >主机总数
           </div>
           <div class="stat-sub">
@@ -243,7 +244,8 @@ onMounted(() => {
             {{ nOr(hostsRead, alerts) }}
           </div>
           <div class="stat-label">
-            <el-icon><component :is="useRenderIcon(IconAlert)" /></el-icon
+            <el-icon class="kk-type-icon"
+              ><component :is="useRenderIcon(IconAlert)" /></el-icon
             >磁盘告警
           </div>
           <div
@@ -275,7 +277,8 @@ onMounted(() => {
             }}
           </div>
           <div class="stat-label">
-            <el-icon><component :is="useRenderIcon(IconCommand)" /></el-icon
+            <el-icon class="kk-type-icon"
+              ><component :is="useRenderIcon(IconCommand)" /></el-icon
             >命令总数
           </div>
           <div class="stat-sub">
@@ -300,7 +303,8 @@ onMounted(() => {
             {{ stats?.agent_latest_ver ? `v${stats.agent_latest_ver}` : "—" }}
           </div>
           <div class="stat-label">
-            <el-icon><component :is="useRenderIcon(IconVersion)" /></el-icon
+            <el-icon class="kk-type-icon"
+              ><component :is="useRenderIcon(IconVersion)" /></el-icon
             >Agent 当前版本
           </div>
           <div class="stat-sub text-overflow" :title="agentVerText">
@@ -317,7 +321,7 @@ onMounted(() => {
           <template #header>
             <div class="panel-header">
               <span class="panel-title"
-                ><el-icon
+                ><el-icon class="kk-type-icon"
                   ><component :is="useRenderIcon(IconCommand)" /></el-icon
                 >最近命令</span
               >
@@ -386,7 +390,8 @@ onMounted(() => {
         <el-card shadow="never" class="panel">
           <template #header
             ><span class="panel-title"
-              ><el-icon><component :is="useRenderIcon(IconGrid)" /></el-icon
+              ><el-icon class="kk-type-icon"
+                ><component :is="useRenderIcon(IconGrid)" /></el-icon
               >快速入口</span
             ></template
           >
@@ -409,7 +414,8 @@ onMounted(() => {
         <el-card shadow="never" class="panel">
           <template #header
             ><span class="panel-title"
-              ><el-icon><component :is="useRenderIcon(IconMetal)" /></el-icon
+              ><el-icon class="kk-type-icon"
+                ><component :is="useRenderIcon(IconMetal)" /></el-icon
               >离线主机</span
             ></template
           >
@@ -444,7 +450,8 @@ onMounted(() => {
         <el-card shadow="never" class="panel grow">
           <template #header
             ><span class="panel-title"
-              ><el-icon><component :is="useRenderIcon(IconStats)" /></el-icon
+              ><el-icon class="kk-type-icon"
+                ><component :is="useRenderIcon(IconStats)" /></el-icon
               >系统状态</span
             ></template
           >
@@ -546,12 +553,6 @@ onMounted(() => {
     margin-top: var(--kk-space-sm);
     font-size: 14px;
     color: var(--el-text-color-secondary);
-
-    .el-icon {
-      margin-right: var(--kk-space-sm);
-      font-size: 14px;
-      vertical-align: -2px;
-    }
   }
 
   .stat-sub {
@@ -559,14 +560,6 @@ onMounted(() => {
     font-size: 12px;
     color: var(--el-text-color-placeholder);
   }
-}
-
-/* 面板标题图标（QR1121）：14px 单色，与 kk-h4 图标同口径 */
-.panel-title .el-icon {
-  margin-right: var(--kk-space-sm);
-  font-size: 14px;
-  color: var(--el-text-color-secondary);
-  vertical-align: -2px;
 }
 
 .stat-warn {
