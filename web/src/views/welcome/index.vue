@@ -13,19 +13,27 @@ import {
 import { listCommands, type CommandRow } from "@/api/commands";
 import {
   argvText,
+  cmdStateClass,
   durText,
   elapsedText,
   errText,
+  kindText,
   nOr,
   statusLabel,
-  statusType,
   tsText
 } from "@/utils/kk";
 import { usePolls, useSeq } from "@/utils/kkPoll";
 import { useRenderIcon } from "@/components/ReIcon/src/hooks";
-import MonitorIcon from "~icons/ri/dashboard-2-line";
-import CommandIcon from "~icons/ri/terminal-box-line";
-import AuditIcon from "~icons/ri/file-list-3-line";
+import {
+  IconAlert,
+  IconAudit,
+  IconCommand,
+  IconGrid,
+  IconHost,
+  IconMetal,
+  IconStats,
+  IconVersion
+} from "@/utils/kkIcons";
 
 defineOptions({ name: "Welcome" });
 
@@ -163,9 +171,7 @@ async function load(silent = false) {
   }
 }
 
-function kindLabel(k: string): string {
-  return { shell: "命令", collect: "采集", plugin_reload: "插件重载" }[k] || k;
-}
+// 命令类型中文收口到 @/utils/kk 的 kindText（QR1121-W19），本页不再内联一份
 
 function go(path: string) {
   router.push(path);
@@ -216,7 +222,10 @@ onMounted(() => {
           v-bind="press(() => go('/hosts/monitor'))"
         >
           <div class="stat-value">{{ nOr(hostsRead, hosts.length) }}</div>
-          <div class="stat-label">主机总数</div>
+          <div class="stat-label">
+            <el-icon><component :is="useRenderIcon(IconHost)" /></el-icon
+            >主机总数
+          </div>
           <div class="stat-sub">
             在线 {{ nOr(hostsRead, online) }} / 离线
             {{ nOr(hostsRead, offline) }}
@@ -233,7 +242,10 @@ onMounted(() => {
           <div class="stat-value" :class="{ 'text-danger': alerts > 0 }">
             {{ nOr(hostsRead, alerts) }}
           </div>
-          <div class="stat-label">磁盘告警</div>
+          <div class="stat-label">
+            <el-icon><component :is="useRenderIcon(IconAlert)" /></el-icon
+            >磁盘告警
+          </div>
           <div
             class="stat-sub text-overflow"
             :title="alertHosts.length ? alertHosts.join('、') : ''"
@@ -262,7 +274,10 @@ onMounted(() => {
               )
             }}
           </div>
-          <div class="stat-label">命令总数</div>
+          <div class="stat-label">
+            <el-icon><component :is="useRenderIcon(IconCommand)" /></el-icon
+            >命令总数
+          </div>
           <div class="stat-sub">
             失败 {{ nOr(statsRead, cmdStat("failed")) }} / 执行中
             {{ nOr(statsRead, cmdStat("running")) }}
@@ -275,13 +290,19 @@ onMounted(() => {
           class="stat-card clickable"
           v-bind="press(gotoUpdate)"
         >
+          <!-- 版本字符串不走大数字档（QR1121）：长版本号（v1.2.3-beta.10）
+               会撑破卡片，16px + ellipsis + title 兜底 -->
           <div
-            class="stat-value"
+            class="stat-value stat-value--ver"
             :class="{ 'text-warning': (stats?.agents_outdated ?? 0) > 0 }"
+            :title="stats?.agent_latest_ver ? `v${stats.agent_latest_ver}` : ''"
           >
             {{ stats?.agent_latest_ver ? `v${stats.agent_latest_ver}` : "—" }}
           </div>
-          <div class="stat-label">Agent 当前版本</div>
+          <div class="stat-label">
+            <el-icon><component :is="useRenderIcon(IconVersion)" /></el-icon
+            >Agent 当前版本
+          </div>
           <div class="stat-sub text-overflow">
             {{ agentVerText }}
           </div>
@@ -295,8 +316,17 @@ onMounted(() => {
         <el-card shadow="never" class="panel fill">
           <template #header>
             <div class="panel-header">
-              <span>最近命令</span>
-              <el-button link type="primary" @click="go('/command/shell')">
+              <span class="panel-title"
+                ><el-icon
+                  ><component :is="useRenderIcon(IconCommand)" /></el-icon
+                >最近命令</span
+              >
+              <el-button
+                link
+                type="primary"
+                :icon="useRenderIcon(IconCommand)"
+                @click="go('/command/shell')"
+              >
                 进命令中心
               </el-button>
             </div>
@@ -309,9 +339,9 @@ onMounted(() => {
             @row-click="(r: any) => go('/command/shell')"
           >
             <el-table-column prop="created_at" label="时间" width="170">
-              <template #default="{ row }">{{
-                tsText(row.created_at)
-              }}</template>
+              <template #default="{ row }">
+                <span class="kk-num">{{ tsText(row.created_at) }}</span>
+              </template>
             </el-table-column>
             <el-table-column
               prop="pod"
@@ -320,7 +350,7 @@ onMounted(() => {
               show-overflow-tooltip
             />
             <el-table-column prop="kind" label="类型" width="90">
-              <template #default="{ row }">{{ kindLabel(row.kind) }}</template>
+              <template #default="{ row }">{{ kindText(row.kind) }}</template>
             </el-table-column>
             <el-table-column label="内容" min-width="180" show-overflow-tooltip>
               <template #default="{ row }">{{
@@ -329,15 +359,16 @@ onMounted(() => {
             </el-table-column>
             <el-table-column prop="status" label="状态" width="90">
               <template #default="{ row }">
-                <el-tag :type="statusType(row.status)" size="small">
-                  {{ statusLabel(row.status) }}
-                </el-tag>
+                <!-- 圆点四档与命令历史/统计页同语言（QR1121-W2） -->
+                <span :class="cmdStateClass(row.status)">{{
+                  statusLabel(row.status)
+                }}</span>
               </template>
             </el-table-column>
             <el-table-column label="耗时" width="90">
-              <template #default="{ row }">{{
-                elapsedText(row.elapsed_ms)
-              }}</template>
+              <template #default="{ row }">
+                <span class="kk-num">{{ elapsedText(row.elapsed_ms) }}</span>
+              </template>
             </el-table-column>
             <template #empty>
               {{
@@ -353,31 +384,35 @@ onMounted(() => {
       <!-- 右：快速入口 + 离线主机 + 系统状态。flex 纵排，末卡弹性拉伸保证与左栏底边对齐 -->
       <el-col :xs="24" :lg="8" class="right-col">
         <el-card shadow="never" class="panel">
-          <template #header><span>快速入口</span></template>
+          <template #header
+            ><span class="panel-title"
+              ><el-icon><component :is="useRenderIcon(IconGrid)" /></el-icon
+              >快速入口</span
+            ></template
+          >
           <div class="quick-links">
             <div class="quick-link" v-bind="press(() => go('/hosts/monitor'))">
-              <el-icon size="22"
-                ><component :is="useRenderIcon(MonitorIcon)"
-              /></el-icon>
+              <el-icon><component :is="useRenderIcon(IconHost)" /></el-icon>
               <span>主机总览</span>
             </div>
             <div class="quick-link" v-bind="press(() => go('/command/shell'))">
-              <el-icon size="22"
-                ><component :is="useRenderIcon(CommandIcon)"
-              /></el-icon>
+              <el-icon><component :is="useRenderIcon(IconCommand)" /></el-icon>
               <span>命令中心</span>
             </div>
             <div class="quick-link" v-bind="press(() => go('/audit/index'))">
-              <el-icon size="22"
-                ><component :is="useRenderIcon(AuditIcon)"
-              /></el-icon>
+              <el-icon><component :is="useRenderIcon(IconAudit)" /></el-icon>
               <span>审计日志</span>
             </div>
           </div>
         </el-card>
 
         <el-card shadow="never" class="panel">
-          <template #header><span>离线主机</span></template>
+          <template #header
+            ><span class="panel-title"
+              ><el-icon><component :is="useRenderIcon(IconMetal)" /></el-icon
+              >离线主机</span
+            ></template
+          >
           <template v-if="offlineHosts.length">
             <div
               v-for="pod in offlineHosts"
@@ -385,10 +420,12 @@ onMounted(() => {
               class="offline-host clickable"
               v-bind="press(() => goHost(pod))"
             >
-              <el-tag type="danger" size="small" effect="plain">离线</el-tag>
+              <!-- 离线不是错误（QR1121）：空心冷灰圆点与 monitor/detail 同语言，
+                   不再用 danger 红 tag 把运维场景渲染成告警 -->
+              <span class="kk-state kk-state--idle">离线</span>
               <span class="pod-name">{{ pod }}</span>
             </div>
-            <div class="stat-sub" style="margin-top: 8px">
+            <div class="stat-sub kk-mt">
               共 {{ offline }} 台离线，
               <el-link
                 type="primary"
@@ -405,7 +442,12 @@ onMounted(() => {
         </el-card>
 
         <el-card shadow="never" class="panel grow">
-          <template #header><span>系统状态</span></template>
+          <template #header
+            ><span class="panel-title"
+              ><el-icon><component :is="useRenderIcon(IconStats)" /></el-icon
+              >系统状态</span
+            ></template
+          >
           <div class="sys-row">
             <span>Broker 链路</span>
             <span
@@ -431,6 +473,18 @@ onMounted(() => {
             <span>运行时长</span
             ><span>{{ stats ? durText(stats.uptime_sec) : "-" }}</span>
           </div>
+          <!-- 升级汇总（QR1121）：StatsResult.updates 此前未展示；
+               statsRead 守卫——没读到显 —，不补 0（QR-W16） -->
+          <div class="sys-row">
+            <span>升级汇总</span>
+            <span v-if="statsRead" class="kk-num">
+              在途 {{ stats?.updates?.in_flight ?? 0 }} · 完成
+              {{ stats?.updates?.done ?? 0 }} · 失败
+              {{ stats?.updates?.failed ?? 0 }} · 超时
+              {{ stats?.updates?.timeout ?? 0 }}
+            </span>
+            <span v-else>—</span>
+          </div>
         </el-card>
       </el-col>
     </el-row>
@@ -438,15 +492,9 @@ onMounted(() => {
 </template>
 
 <style scoped lang="scss">
-.welcome {
-  /* 横向 32px + 顶部 12px 的页面留白由全局 .kk-page--grow 统一供给
-     （与统计页 / 详情页同源），本页不再自带 padding。 */
-}
-
-.stat-row {
-  /* 与下一块的分隔由全局 `.kk-page--grow > * + *` 统一给 16px，
-     这里再写 margin-bottom 会叠成 32px。 */
-}
+/* 页面留白由全局 .kk-page--grow 统一供给（横向 32px + 顶部 12px，与统计页/
+   详情页同源）；块间距由 .kk-page--grow > * + * 统一给 16px——本页不再自带
+   padding/margin（QR1121 清理了原先两条只有注释的空规则）。 */
 
 .stat-card {
   text-align: center;
@@ -465,16 +513,34 @@ onMounted(() => {
     }
   }
 
+  /* 大数字尺度收口（QR1121）：原硬编码 30px 与仪表带 16px 两套无承载，
+     统一走 --kk-font-stat（24px）+ 全站等宽栈，数字逐位对齐 */
   .stat-value {
-    font-size: 30px;
+    font-family: var(--kk-font-num);
+    font-size: var(--kk-font-stat);
     font-weight: 600;
+    font-variant-numeric: tabular-nums;
     line-height: 1.2;
+  }
+
+  /* 版本字符串不是数字：小一档 + 溢出保护，长版本号不撑破卡片 */
+  .stat-value--ver {
+    overflow: hidden;
+    font-size: 16px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .stat-label {
     margin-top: var(--kk-space-sm);
     font-size: 14px;
     color: var(--el-text-color-secondary);
+
+    .el-icon {
+      margin-right: var(--kk-space-sm);
+      font-size: 14px;
+      vertical-align: -2px;
+    }
   }
 
   .stat-sub {
@@ -482,6 +548,14 @@ onMounted(() => {
     font-size: 12px;
     color: var(--el-text-color-placeholder);
   }
+}
+
+/* 面板标题图标（QR1121）：14px 单色，与 kk-h4 图标同口径 */
+.panel-title .el-icon {
+  margin-right: var(--kk-space-sm);
+  font-size: 14px;
+  color: var(--el-text-color-secondary);
+  vertical-align: -2px;
 }
 
 .stat-warn {
@@ -562,17 +636,21 @@ onMounted(() => {
   flex-direction: column;
   gap: var(--kk-space-sm);
   align-items: center;
-  min-width: 80px;
   padding: var(--kk-space-lg) var(--kk-space);
   cursor: pointer;
   border: 1px solid var(--el-border-color-lighter);
-  border-radius: 6px;
+  border-radius: 2px;
   transition: all 0.15s;
 
   &:hover {
     color: var(--el-color-primary);
     background-color: var(--el-color-primary-light-9);
     border-color: var(--el-color-primary);
+  }
+
+  /* 图标尺寸走类不写内联 size（QR1121）：flex:1 已分配宽度，min-width 退役 */
+  .el-icon {
+    font-size: 16px;
   }
 
   span {

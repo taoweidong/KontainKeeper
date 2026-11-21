@@ -8,6 +8,9 @@
 import { computed, onMounted, reactive, ref } from "vue";
 import { ElMessage } from "element-plus";
 
+import KkMenuIcon from "@/components/KkMenuIcon.vue";
+import { useRenderIcon } from "@/components/ReIcon/src/hooks";
+import { IconEdit, IconMenu, IconRetry } from "@/utils/kkIcons";
 import { errText } from "@/utils/kk";
 import { listMenus, updateMenu, type RbacMenu } from "@/api/rbac";
 
@@ -18,6 +21,8 @@ const menus = ref<RbacMenu[]>([]);
 /** 读到过真值没有（QR1120-W28 / QR-W16）：菜单表有内置种子，正常部署不可能为空——
  *  接口挂掉时显「菜单表为空」是把故障谎报成真空。 */
 const read = ref(false);
+/** 加载失败记账（QR1121-W17）：空态里给重试入口，不必整页刷新 */
+const loadFailed = ref(false);
 
 const dialog = reactive({
   visible: false,
@@ -58,7 +63,9 @@ async function load() {
   try {
     menus.value = (await listMenus()).items;
     read.value = true;
+    loadFailed.value = false;
   } catch (e: any) {
+    loadFailed.value = true;
     ElMessage.error("加载菜单失败：" + errText(e));
   } finally {
     loading.value = false;
@@ -107,7 +114,11 @@ onMounted(load);
     <el-card shadow="never" class="kk-card">
       <template #header>
         <div class="kk-toolbar">
-          <b>菜单管理</b>
+          <b
+            ><el-icon class="kk-type-icon"
+              ><component :is="useRenderIcon(IconMenu)" /></el-icon
+            >菜单管理</b
+          >
           <span class="kk-sub">
             改标题 / 图标 / 排序 / 显隐与启停；角色↔菜单的分配在「角色管理」页
           </span>
@@ -125,20 +136,54 @@ onMounted(load);
         <el-table-column label="标题" min-width="200">
           <template #default="{ row }">
             {{ row.title }}
-            <el-tag v-if="row.built_in" size="small" type="info">内置</el-tag>
-            <el-tag v-if="!row.enabled" size="small" type="danger">已停用</el-tag>
-            <el-tag v-else-if="!row.show_link" size="small" type="warning">
+            <!-- tag 堆叠间距收口四档（QR1121）：最多三枚不再贴边 -->
+            <el-tag v-if="row.built_in" class="kk-ml" size="small" type="info"
+              >内置</el-tag
+            >
+            <el-tag v-if="!row.enabled" class="kk-ml" size="small" type="danger"
+              >已停用</el-tag
+            >
+            <el-tag
+              v-else-if="!row.show_link"
+              class="kk-ml"
+              size="small"
+              type="warning"
+            >
               不出侧边栏
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="name" label="标识（路由 name）" min-width="140" />
+        <!-- 图标预览列（QR1121）：icon 字段此前不渲染，填错字符串侧边栏才暴露；
+             KkMenuIcon 离线白名单闸——已知显图标，未知显原串 + 提示 -->
+        <el-table-column label="图标" width="90">
+          <template #default="{ row }">
+            <KkMenuIcon :icon="row.icon" />
+          </template>
+        </el-table-column>
+        <el-table-column
+          prop="name"
+          label="标识（路由 name）"
+          min-width="140"
+        />
         <el-table-column prop="path" label="路由路径" min-width="150" />
-        <el-table-column prop="component" label="组件" min-width="180" show-overflow-tooltip />
-        <el-table-column prop="rank" label="排序" width="70" />
+        <el-table-column
+          prop="component"
+          label="组件"
+          min-width="180"
+          show-overflow-tooltip
+        />
+        <el-table-column label="排序" width="70">
+          <template #default="{ row }">
+            <span class="kk-num">{{ row.rank }}</span>
+          </template>
+        </el-table-column>
         <el-table-column label="操作" width="100">
           <template #default="{ row }">
-            <el-button link type="primary" @click="openEdit(row as RbacMenu)"
+            <el-button
+              link
+              type="primary"
+              :icon="useRenderIcon(IconEdit)"
+              @click="openEdit(row as RbacMenu)"
               >编辑</el-button
             >
           </template>
@@ -147,7 +192,15 @@ onMounted(load);
           <el-empty
             :description="read ? '菜单表为空' : '没读到（菜单接口不可达）'"
             :image-size="60"
-          />
+          >
+            <!-- 失败重试（QR1121-W17）：W28 的三态文案不动，只补行动入口 -->
+            <el-button
+              v-if="loadFailed && !loading"
+              :icon="useRenderIcon(IconRetry)"
+              @click="load()"
+              >重试</el-button
+            >
+          </el-empty>
         </template>
       </el-table>
       <p class="kk-sub kk-mt">
@@ -164,19 +217,31 @@ onMounted(load);
       width="min(92vw, 480px)"
       :close-on-click-modal="false"
     >
-      <el-form label-width="110px">
-        <el-form-item label="标识 / 路径">
-          <el-input :model-value="dialog.target" disabled />
-        </el-form-item>
-        <el-form-item label="组件">
-          <!-- 只读：path/component 是路由契约，改它们必须与前端 views 同步 -->
-          <el-input :model-value="editingComponent" disabled />
+      <!-- label-width 与 user/role 统一 90px（QR1121）；只读契约字段收为一行
+           纯文本（原两行 disabled input 信息密度低），path/component 不可改的
+           裁决不变 -->
+      <el-form label-width="90px">
+        <el-form-item label="标识 / 组件">
+          <span class="kk-num kk-sub"
+            >{{ dialog.target }} / {{ editingComponent }}</span
+          >
         </el-form-item>
         <el-form-item label="标题">
           <el-input v-model="form.title" />
         </el-form-item>
         <el-form-item label="图标">
-          <el-input v-model="form.icon" placeholder="如：ep/monitor（分组图标）" />
+          <!-- 实时预览（QR1121）：输入框 append 位挂 KkMenuIcon，填错当场可见 -->
+          <el-input
+            v-model="form.icon"
+            placeholder="如：ep/monitor（分组图标）"
+          >
+            <template #append>
+              <KkMenuIcon :icon="form.icon" />
+            </template>
+          </el-input>
+          <div class="kk-sub kk-icon-hint">
+            仅已注册图标会在侧边栏渲染；离线部署不支持在线图标（含 : 的字符串）
+          </div>
         </el-form-item>
         <el-form-item label="排序">
           <el-input-number v-model="form.rank" :min="0" :max="999" />
@@ -197,3 +262,12 @@ onMounted(load);
     </el-dialog>
   </div>
 </template>
+
+<style scoped>
+/* 图标说明独占一行（QR1121）：el-form-item__content 是 flex 容器，
+   不给 width:100% 会和输入框挤在同一行（collect 页失败横幅同族坑） */
+.kk-icon-hint {
+  width: 100%;
+  margin-top: var(--kk-space-sm);
+}
+</style>

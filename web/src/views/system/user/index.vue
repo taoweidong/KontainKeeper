@@ -8,6 +8,14 @@ import { onMounted, reactive, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import type { FormInstance, FormRules } from "element-plus";
 
+import { useRenderIcon } from "@/components/ReIcon/src/hooks";
+import {
+  IconDelete,
+  IconEdit,
+  IconPlus,
+  IconRetry,
+  IconUser
+} from "@/utils/kkIcons";
 import { errText, tsText } from "@/utils/kk";
 import { useUserStoreHook } from "@/store/modules/user";
 import {
@@ -29,6 +37,8 @@ const me = ref("");
 /** 读到过真值没有（QR1120-W28 / QR-W16）：接口挂掉时空表不能说「还没有用户」——
  *  那是把故障谎报成真空，admin 会以为账号被删光了。 */
 const read = ref(false);
+/** 加载失败记账（QR1121-W17）：空态里给重试入口，不必整页刷新（collect 页同范式） */
+const loadFailed = ref(false);
 
 const dialog = reactive({
   visible: false,
@@ -65,7 +75,9 @@ async function load() {
     users.value = u.items;
     roles.value = r.items;
     read.value = true;
+    loadFailed.value = false;
   } catch (e: any) {
+    loadFailed.value = true;
     ElMessage.error("加载用户列表失败：" + errText(e));
   } finally {
     loading.value = false;
@@ -161,9 +173,18 @@ onMounted(async () => {
     <el-card shadow="never" class="kk-card">
       <template #header>
         <div class="kk-toolbar">
-          <b>用户管理</b>
+          <b
+            ><el-icon class="kk-type-icon"
+              ><component :is="useRenderIcon(IconUser)" /></el-icon
+            >用户管理</b
+          >
           <div class="kk-actions">
-            <el-button type="primary" @click="openCreate">新增用户</el-button>
+            <el-button
+              type="primary"
+              :icon="useRenderIcon(IconPlus)"
+              @click="openCreate"
+              >新增用户</el-button
+            >
           </div>
         </div>
       </template>
@@ -172,32 +193,41 @@ onMounted(async () => {
         <el-table-column prop="username" label="用户名" min-width="140" />
         <el-table-column label="角色" width="160">
           <template #default="{ row }">
-            <el-tag :type="row.role === 'admin' ? 'danger' : 'info'" size="small">
+            <!-- admin 用 primary 而非 danger（QR1121）：红色在本站状态语言里
+                 专指告警/失败，特权角色是属性不是告警 -->
+            <el-tag
+              :type="row.role === 'admin' ? 'primary' : 'info'"
+              size="small"
+            >
               {{ row.role_label }}
             </el-tag>
           </template>
         </el-table-column>
         <el-table-column label="状态" width="100">
           <template #default="{ row }">
-            <span
-              class="kk-state"
-              :class="{ 'kk-state--idle': !row.enabled }"
-            >
+            <span class="kk-state" :class="{ 'kk-state--idle': !row.enabled }">
               {{ row.enabled ? "启用" : "已禁用" }}
             </span>
           </template>
         </el-table-column>
         <el-table-column label="创建时间" width="180">
-          <template #default="{ row }">{{ tsText(row.created) }}</template>
+          <template #default="{ row }">
+            <span class="kk-num">{{ tsText(row.created) }}</span>
+          </template>
         </el-table-column>
         <el-table-column label="操作" width="200">
           <template #default="{ row }">
-            <el-button link type="primary" @click="openEdit(row as RbacUser)"
+            <el-button
+              link
+              type="primary"
+              :icon="useRenderIcon(IconEdit)"
+              @click="openEdit(row as RbacUser)"
               >编辑</el-button
             >
             <el-button
               link
               type="danger"
+              :icon="useRenderIcon(IconDelete)"
               :disabled="row.username === me"
               @click="onRemove(row as RbacUser)"
               >删除</el-button
@@ -208,7 +238,15 @@ onMounted(async () => {
           <el-empty
             :description="read ? '还没有用户' : '没读到（用户接口不可达）'"
             :image-size="60"
-          />
+          >
+            <!-- 失败重试（QR1121-W17）：W28 的三态文案不动，只补行动入口 -->
+            <el-button
+              v-if="loadFailed && !loading"
+              :icon="useRenderIcon(IconRetry)"
+              @click="load()"
+              >重试</el-button
+            >
+          </el-empty>
         </template>
       </el-table>
       <p class="kk-sub kk-mt">
@@ -220,7 +258,9 @@ onMounted(async () => {
     <!-- 宽度 min(92vw, Npx)（QR1120-W29）：固定 px 在窄屏会溢出视口 -->
     <el-dialog
       v-model="dialog.visible"
-      :title="dialog.mode === 'create' ? '新增用户' : `编辑用户 ${form.username}`"
+      :title="
+        dialog.mode === 'create' ? '新增用户' : `编辑用户 ${form.username}`
+      "
       width="min(92vw, 460px)"
       :close-on-click-modal="false"
     >

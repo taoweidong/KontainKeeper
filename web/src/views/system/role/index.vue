@@ -9,6 +9,14 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import type { FormInstance, FormRules } from "element-plus";
 import type { ElTree } from "element-plus";
 
+import { useRenderIcon } from "@/components/ReIcon/src/hooks";
+import {
+  IconDelete,
+  IconEdit,
+  IconPlus,
+  IconRetry,
+  IconRole
+} from "@/utils/kkIcons";
 import { errText, tsText } from "@/utils/kk";
 import {
   createRole,
@@ -28,6 +36,8 @@ const menus = ref<RbacMenu[]>([]);
 /** 读到过真值没有（QR1120-W28 / QR-W16）：接口挂掉时空表不能说「还没有角色」，
  *  内置角色明明存在——那是把故障谎报成真空。 */
 const read = ref(false);
+/** 加载失败记账（QR1121-W17）：空态里给重试入口，不必整页刷新 */
+const loadFailed = ref(false);
 
 const dialog = reactive({
   visible: false,
@@ -79,7 +89,9 @@ async function load() {
     roles.value = r.items;
     menus.value = m.items;
     read.value = true;
+    loadFailed.value = false;
   } catch (e: any) {
+    loadFailed.value = true;
     ElMessage.error("加载角色列表失败：" + errText(e));
   } finally {
     loading.value = false;
@@ -110,6 +122,13 @@ function resetTree(checked: string[]) {
   void nextTick(() => {
     menuTreeRef.value?.setCheckedKeys(checked, false);
   });
+}
+
+/** 可见菜单明细（QR1121）：「N 项」hover 列出菜单标题，核对授权不必开弹窗。
+ *  菜单表里查不到的 name 原样回显（授权可能指向已改名的历史菜单）。 */
+function menuTitles(names: string[]): string {
+  const byName = new Map(menus.value.map(m => [m.name, m.title]));
+  return names.map(n => byName.get(n) || n).join("、");
 }
 
 async function submit() {
@@ -196,9 +215,18 @@ onMounted(load);
     <el-card shadow="never" class="kk-card">
       <template #header>
         <div class="kk-toolbar">
-          <b>角色管理</b>
+          <b
+            ><el-icon class="kk-type-icon"
+              ><component :is="useRenderIcon(IconRole)" /></el-icon
+            >角色管理</b
+          >
           <div class="kk-actions">
-            <el-button type="primary" @click="openCreate">新增角色</el-button>
+            <el-button
+              type="primary"
+              :icon="useRenderIcon(IconPlus)"
+              @click="openCreate"
+              >新增角色</el-button
+            >
           </div>
         </div>
       </template>
@@ -211,25 +239,40 @@ onMounted(load);
           </template>
         </el-table-column>
         <el-table-column prop="name" label="标识" width="140" />
-        <el-table-column prop="remark" label="备注" min-width="180" />
+        <el-table-column
+          prop="remark"
+          label="备注"
+          min-width="180"
+          show-overflow-tooltip
+        />
         <el-table-column label="可见菜单" min-width="200">
           <template #default="{ row }">
             <span v-if="row.name === 'admin'" class="kk-sub">全部（固定）</span>
             <span v-else-if="!row.menus.length" class="kk-sub">
               无（该角色登录后侧边栏为空）
             </span>
-            <span v-else>{{ row.menus.length }} 项</span>
+            <!-- 「N 项」hover 列明细（QR1121）：核对授权不必开弹窗 -->
+            <el-tooltip v-else :content="menuTitles(row.menus)" placement="top">
+              <span class="kk-num">{{ row.menus.length }} 项</span>
+            </el-tooltip>
           </template>
         </el-table-column>
-        <el-table-column prop="users" label="用户数" width="90" />
+        <el-table-column label="用户数" width="90">
+          <template #default="{ row }">
+            <span class="kk-num">{{ row.users }}</span>
+          </template>
+        </el-table-column>
         <el-table-column label="创建时间" width="180">
-          <template #default="{ row }">{{ tsText(row.created) }}</template>
+          <template #default="{ row }">
+            <span class="kk-num">{{ tsText(row.created) }}</span>
+          </template>
         </el-table-column>
         <el-table-column label="操作" width="180">
           <template #default="{ row }">
             <el-button
               link
               type="primary"
+              :icon="useRenderIcon(IconEdit)"
               :disabled="row.name === 'admin'"
               @click="openEdit(row as RbacRole)"
               >编辑</el-button
@@ -237,6 +280,7 @@ onMounted(load);
             <el-button
               link
               type="danger"
+              :icon="useRenderIcon(IconDelete)"
               :disabled="row.built_in || row.users > 0"
               @click="onRemove(row as RbacRole)"
               >删除</el-button
@@ -247,11 +291,20 @@ onMounted(load);
           <el-empty
             :description="read ? '还没有角色' : '没读到（角色接口不可达）'"
             :image-size="60"
-          />
+          >
+            <!-- 失败重试（QR1121-W17）：W28 的三态文案不动，只补行动入口 -->
+            <el-button
+              v-if="loadFailed && !loading"
+              :icon="useRenderIcon(IconRetry)"
+              @click="load()"
+              >重试</el-button
+            >
+          </el-empty>
         </template>
       </el-table>
       <p class="kk-sub kk-mt">
-        admin 角色的授权固定为全部菜单，防止把自己改没后无从恢复；内置角色不可删除，
+        admin
+        角色的授权固定为全部菜单，防止把自己改没后无从恢复；内置角色不可删除，
         仍有用户使用的角色须先移走用户。授权改动对已登录用户在下一次刷新后生效。
       </p>
     </el-card>
@@ -259,7 +312,9 @@ onMounted(load);
     <!-- 宽度 min(92vw, Npx)（QR1120-W29）：固定 px 在窄屏会溢出视口 -->
     <el-dialog
       v-model="dialog.visible"
-      :title="dialog.mode === 'create' ? '新增角色' : `编辑角色 ${dialog.target}`"
+      :title="
+        dialog.mode === 'create' ? '新增角色' : `编辑角色 ${dialog.target}`
+      "
       width="min(92vw, 520px)"
       :close-on-click-modal="false"
     >
@@ -284,15 +339,20 @@ onMounted(load);
           <el-input v-model="form.remark" type="textarea" :rows="2" />
         </el-form-item>
         <el-form-item label="菜单授权">
-          <el-tree
-            ref="menuTreeRef"
-            :data="menuTree"
-            node-key="name"
-            show-checkbox
-            default-expand-all
-            :props="{ label: 'label', children: 'children' }"
-            style="width: 100%"
-          />
+          <!-- 树高超锚点内滚（QR1121）：default-expand-all + 菜单增长后
+               弹窗 body 可能被撑出视口（窄屏 92vw 生效时尤其），参照 HostPicker
+               抽屉表格的 --kk-drawer-h 范式 -->
+          <div class="kk-role-tree">
+            <el-tree
+              ref="menuTreeRef"
+              :data="menuTree"
+              node-key="name"
+              show-checkbox
+              default-expand-all
+              :props="{ label: 'label', children: 'children' }"
+              style="width: 100%"
+            />
+          </div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -304,3 +364,12 @@ onMounted(load);
     </el-dialog>
   </div>
 </template>
+
+<style scoped>
+/* 授权树内滚（QR1121）：高度锚点与抽屉表格同族，数值只在 kk.scss 维护 */
+.kk-role-tree {
+  width: 100%;
+  max-height: var(--kk-drawer-h);
+  overflow: auto;
+}
+</style>
