@@ -143,12 +143,9 @@ def load_settings(env=None) -> Settings:
         raise RuntimeError(
             "KK_ENV=production 但仍在用默认口令 admin123，存在严重安全风险；"
             "请先通过 KK_ADMIN_PASS 设置强口令再启动")
-    # 生产必须显式配置 IP 白名单：不配等于对所有上报放行，与内网可信前提
-    # 之外的生产环境不匹配（替代原 dev-token 自检）
-    if not agent_ips and env.get("KK_ENV", "").strip().lower() == "production":
-        raise RuntimeError(
-            "KK_ENV=production 但 KK_AGENT_IPS 未配置（白名单为空 = 放行所有上报）；"
-            "请设置 KK_AGENT_IPS（逗号分隔 IP/CIDR，如 10.0.0.0/24,192.168.1.5）再启动")
+    # 生产白名单校验已挪到 lifespan 建库后（ensure_whitelist_configured，QR1124）：
+    # 动态白名单后「已配」= env 或 DB 启用规则任一非空，load_settings 是同步纯函数
+    # 拿不到 DB，故此处不再 raise（口令检查仍在上面）。语义裁决见 test_whitelist。
     return Settings(db_path, admin_user, admin_pass, cmd_blacklist,
                     interval_min, agent_bin_dir, web_dir, agent_ips,
                     db_url=db_url,
@@ -176,3 +173,23 @@ def load_settings(env=None) -> Settings:
                     accept_proto_vers=((PROTO_VER,)
                                        if _env_bool(env, "KK_DROP_PROTO_V3")
                                        else ACCEPT_PROTO_VERS))
+
+
+async def ensure_whitelist_configured(settings, store, env=None):
+    """QR1124：生产启动白名单校验（挪到 lifespan 建库后，替代原 load_settings 的 env-only raise）。
+
+    「已配」= env KK_AGENT_IPS 非空 **或** DB 有启用规则——界面配置真正可用，不必再
+    依赖环境变量。空白名单=放行所有的开发语义不变（ip_in_whitelist）；生产两者皆空
+    才拒启动（不配等于对所有上报放行，与内网可信前提之外的生产环境不匹配）。
+    """
+    env = dict(os.environ if env is None else env)
+    if env.get("KK_ENV", "").strip().lower() != "production":
+        return
+    if settings.agent_ips:
+        return
+    if await store.has_enabled_ip_rules():
+        return
+    raise RuntimeError(
+        "KK_ENV=production 但 IP 白名单未配置（env KK_AGENT_IPS 为空且界面无启用规则，"
+        "白名单为空 = 放行所有上报）；请设置 KK_AGENT_IPS（逗号分隔 IP/CIDR）或在"
+        "「系统管理 → IP 白名单」添加规则后再启动")

@@ -54,6 +54,21 @@ async def require_admin(request: Request) -> str:
 AdminUser = Annotated[str, Depends(require_admin)]
 
 
+async def refresh_agent_ips(app, store, bridge):
+    """QR1124：白名单快照刷新收口——事件循环侧读 DB → 原子替换两处消费点。
+
+    bridge.agent_ips 跑在 paho 网络线程（_route_message 读），app.state.agent_ips
+    供 REST agent_ip_auth 读；CPython 引用赋值原子，网络线程读到的要么旧要么新，
+    不会撕裂。REST 变更后即时调 + janitor 周期兜底（多实例各自刷新，DB 共享真相源）。
+    收口成一个函数同时更新两处，消除原 main.py 与 bridge 两份独立引用的漂移。
+    住在 deps（而非 main）避免 main↔controllers 循环导入。
+    """
+    nets = await store.enabled_ip_networks()
+    if bridge is not None:
+        bridge.agent_ips = nets
+    app.state.agent_ips = nets
+
+
 # ---- v4 主机筛选参数（/api/containers 与 /api/export/hosts 共用同一套）----
 
 _TRUEISH = ("1", "true", "yes", "on")

@@ -73,6 +73,8 @@ class _StoreMaintenanceMixin:
         # 审计保留 90 天：够溯源，也不给「持续灌拒绝帧」留无限增长的空间
         stats["audit_deleted"] = await self._delete_batched(
             audit, audit.c.ts < now - audit_days * 86400, audit.c.id)
+        # QR1124：拦截记录按 IP 聚合，30 天保留 + 行数上限守卫（_store_ipwhitelist）
+        stats.update(await self.cleanup_ip_rejects(now))
         # sweeper 漏掉的僵死命令盖成 lost 并补 finished_at：不补时间戳的 lost 行
         # 永远落在上面那条 DELETE 的窗口之外，正是 P1-6。
         stats["commands_lost"] = await self._run(

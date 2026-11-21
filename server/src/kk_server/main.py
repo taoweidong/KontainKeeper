@@ -18,8 +18,9 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from . import PROTO_VER, __version__
-from .config import load_settings
+from .config import ensure_whitelist_configured, load_settings
 from .controllers import register
+from .controllers.deps import refresh_agent_ips
 from .logsetup import get_logger, setup_logging
 from .models.store import Store, normalize_url
 from .services.mqtt_bridge import MqttBridge, SWEEP_INTERVAL
@@ -60,11 +61,16 @@ def create_app(env=None):
         if settings.admin_pass == "admin123":
             log.warning("using default admin password 'admin123', set KK_ADMIN_PASS "
                         "before production!")
+        # QR1124：env 白名单首次播种（缺则补）→ 生产校验（env 或 DB 任一非空）→
+        # 初始快照刷新。校验在建库后，故能认 DB 里的界面配置，不再只认 env。
+        await store.seed_ip_rules_from_env(settings.agent_ips)
+        await ensure_whitelist_configured(settings, store, env)
+        await refresh_agent_ips(app, store, bridge)
         if bridge is not None:
             # 桥接回调跑在 paho 网络线程，落库要调度回这里拿到的循环
             bridge.loop = asyncio.get_running_loop()
             await asyncio.to_thread(bridge.start)
-        janitor = asyncio.create_task(_janitor(store, bridge), name="kk-janitor")
+        janitor = asyncio.create_task(_janitor(app, store, bridge), name="kk-janitor")
         try:
             yield
         finally:
@@ -78,8 +84,8 @@ def create_app(env=None):
                 await asyncio.to_thread(bridge.stop)
             await store.close()
 
-    async def _janitor(store, bridge):
-        """周期任务：命令超时收敛 + 僵尸在线判定 + 存储回收。"""
+    async def _janitor(app, store, bridge):
+        """周期任务：命令超时收敛 + 僵尸在线判定 + 存储回收 + 白名单快照兜底刷新。"""
         n = 0
         while True:
             await asyncio.sleep(SWEEP_INTERVAL)
@@ -87,6 +93,8 @@ def create_app(env=None):
             try:
                 if bridge is not None:
                     await bridge.sweep()
+                # QR1124：多实例兜底——别的实例改了 DB 名单，本实例 30s 内收敛
+                await refresh_agent_ips(app, store, bridge)
                 if n % CLEANUP_PASSES == 0:
                     stats = await store.cleanup()
                     log.info("cleanup: %s", stats)
@@ -99,7 +107,8 @@ def create_app(env=None):
     app.state.settings = settings
     app.state.store = store
     app.state.bridge = bridge
-    app.state.agent_ips = settings.agent_ips   # v3：Agent 接入白名单（REST 侧自更新接口共用）
+    # 初始为 env 快照；lifespan 建库后 refresh_agent_ips 刷成 DB 运行时名单（QR1124）
+    app.state.agent_ips = settings.agent_ips
     app.state.cmd_blacklist = settings.cmd_blacklist
     app.state.agent_bin_dir = settings.agent_bin_dir
 

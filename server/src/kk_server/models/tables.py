@@ -244,6 +244,33 @@ kv = Table(
     Column("v", Text, nullable=False),
 )
 
+# QR1124：动态 IP 白名单（界面配置、运行时生效，无需重启）。env KK_AGENT_IPS 仅作
+# 启动种子（缺则补、改过不重置），DB 为运行时真相源。条目化以支持 CRUD/启停/备注，
+# 与 RBAC 管理实体同族；运行时名单 = enabled 行的 cidr 经 parse_ip_whitelist 组网。
+ip_rules = Table(
+    "kk_ip_rules", MD,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("cidr", String(64), nullable=False),
+    Column("remark", String(200), nullable=False, server_default=""),
+    Column("enabled", Integer, nullable=False, server_default="1"),
+    Column("created", BigInteger, nullable=False),
+    Index("idx_ip_rules_cidr", "cidr"),
+)
+
+# QR1124：拦截记录按源 IP 聚合（ip 主键 → upsert 有界，不是逐帧 insert）。
+# 写入侧按 IP 60s 节流 + 30 天保留 + 行数上限守卫，不重开 QR1120-S1 的灌库口子；
+# ip_rejected 审计仍并行保留（安全溯源链不断）。hits 为 recorded 事件计数（节流后）。
+ip_rejects = Table(
+    "kk_ip_rejects", MD,
+    Column("ip", String(64), primary_key=True),   # 自报 ip 原串（截 64），按 IP 聚合
+    Column("hits", BigInteger, nullable=False, server_default="0"),
+    Column("pod", String(120), nullable=False, server_default=""),
+    Column("kind", String(12), nullable=False, server_default=""),
+    Column("first_seen", BigInteger, nullable=False),
+    Column("last_seen", BigInteger, nullable=False),
+    Index("idx_ip_rejects_last_seen", "last_seen"),
+)
+
 _CMD_COLS = [c.name for c in commands.columns if c.name != "out_b64"]
 ONLINE_GRACE = 180
 

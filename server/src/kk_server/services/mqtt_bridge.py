@@ -96,6 +96,10 @@ class MqttBridge:
         self._result_locks = {}
         # 上次各类限速审计的落库时间（key -> ts）：只在事件循环线程读写，无需加锁
         self._audit_ts = {}
+        # QR1124：拦截记录按 IP 节流的落库时间（ip -> ts）。与 _audit_ts 独立——
+        # 审计按 action 全局节流（QR1120-S1 承重），专表按 IP upsert 聚合（有界）。
+        # 同样只在事件循环线程读写；cap 4096 收缩防轮换 IP 撑大 dict。
+        self._reject_ts = {}
         # C5 可观测性：面板只能从这些计数看出「链路是不是活的」——
         # 心跳在涨说明 Agent 在报，cmd_failed 在涨说明发布侧出了问题。
         self.stats = {"status": 0, "hb": 0, "result": 0, "rejected": 0,
@@ -333,14 +337,27 @@ class MqttBridge:
 
     # ---- 三类上行帧（事件循环线程）----
     async def _on_ip_rejected(self, host, body):
-        """白名单外上报的审计落库（v3 接入管控，替代原 token 拒绝审计）。"""
-        # QR1120-S1：key 按 action 全局——ip 是自报值，逐帧换 ip 曾让每个新 key
+        """白名单外上报：拦截记录按 IP 聚合落专表 + 审计溯源（v3 接入管控）。"""
+        ip = str(body.get("ip") or "")
+        # QR1124：精确帧类型——status 带 online 键、result 带 id 键、其余 hb
+        # （修原推断把 result 误标 hb 的瑕疵；不改 _dispatch 签名，按 body 键判）
+        kind = "status" if "online" in body else ("result" if "id" in body else "hb")
+        # QR1124：专表按 IP 60s 节流（有界 dict 仿 _audit_ts）。轮换 IP 会建多行，
+        # 但 upsert 按 IP 聚合 + cleanup 30 天保留 + 5 万行上限守卫，DB 有界。
+        now = int(time.time())
+        last = self._reject_ts.get(ip, 0)
+        self._reject_ts[ip] = now
+        if len(self._reject_ts) > 4096:
+            cutoff = now - AUDIT_THROTTLE * 4
+            self._reject_ts = {k: v for k, v in self._reject_ts.items() if v > cutoff}
+        if now - last >= AUDIT_THROTTLE:
+            await self.store.record_ip_reject(ip, host, kind)
+        # QR1120-S1：审计 key 按 action 全局——ip 是自报值，逐帧换 ip 曾让每个新 key
         # 都过节流（轮换即绕过灌库）。首条事件的 host/ip 仍记在 detail 里。
         if self._audit_throttled(("ip_rejected",)):
             return
         await self.store.add_audit("mqtt", "ip_rejected",
-                             {"host": host, "ip": str(body.get("ip") or ""),
-                              "kind": "status" if "online" in body else "hb"})
+                             {"host": host, "ip": ip, "kind": kind})
 
     async def _on_host_mismatch(self, host, body):
         """帧归属不一致的审计落库（QR29-S4）：topic 主机与 body.host 对不上。"""
