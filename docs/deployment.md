@@ -105,20 +105,27 @@ KK_AGENT_IPS=<Agent 接入白名单：逗号分隔 IP / CIDR，如 10.0.0.0/24,1
 KK_ADMIN_PASS=<管理界面强口令>
 ```
 
-> 白名单是 v3 的接入管控手段：只有名单内 IP 的 Agent 才能上报数据，
-> 其余全部拒绝并审计。`KK_ENV=production` 时未配置会直接拒绝启动。
+> 白名单是接入管控手段：只有名单内 IP 的 Agent 才能上报数据，其余全部拒绝并审计。
+> **QR1124 起白名单动态化**：运行时名单存数据库，经「系统管理 → IP 白名单」界面配置
+> （增删 / 启停 / 备注），变更即时生效无需重启；`KK_AGENT_IPS` 退为启动种子。
+> `KK_ENV=production` 时 env 与 DB 启用规则皆空才拒绝启动。
 
-**白名单工作机制（v3，替代 token 认证）**：
+**白名单工作机制（v3 替代 token 认证，QR1124 动态化）**：
 
 1. **自报**：Agent 连 Broker 时自动探测「到 Broker 方向的出口 IP」（UDP connect），
    写入每条上行帧的 `ip` 字段——MQTT 经 Broker 中转拿不到发布者真实 TCP 源 IP，
    白名单基于自报值，适合内网可信环境；
-2. **校验**：kk-server 在消息入口按 `KK_AGENT_IPS` 逐一匹配（`ipaddress` 网段语义），
+2. **校验**：kk-server 在消息入口按运行时名单逐一匹配（`ipaddress` 网段语义），
    命中任一网段即放行，全部未命中则丢弃该帧并记 WARNING 日志
-   （`host=… 拒绝白名单外上报：ip='x.x.x.x'`），同时在审计页留下 `ip_rejected` 记录
-   （同主机 + IP 60 秒节流一条，防审计灌水）；
+   （`host=… 拒绝白名单外上报：ip='x.x.x.x'`），同时落 `ip_rejected` 审计
+   （按 action 全局 60 秒节流，防审计灌水）+ 按源 IP 聚合的拦截记录
+   （`kk_ip_rejects`，「系统管理 → 拦截记录」页可查可导出）；
 3. **语法**：逗号分隔的 **精确 IP 与 CIDR 网段混合列表**，单个 IP 自动按 `/32`
-   （IPv6 按 `/128`）处理；格式写错（如笔误的网段）**启动即失败**，好过静默全拒。
+   （IPv6 按 `/128`）处理；格式写错（如笔误的网段）**启动即失败**，好过静默全拒；
+4. **动态配置**：`KK_AGENT_IPS` 首次启动播种进 DB（`kk_ip_rules`，缺则补、管理员
+   改过不重置），此后 DB 为运行时真相源。界面增删/启停规则后服务端即时刷新桥接与
+   REST 两处快照（多实例 30s 内收敛），无需重启。**名单为空 = 放行全部**（仅开发/测试），
+   生产请至少保留一条启用规则。
 
 配置示例（覆盖被管理主机网段，可混写）：
 
@@ -177,10 +184,12 @@ uv run kk-server                            # 监听 0.0.0.0:8443
 
 ### 4.4 启动安全自检（KK_ENV=production）
 
-`config.py` 在 `KK_ENV=production` 时会**直接拒绝启动**以下情况：
+`KK_ENV=production` 时会**直接拒绝启动**以下情况：
 
-- 管理口令仍是默认 `admin123`；
-- `KK_AGENT_IPS` 未配置（白名单为空 = 放行所有上报）。
+- 管理口令仍是默认 `admin123`（`config.py` 装配期检查）；
+- IP 白名单未配置：`KK_AGENT_IPS` 为空**且** DB 无启用规则（白名单为空 = 放行所有上报）。
+  QR1124 起此检查在 lifespan 建库后（`ensure_whitelist_configured`），故界面配置的
+  规则也算「已配」——不必再依赖环境变量。
 
 自检不过会抛 `RuntimeError` 并退出，按提示修正后重启。
 
@@ -189,7 +198,7 @@ uv run kk-server                            # 监听 0.0.0.0:8443
 | 变量 | 说明 | 默认 |
 |---|---|---|
 | `KK_MQTT_URL` | Broker 地址（`mqtt://` / `mqtts://`） | 必填 |
-| `KK_AGENT_IPS` | Agent 接入白名单（逗号分隔 IP / CIDR；**生产必配**，空 = 放行全部） | 空 |
+| `KK_AGENT_IPS` | Agent 接入白名单**启动种子**（逗号分隔 IP / CIDR；首次播种进 DB，此后界面配置为准；空 = 放行全部，生产须 env 或 DB 任一非空） | 空 |
 | `KK_MQTT_CLIENT_ID` | 实例唯一 client_id；**多实例必须逐实例唯一**，否则被 Broker 互踢 | `kk-server` |
 | `KK_MQTT_KEEPALIVE` | MQTT 保活秒数（下限 10） | `60` |
 | `KK_MQTT_USERNAME` / `KK_MQTT_PASSWORD` | 服务端连 Broker 的凭据（Broker 匿名时留空） | 空 |
