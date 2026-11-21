@@ -15,6 +15,8 @@ import { ElMessage } from "element-plus";
 
 import { createCommand } from "@/api/commands";
 import { listHosts, type HostSummary } from "@/api/containers";
+import { useRenderIcon } from "@/components/ReIcon/src/hooks";
+import { IconSend } from "@/utils/kkIcons";
 import { errText } from "@/utils/kk";
 import { confirmDispatch } from "@/utils/kkConfirm";
 import CommandHistory from "../components/CommandHistory.vue";
@@ -69,9 +71,7 @@ const podsTooBigForUrl = (pods: string[]) =>
  *  query 没变就不该再触发路由替换。 */
 const sameQuery = (a: Record<string, any>, b: Record<string, any>) => {
   const ka = Object.keys(a);
-  return (
-    ka.length === Object.keys(b).length && ka.every(k => a[k] === b[k])
-  );
+  return ka.length === Object.keys(b).length && ka.every(k => a[k] === b[k]);
 };
 
 /** 选择与超时同步到 query（replace 不污染后退栈）：刷新与分享不丢。
@@ -216,7 +216,12 @@ onMounted(async () => {
           <el-input-number v-model="shellForm.timeout" :min="1" :max="600" /> 秒
         </el-form-item>
         <el-form-item>
-          <el-button type="primary" :loading="submitting" @click="submitShell">
+          <el-button
+            type="primary"
+            :icon="useRenderIcon(IconSend)"
+            :loading="submitting"
+            @click="submitShell"
+          >
             下发命令（{{ shellForm.pods.length }} 台）
           </el-button>
           <div class="kk-sub">Ctrl / Cmd + Enter 可直接下发</div>

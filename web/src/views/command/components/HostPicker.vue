@@ -12,6 +12,8 @@ import { computed, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 
 import { listHosts, type HostSummary } from "@/api/containers";
+import { useRenderIcon } from "@/components/ReIcon/src/hooks";
+import { IconHost } from "@/utils/kkIcons";
 import {
   errText,
   hostStateClass,
@@ -197,7 +199,7 @@ watch(
 <template>
   <div>
     <div class="kk-picker">
-      <el-button @click="open">
+      <el-button :icon="useRenderIcon(IconHost)" @click="open">
         选择主机（已选 {{ selected.length }} 台）
       </el-button>
       <!-- 在线三态（QR1120-W10）：自更新窗口显「更新中」琥珀标签，不是普通离线 -->
@@ -222,7 +224,8 @@ watch(
       <span v-if="!selected.length" class="kk-sub">未选择主机</span>
     </div>
 
-    <el-drawer v-model="drawer" title="选择目标主机" size="52%">
+    <!-- 宽度与 RBAC 弹窗同族（QR1121）：极窄屏 92vw 保底，宽屏封顶 760px -->
+    <el-drawer v-model="drawer" title="选择目标主机" size="min(92vw, 760px)">
       <div class="kk-toolbar kk-mb">
         <el-input
           v-model="keyword"

@@ -18,12 +18,13 @@ import {
 import { exportCommands } from "@/api/exporting";
 import {
   argvText,
+  cmdStateClass,
   downloadBlob,
   elapsedText,
   errText,
   fileStamp,
+  kindText,
   statusLabel,
-  statusType,
   tsText
 } from "@/utils/kk";
 import { usePolls, useSeq } from "@/utils/kkPoll";
@@ -72,40 +73,8 @@ export function sliceOutText(
  *  正在跑的轮询。对外契约不变（仍导出 POLL_KEY，模板的「自动刷新」勾选用它停表）。 */
 let historySeq = 0;
 
-/**
- * 状态列的严重度判级：**逐档照搬 `@/utils/kk` 的 `statusType` 返回值**（五档 el-tag
- * type 映射到本仓四档圆点），语义一条不许丢——这是 L1-5 评审揪出的那类回归：
- * `.kk-state::before` 默认圆点是 `var(--kk-live)`（绿 = 在线/健康），只改文字色的
- * `.kk-bad` 不动圆点，于是 `failed`/`timeout`/`lost` 会顶着绿色健康点说「一切正常」。
- *
- * | statusType | 状态值 | 圆点 |
- * |---|---|---|
- * | `danger` | failed / timeout / lost | 红点 + 红字（`--bad` 上色圆点，`kk-bad` 上色文字） |
- * | `warning` | sent | 琥珀点（已下发等结果） |
- * | `primary` | running | 琥珀点（与 sent 同档，见下） |
- * | `success` | done | 默认实心绿点（返回基类，不加变体） |
- * | `info` | pending / queued / 未知 | 空心点（未开始，不是错误也不是健康） |
- *
- * `primary`（running）与 `warning`（sent）并进同一档琥珀点，是本仓状态语言的取舍：
- * `kk.scss` 的四档词汇（绿/红/琥珀/空心）里没有蓝色圆点，而 `running` 与 `sent` 的
- * 严重度本来就相同——都是「未终态、等结果」，也正是 `hasActive` 与 3s 快轮询要一起
- * 捞的那一档；两者的**文字**仍由 `statusLabel` 分别给出「执行中 / 已下发」， finer 区分
- * 没有丢。另两条禁区：`kk-warn` 在本仓专指「Agent 版本落后于待分发版本」，`kk-state--updating`
- * 是方点、承载 B6「更新中」语义——都不许挪用去表达命令严重度。
- */
-const statusStateClass = (s: string): string => {
-  switch (statusType(s)) {
-    case "danger":
-      return "kk-state kk-state--bad kk-bad";
-    case "warning":
-    case "primary":
-      return "kk-state kk-state--warn";
-    case "success":
-      return "kk-state";
-    default:
-      return "kk-state kk-state--idle";
-  }
-};
+// 状态列严重度判级收口到 @/utils/kk 的 cmdStateClass（QR1121-W2）：
+// 五档→四档圆点的映射表与禁区注释随迁，welcome/detail/统计/更新台账共用同一份。
 
 export function useCommandHistory() {
   const POLL_KEY = `command-history-${++historySeq}`;
@@ -140,7 +109,10 @@ export function useCommandHistory() {
     title: "",
     text: "",
     loading: false,
-    id: ""
+    id: "",
+    /** 当前抽屉对应的行快照（QR1121-W7）：元信息（下发者/收发时间/截断/分片）
+     *  从列表行取，不另发请求。showOut 开头即快照，迟到包守卫下仍随最新行。 */
+    row: null as CommandRow | null
   });
 
   /** 抽屉渲染视图（QR1120-W24）：超阈值时只把头/尾交给 DOM，中段折叠成引导条。
@@ -291,6 +263,7 @@ export function useCommandHistory() {
     const isLatest = beginOut();
     out.title = `${row.id} · ${row.pod}`;
     out.id = row.id;
+    out.row = row;
     out.text = "";
     out.visible = true;
     if (row.out_purged) {
@@ -396,7 +369,12 @@ export function useCommandHistory() {
           <span class="kk-sub">-</span>
         )
     },
-    { label: "类型", prop: "kind", width: 90 },
+    {
+      label: "类型",
+      prop: "kind",
+      width: 90,
+      cellRenderer: ({ row }) => kindText(row.kind)
+    },
     {
       label: "命令 / 采集项",
       minWidth: 200,
@@ -408,7 +386,7 @@ export function useCommandHistory() {
       width: 100,
       cellRenderer: ({ row }) => (
         <span
-          class={statusStateClass(row.status)}
+          class={cmdStateClass(row.status)}
           onClick={(e: MouseEvent) => e.stopPropagation()}
         >
           {statusLabel(row.status)}

@@ -14,7 +14,9 @@ import {
   listCollectItems
 } from "@/api/commands";
 import { listHosts, type HostSummary } from "@/api/containers";
-import { errText } from "@/utils/kk";
+import { useRenderIcon } from "@/components/ReIcon/src/hooks";
+import { COLLECT_ITEM_ICONS, IconRetry, IconSend } from "@/utils/kkIcons";
+import { collectItemText, errText } from "@/utils/kk";
 import { confirmDispatch } from "@/utils/kkConfirm";
 import CommandHistory from "../components/CommandHistory.vue";
 import CommandWorkbench from "../components/CommandWorkbench.vue";
@@ -31,6 +33,9 @@ const items = ref<string[]>([]);
 /** 采集项清单加载失败：界面必须说「加载失败」并给重试，绝不能摆一份硬编码清单
  *  冒充后端白名单——采后端没有的项，下发出去只会换回一批失败命令（FE-30）。 */
 const itemsFailed = ref(false);
+/** 清单在途（QR1121）：首屏短暂空白与「清单为空」必须可区分——
+ *  loading 期间勾选区给遮罩、下发按钮灰着，不让学生对空气勾选。 */
+const itemsLoading = ref(false);
 const submitting = ref(false);
 const history = ref<InstanceType<typeof CommandHistory>>();
 
@@ -57,6 +62,7 @@ async function loadHosts() {
 let prefilled = false;
 
 async function loadItems() {
+  itemsLoading.value = true;
   try {
     const avail = (await listCollectItems()).items;
     items.value = avail;
@@ -71,6 +77,8 @@ async function loadItems() {
     collectForm.items = [];
     itemsFailed.value = true;
     ElMessage.error("加载采集项失败：" + errText(e));
+  } finally {
+    itemsLoading.value = false;
   }
 }
 
@@ -117,9 +125,21 @@ onMounted(async () => {
           />
         </el-form-item>
         <el-form-item label="采集项">
-          <el-checkbox-group v-model="collectForm.items">
+          <!-- 中文文案 + 类别图标（QR1121-W3）：映射沉 kk.ts，未知项原串兜底；
+               title 保留后端原串，排障时能对回白名单。loading 遮罩区分
+               「清单在途」与「清单为空」（此前首屏短暂空白不可区分）。 -->
+          <el-checkbox-group
+            v-model="collectForm.items"
+            v-loading="itemsLoading"
+            class="kk-collect-items"
+          >
             <el-checkbox v-for="it in items" :key="it" :value="it">
-              {{ it }}
+              <span class="kk-collect-item" :title="it">
+                <el-icon v-if="COLLECT_ITEM_ICONS[it]" :size="14">
+                  <component :is="COLLECT_ITEM_ICONS[it]" />
+                </el-icon>
+                {{ collectItemText(it) }}
+              </span>
             </el-checkbox>
           </el-checkbox-group>
           <!-- el-form-item__content 是 flex 容器，不给 width:100% 这条读数会和
@@ -130,7 +150,13 @@ onMounted(async () => {
             style="width: 100%"
           >
             采集项清单加载失败，下发范围无法校验。
-            <el-button link type="primary" @click="loadItems">重试</el-button>
+            <el-button
+              link
+              type="primary"
+              :icon="useRenderIcon(IconRetry)"
+              @click="loadItems"
+              >重试</el-button
+            >
           </div>
         </el-form-item>
         <el-form-item>
@@ -139,8 +165,9 @@ onMounted(async () => {
                原先绑错对象导致「全不勾仍可点」，只靠 submitCollect 的 toast 兜底）。 -->
           <el-button
             type="primary"
+            :icon="useRenderIcon(IconSend)"
             :loading="submitting"
-            :disabled="!collectForm.items.length"
+            :disabled="itemsLoading || !collectForm.items.length"
             @click="submitCollect"
           >
             下发采集（{{ collectForm.pods.length }} 台）
@@ -154,3 +181,18 @@ onMounted(async () => {
     </template>
   </CommandWorkbench>
 </template>
+
+<style scoped>
+/* 勾选区最小高（QR1121）：清单在途时 v-loading 的 spinner 有落点，
+   不与「清单为空」混为一谈 */
+.kk-collect-items {
+  min-height: 80px;
+}
+
+/* 采集项图标只做类别标记：14px 次级灰，不抢文案（与 kk-h4 图标同口径） */
+.kk-collect-item .el-icon {
+  margin-right: var(--kk-space-sm);
+  color: var(--el-text-color-secondary);
+  vertical-align: -2px;
+}
+</style>

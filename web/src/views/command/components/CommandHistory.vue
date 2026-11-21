@@ -12,8 +12,8 @@ import { ref } from "vue";
 import type { CommandRow } from "@/api/commands";
 import { PureTableBar } from "@/components/RePureTableBar";
 import { useRenderIcon } from "@/components/ReIcon/src/hooks";
-import DownloadIcon from "~icons/ep/download";
-import RefreshIcon from "~icons/ep/refresh";
+import { IconDownload, IconRefresh } from "@/utils/kkIcons";
+import { kkHeaderCellStyle, tsText } from "@/utils/kk";
 
 import { useCommandHistory } from "./utils/hook";
 
@@ -76,6 +76,8 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
           class="w-32!"
         >
           <el-option label="待下发" value="pending" />
+          <!-- queued 是 v3 离线队列档（statusLabel 早有词，筛选下拉此前漏档） -->
+          <el-option label="已排队" value="queued" />
           <el-option label="已下发" value="sent" />
           <el-option label="执行中" value="running" />
           <el-option label="已完成" value="done" />
@@ -155,13 +157,13 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
       <template #buttons>
         <el-button
           :loading="loading"
-          :icon="useRenderIcon(RefreshIcon)"
+          :icon="useRenderIcon(IconRefresh)"
           @click="loadCommands()"
           >刷新</el-button
         >
         <el-button
           type="primary"
-          :icon="useRenderIcon(DownloadIcon)"
+          :icon="useRenderIcon(IconDownload)"
           :loading="exporting"
           @click="onExport"
           >导出 CSV</el-button
@@ -201,16 +203,13 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
           :columns="dynamicColumns"
           :row-class-name="rowClass"
           :pagination="pagination"
-          :header-cell-style="{
-            background: 'var(--el-fill-color-light)',
-            color: 'var(--el-text-color-primary)'
-          }"
+          :header-cell-style="kkHeaderCellStyle"
           @row-click="showOut"
           @page-current-change="() => loadCommands()"
         >
           <template #empty>
             <el-empty
-              class="min-h-200"
+              class="kk-empty"
               :image-size="60"
               :description="
                 read
@@ -240,21 +239,52 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
       </template>
     </PureTableBar>
 
-    <el-drawer v-model="out.visible" :title="out.title" size="42%">
-      <!-- 大输出切片渲染（QR1120-W24）：超 256K 字符只把头 128K + 尾 64K 交给 DOM，
-           中段折叠成一条引导（完整内容走下方「下载此条输出」，复用既有在途守卫）。
-           不超阈值时 outView 为 null，照旧单个 pre 全文渲染。 -->
-      <el-scrollbar class="kk-out-scroll">
-        <div v-loading="out.loading" class="kk-out-body">
-          <pre class="kk-out">{{ outView ? outView.head : out.text }}</pre>
-          <template v-if="outView">
-            <div class="kk-out-gap">
-              … 已省略中段 {{ outView.omitted }} 字符，点下方「下载此条输出」查看完整内容 …
-            </div>
-            <pre class="kk-out">{{ outView.tail }}</pre>
-          </template>
+    <!-- 宽度与 RBAC 弹窗同族（QR1121）：min(92vw, 680px)——极窄屏 92vw 保底，
+         宽屏不再按 42% 无限放宽（EP addUnit 对字符串原样透传，原生支持 min()）。 -->
+    <el-drawer v-model="out.visible" :title="out.title" size="min(92vw, 680px)">
+      <div class="kk-out-wrap">
+        <!-- 元信息行（QR1121-W7）：下发者/收发时间/截断/分片来自列表行快照，
+             不另发请求；API 早有这些字段，此前抽屉只给标题与输出。 -->
+        <div v-if="out.row" class="kk-out-meta">
+          <span class="kk-kv"
+            ><b>下发者</b>: {{ out.row.created_by || "-" }}</span
+          >
+          <span class="kk-kv"
+            ><b>创建</b>:
+            <span class="kk-num">{{ tsText(out.row.created_at) }}</span></span
+          >
+          <span class="kk-kv"
+            ><b>下发</b>:
+            <span class="kk-num">{{ tsText(out.row.sent_at) }}</span></span
+          >
+          <span class="kk-kv"
+            ><b>完成</b>:
+            <span class="kk-num">{{ tsText(out.row.finished_at) }}</span></span
+          >
+          <span class="kk-kv"
+            ><b>截断</b>: {{ out.row.truncated ? "是" : "否" }}</span
+          >
+          <span class="kk-kv"
+            ><b>分片</b>:
+            <span class="kk-num">{{ out.row.out_chunks }}</span></span
+          >
         </div>
-      </el-scrollbar>
+        <!-- 大输出切片渲染（QR1120-W24）：超 256K 字符只把头 128K + 尾 64K 交给 DOM，
+             中段折叠成一条引导（完整内容走下方「下载此条输出」，复用既有在途守卫）。
+             不超阈值时 outView 为 null，照旧单个 pre 全文渲染。 -->
+        <el-scrollbar class="kk-out-scroll">
+          <div v-loading="out.loading" class="kk-out-body">
+            <pre class="kk-out">{{ outView ? outView.head : out.text }}</pre>
+            <template v-if="outView">
+              <div class="kk-out-gap">
+                … 已省略中段
+                {{ outView.omitted }} 字符，点下方「下载此条输出」查看完整内容 …
+              </div>
+              <pre class="kk-out">{{ outView.tail }}</pre>
+            </template>
+          </div>
+        </el-scrollbar>
+      </div>
       <template #footer>
         <div class="kk-toolbar">
           <span class="kk-sub">点击列表其他行可连续查看，列表不会被遮挡</span>
@@ -268,8 +298,26 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
 </template>
 
 <style scoped>
-.kk-out-scroll {
+/* 元信息行 + 输出滚动区的 flex 列（QR1121）：元信息 flex-shrink:0 不被压缩，
+   滚动区吃剩余高度（el-drawer__body 是确定高，flex:1 可解算） */
+.kk-out-wrap {
+  display: flex;
+  flex-direction: column;
   height: 100%;
+  min-height: 0;
+}
+
+.kk-out-meta {
+  flex-shrink: 0;
+  padding-bottom: var(--kk-space);
+  margin-bottom: var(--kk-space);
+  line-height: 1.8;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.kk-out-scroll {
+  flex: 1;
+  min-height: 0;
 }
 
 /* v-loading 从 pre 挪到包裹层（QR1120-W24 切片后有两个 pre）：
@@ -278,10 +326,11 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
   min-height: 120px;
 }
 
-/* 中段省略引导条：与输出正文区分开，弱底色 + 居中 */
+/* 中段省略引导条：与输出正文区分开，弱底色 + 居中。
+   间距收口四档（QR1121）：原 8px 10px / 6px 不在尺度内 */
 .kk-out-gap {
-  padding: 8px 10px;
-  margin: 6px 0;
+  padding: var(--kk-space);
+  margin: var(--kk-space-sm) 0;
   font-size: 12px;
   color: var(--el-text-color-secondary);
   text-align: center;
