@@ -65,6 +65,14 @@ import IconUser from "~icons/ep/user";
 import IconRole from "~icons/ri/shield-user-line";
 import IconMenu from "~icons/ep/menu";
 
+// 登录 / 布局 / 保存（QR1122 增补：登录页与 navbar 三处重复块收口用）
+import IconLock from "~icons/ri/lock-fill";
+import IconUserFill from "~icons/ri/user-3-fill";
+import IconLogout from "~icons/ri/logout-circle-r-line";
+import IconSetting from "~icons/ri/settings-3-line";
+import IconSave from "~icons/ep/check";
+import IconBell from "~icons/ep/bell";
+
 export {
   IconHost,
   IconMetal,
@@ -104,6 +112,12 @@ export {
   IconUser,
   IconRole,
   IconMenu,
+  IconLock,
+  IconUserFill,
+  IconLogout,
+  IconSetting,
+  IconSave,
+  IconBell,
   REGISTERED_MENU_ICONS
 };
 

@@ -9,6 +9,7 @@ import {
   ageText,
   argvText,
   auditActionText,
+  brokerStateClass,
   cmdStateClass,
   collectItemText,
   detailValueText,
@@ -434,5 +435,25 @@ describe("detailValueText：审计明细长值截断（QR1121-W16）", () => {
     expect(r.full).toBe(long);
     // 恰好 120 不截断（阈值是 >120）
     expect(detailValueText("x".repeat(120)).truncated).toBe(false);
+  });
+});
+
+// ---- QR1122-W12：Broker 链路四态圆点（system 统计与 welcome 共用） ----
+
+describe("brokerStateClass：链路四态（QR1122-W12）", () => {
+  it("没读数 / 桥接未启动 → 空心灰（没探测到不是错误，QR-W16）", () => {
+    expect(brokerStateClass(false, false, false)).toBe(
+      "kk-state kk-state--idle"
+    );
+    expect(brokerStateClass(true, false, false)).toBe(
+      "kk-state kk-state--idle"
+    );
+  });
+
+  it("已连接 → 默认绿点；已断开 → 红点红字（断开是告警不是离线场景）", () => {
+    expect(brokerStateClass(true, true, true)).toBe("kk-state");
+    expect(brokerStateClass(true, true, false)).toBe(
+      "kk-state kk-state--bad kk-bad"
+    );
   });
 });

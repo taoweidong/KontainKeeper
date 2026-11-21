@@ -114,7 +114,7 @@
 .kk-side {
   display: flex;
   flex-direction: row;
-  gap: 16px;
+  gap: var(--kk-space-lg);
   align-items: stretch;
 }
 
@@ -157,6 +157,23 @@
    在全局 scss 里会原样编译成无效选择器、静默不生效（10-15 的「安慰剂类名」同族坑）。 */
 .kk-search-form .el-form-item {
   margin-bottom: var(--kk-space-md);
+}
+
+/* ---- 控件宽度共享档（QR1122-W10）----
+ * 间隔/时间窗 select 全站五处同值 120px（system 页注释早已背书此约定），
+ * 收口为类，不再各页内联 style。数值档是控件宽不是间距，与四档尺度不同维度。 */
+.kk-select-w {
+  width: 120px;
+}
+
+/* 趋势页上限输入：76px 由 placeholder「全局 85」长度承重，值不改，只收口承载 */
+.kk-num-input-w {
+  width: 76px;
+}
+
+/* HostPicker 抽屉搜索框：原内联 240px 无注释，收口为类 */
+.kk-search-w {
+  width: 240px;
 }
 
 /* ---- 定高 flex 列里的防压缩（2026-10-31）----
@@ -351,7 +368,11 @@
 }
 
 /* 总览页：表头统计数字 */
-.kk-stat span {
+/* 只匹配直接子 span（QR1122-W1）：原后代选择器会命中 update 汇总里
+   「状态 span 套在组 span 内」的内层圆点 span，给它也加 16px 右边距——
+   「状态→自家计数」与「计数→下一组」同距，分组歧义；色也会泄漏进
+   kk-sub/kk-sync。页头与汇总的组都是直接子 span，收窄后语义不变。 */
+.kk-stat > span {
   margin-right: var(--kk-space-lg);
   color: var(--el-text-color-regular);
 }
@@ -607,6 +628,6 @@
 
 /* 二次确认框（kkConfirm 用 VNode 渲染多行，reset 里 p 的 margin 被清零） */
 .kk-confirm p {
-  margin: 0 0 6px;
+  margin: 0 0 var(--kk-space-sm);
   line-height: 1.7;
 }

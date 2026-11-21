@@ -3,7 +3,8 @@ import type { HostSummary } from "@/api/containers";
 /** KontainKeeper 业务页共用的格式化与状态映射。
 
 后端所有时间字段都是秒级 Unix 时间戳（int），这里统一成中文可读格式。
-状态色遵循运维直觉：在线/成功=绿，离线/失败=红，执行中=蓝，等待=灰。
+状态语言是四档圆点（QR1121 收口，真相在 cmdStateClass/hostStateClass）：
+在线/成功=绿，失败/告警=红，未终态（执行中/已下发）=琥珀，离线/等待=空心灰。
 */
 /** zh-CN 时间格式化器模块级缓存（QR1120-W6）：toLocaleString 每次调用都新建
  *  Intl.DateTimeFormat，总览 100 行 × 10s 轮询是热路径。选项与原调用逐字相同
@@ -227,6 +228,19 @@ export function hostStateTagType(
 ): "success" | "warning" | "info" {
   if (row.online) return "success";
   return row.status_reason === "updating" ? "warning" : "info";
+}
+
+/** Broker 链路状态 → 圆点类名（QR1122-W12，system 统计与 welcome 共用）。
+ *  四态分开说（QR-W16 红线）：没读数 ≠ 桥接未启动 ≠ 断开 ≠ 连着。
+ *  「已断开」是告警语义给红点——它不是「离线场景」那种中性空心灰；
+ *  未知/未启动保持空心（没探测到不是错误）。 */
+export function brokerStateClass(
+  hasStats: boolean,
+  hasBroker: boolean,
+  connected: boolean
+): string {
+  if (!hasStats || !hasBroker) return "kk-state kk-state--idle";
+  return connected ? "kk-state" : "kk-state kk-state--bad kk-bad";
 }
 
 /** 轮询 keyed 合并（QR1120-W2）：按 pod 认人，实质字段未变的行保留旧对象引用，
