@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from .deps import agent_ip_auth
 from ..services.frame_gate import FrameError, decode_frame, frame_host
+from ..services.mqtt_bridge import MAX_FRAME_BYTES
 
 # Agent 侧通道：真实源 IP 白名单（仿 agent_update.agent_router 的双 router 模式）
 agent_router = APIRouter(prefix="/api/v1/ingest",
@@ -30,8 +31,25 @@ def _bridge(request):
 
 
 async def _read_frame(request):
+    # QR1128-S6：尺寸预检必须在缓冲**之前**——旧实现先 await request.body()
+    # 把整个请求体读进内存再查 len，白名单内发布者 POST 1GB 会先被完整缓冲
+    # 才 413，预检形同虚设。先查 Content-Length，无该头（chunked）时流式
+    # 累计、超限即断，内存恒有界在 MAX_FRAME_BYTES。
+    cl = request.headers.get("content-length")
+    if cl:
+        try:
+            if int(cl) > MAX_FRAME_BYTES:
+                raise HTTPException(status_code=413, detail="frame too large")
+        except ValueError:
+            pass    # 畸形头不纠结，交给下面的流式累计兜底
+    chunks, size = [], 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > MAX_FRAME_BYTES:
+            raise HTTPException(status_code=413, detail="frame too large")
+        chunks.append(chunk)
     try:
-        body = decode_frame(await request.body())
+        body = decode_frame(b"".join(chunks))
         host = frame_host(body)
     except FrameError as exc:
         raise HTTPException(status_code=exc.code, detail=exc.detail)

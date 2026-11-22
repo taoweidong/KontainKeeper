@@ -147,6 +147,21 @@ async def test_ingest_oversized_413(api):
     assert r.status_code == 413
 
 
+async def test_ingest_oversized_chunked_413(api):
+    """QR1128-S6：无 Content-Length（chunked 传输）时流式累计超限即拒。
+
+    旧实现先 await request.body() 整包缓冲再查尺寸——1GB body 会先被完整
+    读进内存才 413，预检形同虚设。异步生成器 content 让 httpx 走 chunked、
+    不带 Content-Length，精确覆盖流式累计分路。
+    """
+    async def body():
+        for _ in range(64):
+            yield b"x" * 65536      # 共 4MB，远超 1MB 上限
+    r = await api.client.post("/api/v1/ingest/status", content=body(),
+                              headers={"Content-Type": "application/json"})
+    assert r.status_code == 413
+
+
 async def test_ingest_bad_json_422(api):
     r = await api.client.post("/api/v1/ingest/status", content=b"not json",
                               headers={"Content-Type": "application/json"})

@@ -98,6 +98,67 @@ async def test_flush_queued_commands(api):
     assert await api.hub.flush_queued_commands("fl-1", api.store) == 0
 
 
+# ---- QR1128-S11：queued 写侧接线（下发失败 → queued → status online 补投）----
+
+def _status_frame(host):
+    return {"online": True, "host": host, "ip": "127.0.0.1", "proto_ver": 4,
+            "agent_ver": "1.0.0", "image": "img:1", "interval": 60,
+            "reason": "online", "ts": int(time.time())}
+
+
+async def _login_admin(api):
+    await api.store.ensure_admin(ADMIN, PASS)
+    r = await api.client.post("/api/login", json={"username": ADMIN, "password": PASS})
+    assert r.status_code == 200, r.text
+    return {"Authorization": "Bearer " + r.json()["token"]}
+
+
+async def test_dispatch_failure_queues_then_status_online_flushes(api, monkeypatch):
+    """QR1128-S11：下发失败 → DB queued（不再留 pending 被 timeout+slack 误判）；
+    status online 触发点经 MQTT 兜底补投、转 sent 刷计时。此前写侧从未接线，
+    store/sweep/flush/前端词表整套 queued 机制在生产是死功能（design-transport §5.2）。
+    """
+    await api.store.upsert_container("q-1", "img", "1.0", 60)
+    h = await _login_admin(api)
+    orig = api.bridge.dispatch_command
+    monkeypatch.setattr(api.bridge, "dispatch_command", lambda row: False)
+    r = await api.client.post("/api/commands", headers=h,
+                              json={"pods": ["q-1"], "kind": "shell", "argv": ["echo"]})
+    assert r.status_code == 200, r.text
+    item = r.json()["items"][0]
+    assert item["status"] == "queued"
+    assert (await api.store.get_command(item["id"]))["status"] == "queued"
+
+    # 重连（status online）→ 补投：恢复 dispatch，帧经 MQTT 出去、行转 sent
+    monkeypatch.setattr(api.bridge, "dispatch_command", orig)
+    await api.bridge._on_status("q-1", _status_frame("q-1"))
+    row = await api.store.get_command(item["id"])
+    assert row["status"] == "sent" and row["sent_at"] >= int(time.time()) - 5
+    assert any(m["topic"] == "kk/v1/q-1/cmd" for m in api.bridge.cli.msgs)
+    # 再触发一次 status online：无 queued 行，不重复投
+    n_msgs = len(api.bridge.cli.msgs)
+    await api.bridge._on_status("q-1", _status_frame("q-1"))
+    assert len(api.bridge.cli.msgs) == n_msgs
+
+
+async def test_status_online_flush_prefers_sse(api, monkeypatch):
+    """QR1128-S11：status online 补投与 SSE 连接建立触发点同口径——SSE 连接在
+    就直推队列，不经 MQTT（桥接经 create_app 注入的 sse_hub 引用路由）。"""
+    await api.store.upsert_container("q-2", "img", "1.0", 60)
+    h = await _login_admin(api)
+    monkeypatch.setattr(api.bridge, "dispatch_command", lambda row: False)
+    r = await api.client.post("/api/commands", headers=h,
+                              json={"pods": ["q-2"], "kind": "shell", "argv": ["echo"]})
+    cid = r.json()["items"][0]["id"]
+    assert (await api.store.get_command(cid))["status"] == "queued"
+
+    q = api.hub.connect("q-2")
+    await api.bridge._on_status("q-2", _status_frame("q-2"))
+    assert q.get_nowait()["id"] == cid
+    assert (await api.store.get_command(cid))["status"] == "sent"
+    assert not api.bridge.cli.msgs, "SSE 直推不得再经 MQTT"
+
+
 # ---- cmd_payload 帧还原 ----
 
 def test_cmd_payload_variants():
@@ -114,11 +175,26 @@ def test_cmd_payload_variants():
     assert bad["argv"] == []
 
 
+async def test_reconnect_disconnect_is_identity_scoped(api):
+    """QR1128-S7：同 host 重连后，旧生成器的 finally 按队列身份注销——
+    不得摘掉新连接（旧实现按 host 无条件 pop，活跃主机被迟到收尾误判离线、
+    后续命令推进死队列）。返回 False 即告知调用方「主机仍活跃，别置离线」。"""
+    q1 = api.hub.connect("rc-1")
+    q2 = api.hub.connect("rc-1")          # 重连：新队列覆盖旧条目
+    assert q1 is not q2
+    assert api.hub.disconnect("rc-1", q1) is False   # 旧生成器收尾：no-op
+    assert api.hub.is_connected("rc-1")
+    assert api.hub.push_command("rc-1", {"id": "c-x"}) is True
+    assert q2.get_nowait()["id"] == "c-x"            # 命令进的是新队列
+    assert api.hub.disconnect("rc-1", q2) is True    # 新连接自己收尾才摘
+    assert not api.hub.is_connected("rc-1")
+
+
 # ---- RoutingDownlink 路由 ----
 
 async def test_routing_sse_first(api):
     api.hub.connect("rt-1")
-    dl = RoutingDownlink(api.hub, api.bridge, api.store)
+    dl = RoutingDownlink(api.hub, api.bridge)
     ok = dl.dispatch_command({"id": "c-1", "pod": "rt-1", "kind": "shell",
                               "argv": json.dumps(["echo"]), "timeout": 30})
     assert ok is True
@@ -128,7 +204,7 @@ async def test_routing_sse_first(api):
 
 
 async def test_routing_mqtt_fallback(api):
-    dl = RoutingDownlink(api.hub, api.bridge, api.store)
+    dl = RoutingDownlink(api.hub, api.bridge)
     ok = dl.dispatch_command({"id": "c-2", "pod": "rt-off", "kind": "shell",
                               "argv": json.dumps(["echo"]), "timeout": 30})
     assert ok is True
@@ -137,14 +213,14 @@ async def test_routing_mqtt_fallback(api):
 
 
 async def test_routing_no_channel(api):
-    dl = RoutingDownlink(api.hub, None, api.store)
+    dl = RoutingDownlink(api.hub, None)
     assert dl.dispatch_command({"id": "c-3", "pod": "x", "kind": "shell",
                                 "argv": "[]", "timeout": 30}) is False
 
 
 async def test_routing_publish_update_delegates_bridge(api):
     # Phase 0 升级帧仍走 MQTT
-    dl = RoutingDownlink(api.hub, api.bridge, api.store)
+    dl = RoutingDownlink(api.hub, api.bridge)
     latest = {"version": "9.9.9", "sha256": "ab", "size": 10}
     ok = await dl.publish_update("up-host", "up-1", latest)
     assert ok is True

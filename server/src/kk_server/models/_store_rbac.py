@@ -15,7 +15,7 @@
 import secrets
 import time
 
-from sqlalchemy import and_, delete, insert, select, update
+from sqlalchemy import and_, delete, func, insert, select, update
 
 from .helpers import _pwdf
 from .tables import admins, menus, role_menus, roles, sessions
@@ -104,9 +104,10 @@ class _StoreRbacMixin:
                     name=name, label=label, remark=remark,
                     built_in=built_in, created=now))
                 if name == "operator":
-                    for m in _OPERATOR_MENUS:
-                        await self._run(insert(role_menus).values(
-                            role=name, menu=m))
+                    # 批量 insert（QR1128-S9）：_OPERATOR_MENUS 十几条逐条 _run
+                    # 是十几次事务往返，insertmanyvalues 一次拼多值语句三库通吃。
+                    await self._run(insert(role_menus).values(
+                        [{"role": name, "menu": m} for m in _OPERATOR_MENUS]))
         # 既有库升级兜底：补列默认 admin 已覆盖存量行，这里只清可能的空串
         await self._run(update(admins).where(admins.c.role == "")
                         .values(role="admin"))
@@ -180,13 +181,19 @@ class _StoreRbacMixin:
             await self._run(update(roles).where(roles.c.name == name)
                             .values(**fields))
         if menu_list is not None:
-            await self._run(delete(role_menus).where(role_menus.c.role == name))
-            for m in menu_list:
-                await self._run(insert(role_menus).values(role=name, menu=m))
+            # QR1128-S9：delete→insert 同一事务（_run 本就支持多 stmt）。旧实现
+            # 每条一个事务：间隙里并发 allowed_menus 读到空授权（菜单瞬断），
+            # 中途异常留半套授权。批量 insert 由 insertmanyvalues 三库通吃。
+            stmts = [delete(role_menus).where(role_menus.c.role == name)]
+            if menu_list:
+                stmts.append(insert(role_menus).values(
+                    [{"role": name, "menu": m} for m in menu_list]))
+            await self._run(*stmts)
 
     async def delete_role(self, name):
-        await self._run(delete(roles).where(roles.c.name == name))
-        await self._run(delete(role_menus).where(role_menus.c.role == name))
+        # 角色行与授权行同事务删除（QR1128-S9）：中途异常不留孤儿授权
+        await self._run(delete(roles).where(roles.c.name == name),
+                        delete(role_menus).where(role_menus.c.role == name))
 
     # ---- 用户（kk_admins 复用，RBAC 加 role/enabled 两列）----
     async def get_user(self, username):
@@ -216,31 +223,37 @@ class _StoreRbacMixin:
 
     async def update_user(self, username, role=None, password=None,
                           enabled=None):
+        # QR1128-S9：字段更新 / 口令轮换 / 会话吊销合进同一事务——旧实现逐条
+        # _run，「改了口令但会话没吊销」的中间态可被并发请求撞上。
         fields = {}
         if role is not None:
             fields["role"] = role
         if enabled is not None:
             fields["enabled"] = 1 if enabled else 0
+        stmts = []
         if fields:
-            await self._run(update(admins).where(admins.c.username == username)
-                            .values(**fields))
+            stmts.append(update(admins).where(admins.c.username == username)
+                         .values(**fields))
         if password:
             salt = secrets.token_hex(16)
-            await self._run(update(admins).where(admins.c.username == username)
-                            .values(salt=salt, pw_hash=_pwdf(salt, password)))
-            # QR-S44：重置口令与禁用同款吊销既有会话——口令泄露后管理员重置，
-            # 攻击者手里的 12h token 不能继续有效。
-            await self._run(delete(sessions).where(sessions.c.username == username))
-        if enabled is False:
-            # 禁用即吊销会话：12h TTL 的旧 token 不能继续用
-            await self._run(delete(sessions).where(sessions.c.username == username))
+            stmts.append(update(admins).where(admins.c.username == username)
+                         .values(salt=salt, pw_hash=_pwdf(salt, password)))
+        # QR-S44：重置口令与禁用同款吊销既有会话——口令泄露后管理员重置，
+        # 攻击者手里的 12h token 不能继续有效；禁用即吊销，12h TTL 旧 token 同理。
+        if password or enabled is False:
+            stmts.append(delete(sessions).where(sessions.c.username == username))
+        if stmts:
+            await self._run(*stmts)
 
     async def delete_user(self, username):
-        await self._run(delete(admins).where(admins.c.username == username))
-        await self._run(delete(sessions).where(sessions.c.username == username))
+        # 用户行与会话同事务删除（QR1128-S9）：中途异常不留可登录的孤儿会话
+        await self._run(delete(admins).where(admins.c.username == username),
+                        delete(sessions).where(sessions.c.username == username))
 
     async def count_enabled_admins(self):
+        """启用管理员的真实数量（QR1128-S1：此前取首行存在性回 0/1，
+        多管理员时「最后一个管理员」守卫误拦自降级/删他管）。"""
         row = await self._one(
-            select(admins.c.username).where(
+            select(func.count().label("n")).select_from(admins).where(
                 (admins.c.role == "admin") & (admins.c.enabled == 1)))
-        return 1 if row else 0
+        return int(row["n"]) if row else 0

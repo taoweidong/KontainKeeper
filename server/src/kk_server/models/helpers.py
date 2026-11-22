@@ -24,7 +24,9 @@ def normalize_url(url=None, db_path=None):
     """
     u = (url or db_path or "").strip()
     if "://" not in u:
-        return "sqlite+aiosqlite:///" + u.replace("\\", "/") if u else                "sqlite+aiosqlite:///kk-server.db"
+        if not u:
+            return "sqlite+aiosqlite:///kk-server.db"
+        return "sqlite+aiosqlite:///" + u.replace("\\", "/")
     scheme, _, rest = u.partition("://")
     base = scheme.split("+")[0]          # 用户显式写了别的驱动也一并纠正过来
     return {"sqlite": "sqlite+aiosqlite", "postgresql": "postgresql+asyncpg",
@@ -92,8 +94,20 @@ def clamp(v, lo, hi):
 
 
 # Agent 二进制下载路径：下发给 Agent 的 URL 与服务端路由必须同源，
-# 桥接（publish_update）与控制器（_download_url）共用这一个常量
+# 桥接（publish_update）与控制器（/agent/latest）经 agent_download_url 共用
 AGENT_DOWNLOAD_PATH = "/api/system/agent/download"
+
+
+def agent_download_url(public_url):
+    """下发给 Agent 的下载地址：配了 KK_PUBLIC_URL 就给绝对地址（A6.1）。
+
+    MQTT 化之后 Agent 无法从 broker 地址推导 HTTP API 地址，而镜像构建脚本不烧入
+    KK_UPDATE_URL——相对地址会让推送式更新静默失效（Agent 侧只记一条 info 日志）。
+    绝对地址让镜像侧零配置即可升级。桥接与控制器曾各手写一份同款拼接，
+    收口到这里（QR1128-S4），路径常量与拼接逻辑同文件同源。
+    """
+    base = public_url or ""
+    return base + AGENT_DOWNLOAD_PATH if base else AGENT_DOWNLOAD_PATH
 
 
 def offset_or_none(offset):

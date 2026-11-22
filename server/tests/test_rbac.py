@@ -253,6 +253,84 @@ async def test_role_without_grants_fails_closed(api):
     assert body["roles"] == ["empty-role"]
 
 
+async def test_multi_admin_guards_use_true_count(api):
+    """QR1128-S1：count_enabled_admins 必须回真实计数——旧实现取首行存在性
+    回 0/1，多管理员时「最后一个管理员」守卫误拦自降级/删他管；删除已禁用
+    的 admin 不减少启用计数，同样不该被拦。"""
+    admin_h = await _login(api)
+    await _make_user(api, "admin2", role="admin", password="adm2-pass-1")
+    await _make_user(api, "admin3", role="admin", password="adm3-pass-1")
+    assert await api.store.count_enabled_admins() == 3
+
+    # 启用计数 >1 时删除另一个启用管理员：放行（旧实现恒回 1 → 误拦 409）
+    r = await api.client.delete("/api/system/users/admin3", headers=admin_h)
+    assert r.status_code == 200, r.text
+    assert await api.store.count_enabled_admins() == 2
+
+    # 禁用后再删：启用计数不含禁用行，删除不触发「最后一个管理员」守卫
+    await _make_user(api, "admin3", role="admin", password="adm3-pass-2")
+    r = await api.client.put("/api/system/users/admin3", headers=admin_h,
+                             json={"enabled": False})
+    assert r.status_code == 200
+    assert await api.store.count_enabled_admins() == 2
+    r = await api.client.delete("/api/system/users/admin3", headers=admin_h)
+    assert r.status_code == 200, r.text
+
+    # 两个启用管理员时自降级：放行（旧实现恒回 1 → 误拦 409）
+    h2 = await _login(api, "admin2", "adm2-pass-1")
+    r = await api.client.put("/api/system/users/admin2", headers=h2,
+                             json={"role": "operator"})
+    assert r.status_code == 200, r.text
+    assert await api.store.count_enabled_admins() == 1
+
+    # 只剩一个启用管理员：守卫仍须拦自降级/自禁用（原有语义不回归）
+    r = await api.client.put("/api/system/users/admin", headers=admin_h,
+                             json={"role": "operator"})
+    assert r.status_code == 409
+    r = await api.client.put("/api/system/users/admin", headers=admin_h,
+                             json={"enabled": False})
+    assert r.status_code == 409
+
+
+async def test_rbac_multi_writes_are_single_transaction(api, monkeypatch):
+    """QR1128-S9：授权替换 delete→insert、删用户+吊销会话、改口令+吊销会话
+    必须各自同事务完成（_run 多 stmt）——旧实现每条一个事务，间隙里并发
+    allowed_menus 读到空授权（菜单瞬断）、中途异常留半套状态。"""
+    calls = []
+    real_run = api.store._run
+
+    async def spy(*stmts):
+        calls.append(len(stmts))
+        return await real_run(*stmts)
+
+    monkeypatch.setattr(api.store, "_run", spy)
+    await api.store.update_role("operator", menu_list=["Welcome", "Home"])
+    assert calls == [2], "delete+批量 insert 应一次 _run（2 stmt），不是逐条事务"
+
+    calls.clear()
+    await api.store.create_user("tmp-u", "tmp-pass-1", "operator")
+    calls.clear()
+    await api.store.delete_user("tmp-u")
+    assert calls == [2], "用户行 + 会话应同事务删除"
+
+    calls.clear()
+    await api.store.update_user("admin", password="new-pass-1")
+    assert calls == [2], "口令轮换 + 会话吊销应同事务"
+
+
+async def test_auth_menus_fail_closed_when_role_row_missing(api):
+    """QR1128-S2：用户行在并发删除窗口消失（会话仍有效）时 auth_menus 必须
+    回空集合——旧实现 `or "admin"` 回落会把全量菜单发给已删除的身份
+    （fail-open 越权，违反 QR-S45 与 login/me 的既有口径）。"""
+    h = await _make_user(api, "ops1")
+    # 只删用户行、保留会话：精确模拟 current_user 会话校验与 get_user_role
+    # 之间的并发窗口（delete_user 会连带吊销会话 → 401，到不了被测分支）
+    await api.store.exec_sql("DELETE FROM kk_admins WHERE username='ops1'")
+    r = await api.client.get("/api/auth/menus", headers=h)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"roles": [], "menus": []}
+
+
 async def test_seed_rbac_backfills_missing_route_columns(api):
     """一阶段升级库的菜单行只有展示元数据：seed_rbac 幂等回填 path/component，
     且只补路由数据——用户改过的标题保留（内置行的展示元数据不可覆盖）。"""

@@ -20,18 +20,19 @@ import hashlib
 import hmac
 import os
 import re
+import secrets
 import tempfile
 import time
-from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from .deps import AgentIp, AdminUser, agent_ip_auth, current_user
+from ..config import normalize_update_mode
 from ..services.downlink import get_downlink
 from ..logsetup import get_logger
-from ..models.helpers import AGENT_DOWNLOAD_PATH, clamp
+from ..models.helpers import agent_download_url, clamp
 from ..models.tables import ONLINE_GRACE
 from ..models.version import count_outdated, version_lt
 
@@ -245,14 +246,8 @@ async def _do_rollback(user, store, dest):
 
 
 def _download_url(request: Request) -> str:
-    """下发给 Agent 的下载地址：配了 KK_PUBLIC_URL 就给绝对地址（A6.1）。
-
-    MQTT 化之后 Agent 无法从 broker 地址推导 HTTP API 地址，而镜像构建脚本不烧入
-    KK_UPDATE_URL —— 相对地址会让推送式更新静默失效（Agent 侧只记一条 info 日志）。
-    绝对地址让镜像侧零配置即可升级。
-    """
-    base = getattr(request.app.state.settings, "public_url", "") or ""
-    return base + AGENT_DOWNLOAD_PATH if base else AGENT_DOWNLOAD_PATH
+    """下发给 Agent 的下载地址（拼接收口在 helpers.agent_download_url，QR1128-S4）。"""
+    return agent_download_url(getattr(request.app.state.settings, "public_url", ""))
 
 
 @router.get("/updates")
@@ -313,8 +308,9 @@ async def agent_latest(request: Request, ver: str = ""):
     于是服务端单侧改动就建立起一个全网点，避免「要改行为先得升级全网」的鸡生蛋困境。
     """
     store = request.app.state.store
-    policy = (getattr(request.app.state.settings, "update_mode", "manual")
-              or "manual").strip().lower()
+    # 归一收口在 config.normalize_update_mode（QR1128-S4）：与 settings 层、
+    # 桥接 _update_mode 共用同一份「写错回落 manual」的安全裁决。
+    policy = normalize_update_mode(getattr(request.app.state.settings, "update_mode", "manual"))
     if policy != "auto":
         return JSONResponse({"available": False, "policy": policy})
     latest = await store.get_agent_latest()
@@ -334,7 +330,7 @@ async def agent_latest(request: Request, ver: str = ""):
 
 
 class UpgradeBody(BaseModel):
-    hosts: List[str]
+    hosts: list[str]
     version: str = ""      # 省略/空 = 用当前最新；服务端单槽位，指定别的版本即 bad_version
 
 
@@ -362,7 +358,8 @@ async def upgrade_hosts(body: UpgradeBody, request: Request, user: AdminUser):
     hosts = list(dict.fromkeys(h.strip() for h in (body.hosts or []) if h and h.strip()))
     if not hosts:
         raise HTTPException(status_code=400, detail="hosts 不能为空")
-    batch_id = "ug-%d-%d" % (int(time.time()), len(hosts))
+    # 随机尾缀防同秒同数量批次撞 id（QR1128-S13，与 upgrades uid 的 QR-S46 同型）
+    batch_id = "ug-%d-%d-%s" % (int(time.time()), len(hosts), secrets.token_hex(3))
 
     latest = await store.get_agent_latest()
     if not latest:
@@ -413,11 +410,14 @@ async def upgrade_hosts(body: UpgradeBody, request: Request, user: AdminUser):
             ids = await store.create_updates_batch(
                 group, from_ver, target, status="pending" if is_online else "queued")
             uid_by_host.update(zip(group, ids))
+        # 下行通道一次请求内取一次即可（QR1128-S5）：逐台 new RoutingDownlink
+        # 是纯浪费；get_downlink 的「不缓存」纪律针对的是跨请求/夹具换 bridge。
+        downlink = get_downlink(request)
         for host, from_ver, is_online in chosen:
             uid = uid_by_host[host]
             if is_online:
                 # QR1125：经 get_downlink（Phase 0 升级帧仍走 MQTT，SSE 升级留 Phase 1+）
-                await get_downlink(request).publish_update(host, uid, latest)
+                await downlink.publish_update(host, uid, latest)
             else:
                 log.bind(host=host, cmd=uid).info(
                     "upgrade queued（主机离线，重连后补投）-> %s", target)

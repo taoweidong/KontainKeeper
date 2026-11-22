@@ -8,9 +8,8 @@
 import asyncio
 import json
 import shlex
-from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
@@ -26,11 +25,11 @@ router = APIRouter(prefix="/api", dependencies=[Depends(current_user)])
 
 
 class CommandBody(BaseModel):
-    pods: List[str]
+    pods: list[str]
     kind: str = "shell"
-    argv: Optional[List[str]] = None
-    cmdline: Optional[str] = None
-    items: Optional[List[str]] = None
+    argv: list[str] | None = None
+    cmdline: str | None = None
+    items: list[str] | None = None
     use_shell: bool = False
     timeout: int = 30
 
@@ -136,16 +135,27 @@ async def create_commands(body: CommandBody, request: Request, user: CurrentUser
     argv_json = json.dumps(payload, ensure_ascii=False)
     created = []
     sent_ids = []
+    queued_ids = []
+    # 下行通道一次请求内取一次即可（QR1128-S5）：500 台循环里逐次 new
+    # RoutingDownlink 是纯浪费；「不缓存」纪律针对的是跨请求/夹具换 bridge。
+    downlink = get_downlink(request)
     for cid, pod in zip(ids, pods):
         # QR1125：经 get_downlink 路由（SSE 连接在→直推；否则回落 bridge paho）。
         # dispatch_command 同步非阻塞（paho 入队 / SSE put_nowait），不是数据库调用
-        sent = get_downlink(request).dispatch_command(
+        sent = downlink.dispatch_command(
             {"id": cid, "pod": pod, "kind": body.kind,
              "argv": argv_json, "timeout": timeout})
         if sent:
             sent_ids.append(cid)
-        created.append({"id": cid, "pod": pod, "status": "sent" if sent else "pending"})
+            created.append({"id": cid, "pod": pod, "status": "sent"})
+        else:
+            # QR1128-S11：下发失败转 DB queued 等重连补投（design-transport §5.2），
+            # 不再留 pending 被 timeout+slack 误判超时——mark_command_queued 的
+            # 写侧此前未接线，queued 机制（store/sweep/flush/前端词表）在生产是死功能。
+            queued_ids.append(cid)
+            created.append({"id": cid, "pod": pod, "status": "queued"})
     await store.mark_sent_batch(sent_ids)
+    await store.mark_command_queued(queued_ids)
     await store.add_audit(user, "command_create",
                     {"kind": body.kind, "argv": payload, "pods": pods,
                      "batch_id": batch_id, "ids": [c["id"] for c in created]})
@@ -163,10 +173,10 @@ async def list_batches(request: Request, limit: int = 20):
 
 
 @router.get("/commands")
-async def list_commands(request: Request, pod: Optional[str] = None, limit: int = 100,
-                        offset: int = 0, batch: Optional[str] = None,
-                        status: Optional[str] = None, kind: Optional[str] = None,
-                        keyword: Optional[str] = None):
+async def list_commands(request: Request, pod: str | None = None, limit: int = 100,
+                        offset: int = 0, batch: str | None = None,
+                        status: str | None = None, kind: str | None = None,
+                        keyword: str | None = None):
     """命令列表：筛选全部下推到后端——前端过滤会让「导出」与「所见」不一致。
 
     响应只加 total/offset/limit 字段，`items` 结构不变，既有前端解析不受影响。
@@ -195,13 +205,17 @@ async def get_command(cid: str, request: Request):
 
 
 @router.get("/commands/{cid}/out")
-async def get_command_out(cid: str, request: Request, format: str = "text"):
-    """完整输出单独走这个接口：列表只给 out_tail，避免大字段拖慢轮询。"""
-    if format not in ("text", "base64"):
+async def get_command_out(cid: str, request: Request,
+                          fmt: str = Query("text", alias="format")):
+    """完整输出单独走这个接口：列表只给 out_tail，避免大字段拖慢轮询。
+
+    查询键仍是 ?format=（前端契约），内部变量改名 fmt 避免遮蔽内建 format。
+    """
+    if fmt not in ("text", "base64"):
         raise HTTPException(status_code=400, detail="format 需为 text 或 base64")
-    out = await request.app.state.store.command_output(cid, as_text=(format == "text"))
+    out = await request.app.state.store.command_output(cid, as_text=(fmt == "text"))
     if out is None:
         raise HTTPException(status_code=404, detail="命令不存在")
-    if format == "base64":
+    if fmt == "base64":
         return {"id": cid, "format": "base64", "out": out}
     return PlainTextResponse(out)

@@ -13,9 +13,10 @@ import json
 
 
 def cmd_payload(row):
-    """把命令行还原成 Agent 认识的 cmd 帧（镜像 mqtt_bridge.dispatch_command 的
-    payload 构造，单事实源在桥接；此处为 SSE 路径复用同款语义，改一处须同步）。
+    """把命令行还原成 Agent 认识的 cmd 帧（QR1128-S3：单事实源）。
 
+    MQTT 桥接的 dispatch_command 与 SSE 直推都经本函数构造 payload——此前
+    两处各持一份逐字同构的实现，「改一处须同步」的注释正是漂移源。
     commands.argv 列对 shell 存 argv 数组、对 collect 存 {"items":[...]} 结构。
     """
     raw = row["argv"]
@@ -38,14 +39,32 @@ def cmd_payload(row):
     return payload
 
 
+async def flush_queued(host, store, dispatch):
+    """重连补投 queued 命令的共用骨架（QR1128-S11，design-transport §5.2）。
+
+    先 mark sent 刷计时再逐条补投——与 MQTT 先例同口径：若推之前进程重启，
+    行已 sent 不会被重复 flush（避免重投），真丢的由 sweep_command_timeouts
+    兜底收敛。dispatch(row)->bool 由调用方注入：SSE 连接建立触发点推自己的
+    队列，status online 触发点经下行路由（SSE 优先、MQTT 兜底）。
+    """
+    rows = await store.queued_commands(host)
+    if not rows:
+        return 0
+    await store.mark_queued_commands_sent([r["id"] for r in rows])
+    n = 0
+    for r in rows:
+        if dispatch(r):
+            n += 1
+    return n
+
+
 class RoutingDownlink:
     """SSE 优先 + MQTT 兜底的下行组合器。鸭子类型兼容 bridge（dispatch_command/
     publish_update），控制器与 _FakeBridge 测试经 get_downlink 统一取用。"""
 
-    def __init__(self, hub, bridge, store):
+    def __init__(self, hub, bridge):
         self.hub = hub
         self.bridge = bridge
-        self.store = store
 
     def dispatch_command(self, row):
         """同步（与 bridge.dispatch_command 同签名，控制器非阻塞调用）。"""
@@ -73,4 +92,4 @@ def get_downlink(request):
     hub = getattr(request.app.state, "sse_hub", None)
     if hub is None:
         return bridge
-    return RoutingDownlink(hub, bridge, request.app.state.store)
+    return RoutingDownlink(hub, bridge)

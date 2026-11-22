@@ -17,6 +17,7 @@ from ..models.version import count_outdated
 # 会话鉴权在 router 级收口（QR-S2）：新增端点默认受保护
 router = APIRouter(prefix="/api/system", dependencies=[Depends(current_user)])
 
+# 无 bridge 部署的回落基准：有 bridge 时 uptime 以它的装配时刻为准（QR1128-S12）
 _started = time.time()
 
 
@@ -24,6 +25,10 @@ _started = time.time()
 async def stats(request: Request):
     store, bridge = request.app.state.store, request.app.state.bridge
     counts = await store.counts()
+    # uptime 从 app 装配起算（QR1128-S12）：bridge.stats.started_at 记于 create_app
+    # 构造桥接那一刻；模块级 _started 是 import 时刻，测试里数百次 create_app
+    # 共享同一个值，「进程 import 以来」与「本 app 启动以来」语义漂移。
+    started = (bridge.stats.get("started_at") if bridge else None) or _started
     broker = {
         "connected": bool(bridge and bridge.connected.is_set()),
         "stats": dict(bridge.stats) if bridge else None,
@@ -39,7 +44,7 @@ async def stats(request: Request):
     latest_ver = (latest or {}).get("version", "")
     return {
         "ok": True,
-        "uptime_sec": int(time.time() - _started),
+        "uptime_sec": int(time.time() - started),
         "hosts": counts["hosts"],
         "commands": counts["commands"],
         "storage": counts["storage"],

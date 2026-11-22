@@ -12,7 +12,7 @@ connect 注册、ping 循环 touch 续活、finally disconnect；_janitor 周期
 import asyncio
 import time
 
-from .downlink import cmd_payload
+from .downlink import cmd_payload, flush_queued
 
 
 class SseHub:
@@ -32,8 +32,21 @@ class SseHub:
         if conn is not None:
             conn["ts"] = int(time.time())
 
-    def disconnect(self, host):
+    def disconnect(self, host, queue=None):
+        """注销连接；返回是否真的摘除了条目。
+
+        传 queue 时按身份注销（QR1128-S7）：同 host 重连的新 connect 会覆盖
+        旧条目，旧生成器的 finally 若按 host 无条件 pop，删掉的是**新**连接——
+        活跃主机被误判离线、后续命令推进死队列。仅当条目仍是自己那份队列才摘。
+        不传 queue 保持无条件注销（sweep 与既有测试调用点兼容）。
+        """
+        conn = self._conns.get(host)
+        if conn is None:
+            return False
+        if queue is not None and conn["queue"] is not queue:
+            return False
         self._conns.pop(host, None)
+        return True
 
     def is_connected(self, host):
         return host in self._conns
@@ -56,17 +69,10 @@ class SseHub:
         return len(dead)
 
     async def flush_queued_commands(self, host, store):
-        """重连补投 queued 命令（泛化 flush_queued_upgrades）：先转 sent 刷计时再推。
+        """SSE 连接建立触发点：补投 queued 命令进本连接队列。
 
-        先 mark 后推与 MQTT 先例同口径——若推之前进程重启，行已 sent 不会被重复
-        flush（避免重投），真丢的由 sweep_command_timeouts 兜底收敛。
+        骨架收口在 downlink.flush_queued（QR1128-S11）：先转 sent 刷计时再推，
+        与 status online 触发点共用同一份「先 mark 后推」语义。
         """
-        rows = await store.queued_commands(host)
-        if not rows:
-            return 0
-        await store.mark_queued_commands_sent([r["id"] for r in rows])
-        n = 0
-        for r in rows:
-            if self.push_command(host, cmd_payload(r)):
-                n += 1
-        return n
+        return await flush_queued(
+            host, store, lambda r: self.push_command(host, cmd_payload(r)))

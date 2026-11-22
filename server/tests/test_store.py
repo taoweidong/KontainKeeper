@@ -118,6 +118,9 @@ async def test_online_column_and_grace(store):
     await store.exec_sql("UPDATE kk_containers SET status_ts=:a WHERE pod=:b",
                            {"a": 1000, "b": "pod-o"})
     assert await store.is_online("pod-o") is False
+    # QR1128-S10：online_count 与 online_set/is_online 同款宽限口径——
+    # 僵尸在线不得计入 health 探活的在线数（旧实现裸 online==1 计数虚高）
+    assert await store.online_count() == 0
     assert await store.mark_stale_offline() >= 0
 
 

@@ -5,12 +5,15 @@
   前端在 initRouter 时拉取并据此过滤侧边栏与路由守卫（菜单级 RBAC）。
 - 所有变更落审计（store.add_audit）：RBAC 变更是安全事件，必须可追溯。
 """
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from .deps import AdminUser, CurrentUser
+from .deps import AdminUser, CurrentUser, current_user, require_admin
 
-router = APIRouter(prefix="/api")
+# router 级默认拒绝（QR-S2 / QR1128-S8）：管理端点漏写 AdminUser 参数也不再裸奔。
+# auth_menus 只要求登录，单独一组——两组鉴权语义不同，不混挂。
+router = APIRouter(prefix="/api", dependencies=[Depends(require_admin)])
+menus_router = APIRouter(prefix="/api", dependencies=[Depends(current_user)])
 
 _USERNAME_MIN = 2
 
@@ -56,7 +59,7 @@ def _clean(s: str, field: str, lo: int, hi: int) -> str:
 
 # ---- 当前用户：角色 + 可见菜单（前端 initRouter 拉取）----
 
-@router.get("/auth/menus")
+@menus_router.get("/auth/menus")
 async def auth_menus(user: CurrentUser, request: Request):
     """当前用户的角色与可见菜单（不含禁用项）。
 
@@ -64,7 +67,12 @@ async def auth_menus(user: CurrentUser, request: Request):
     不渲染、路由守卫一律 403。接口挂了前端拿到空集合，宁可不显示也不能错显示。
     """
     store = request.app.state.store
-    role = await store.get_user_role(user) or "admin"
+    role = await store.get_user_role(user)
+    # fail-closed（QR-S45 / QR1128-S2）：角色缺失回空而不是回落 admin——
+    # 会话校验与角色查询之间存在并发删除窗口，回落 admin 等于把全量菜单
+    # 发给一个已被删除的身份。与 login/me 的空角色口径一致。
+    if not role:
+        return {"roles": [], "menus": []}
     return {"roles": [role], "menus": await store.allowed_menus(role)}
 
 
@@ -121,9 +129,12 @@ async def users_delete(username: str, admin: AdminUser,
     store = request.app.state.store
     if username == admin:
         raise HTTPException(status_code=409, detail="不能删除当前登录账号")
-    if not await store.get_user(username):
+    row = await store.get_user(username)
+    if not row:
         raise HTTPException(status_code=404, detail="用户不存在")
-    if (await store.get_user_role(username) == "admin"
+    # 守卫只算「启用的」管理员（QR1128-S1）：删除一个已禁用的 admin 不减少
+    # 启用计数，不该被「最后一个管理员」拦下；真实计数由 count_enabled_admins 给。
+    if (row["role"] == "admin" and row["enabled"]
             and await store.count_enabled_admins() <= 1):
         raise HTTPException(status_code=409, detail="不能删除最后一个管理员")
     await store.delete_user(username)

@@ -30,11 +30,12 @@ import traceback
 import paho.mqtt.client as mqtt
 
 from .. import ACCEPT_PROTO_VERS, PROTO_VER
-from ..config import ip_in_whitelist
+from ..config import ip_in_whitelist, normalize_update_mode
 from ..logsetup import get_logger
-from ..models.helpers import AGENT_DOWNLOAD_PATH
+from ..models.helpers import agent_download_url
 from ..models.tables import ONLINE_GRACE
 from ..models.version import version_lt
+from .downlink import cmd_payload, flush_queued
 
 def _b64_text(raw):
     """结果帧里的输出是 base64：更新失败原因要走它回传。"""
@@ -80,10 +81,12 @@ class MqttBridge:
         self.accept_proto_vers = (tuple(accept_proto_vers)
                                   if accept_proto_vers else ACCEPT_PROTO_VERS)
         self.loop = loop
+        # SSE 连接表引用（QR1128-S11）：create_app 装配时注入 app.state.sse_hub，
+        # status online 补投 queued 命令时按「SSE 优先」路由；None = 纯 MQTT 部署。
+        self.sse_hub = None
         self.prefix = (settings.mqtt_prefix or "kk/v1").strip("/")
         self.connected = threading.Event()
         self._stopping = threading.Event()
-        self._sched = None          # 事件循环里跑，用于 to_thread 派发
         # stats 的读改写发生在两条线程上（paho 网络线程 + 事件循环），dict 的
         # += 不是原子——安全计数（rejected）偏低就不可追溯（QR29-S3），全部
         # 写入收敛到 _bump() 一处加锁
@@ -411,6 +414,8 @@ class MqttBridge:
             await self.store.finish_updates_reaching(host, agent_ver)
             # D2.3 重连补投：下发时离线（queued）的升级，到此刻才真正投出去
             await self.flush_queued_upgrades(host, agent_ver)
+            # QR1128-S11：queued 命令同触发点补投（design-transport §5.2 裁决）
+            await self._flush_queued_commands(host)
             await self._maybe_push_upgrade(host, agent_ver)
 
     async def _on_hb(self, host, body):
@@ -543,22 +548,10 @@ class MqttBridge:
     def dispatch_command(self, row):
         """发布命令到该主机的 cmd 主题；返回 True = 已交给 Broker（QoS1 会排队送达）。
 
-        commands.argv 列对 shell 存 argv 数组、对 collect 存 {"items": [...]} 结构，
-        这里按 kind 还原成 Agent 认识的帧字段（items / use_shell 见协议 v2）。
+        帧还原收口在 downlink.cmd_payload（QR1128-S3）：SSE 直推与 MQTT 兜底
+        共用同一份 payload 构造，不再各持一份「改一处须同步」的镜像实现。
         """
-        try:
-            argv = json.loads(row["argv"] or "null")
-        except ValueError:
-            argv = None
-        payload = {"id": row["id"], "kind": row["kind"], "timeout": row["timeout"]}
-        if isinstance(argv, dict):
-            payload["items"] = argv.get("items") or []
-            if argv.get("use_shell"):
-                payload["use_shell"] = True
-            if argv.get("argv"):
-                payload["argv"] = argv["argv"]
-        else:
-            payload["argv"] = argv or []
+        payload = cmd_payload(row)
         try:
             info = self.cli.publish(self._cmd_topic(row["pod"]),
                                     json.dumps(payload, ensure_ascii=False), qos=QOS_CMD)
@@ -576,12 +569,6 @@ class MqttBridge:
                 "命令入队失败 rc=%s（Broker 未连接或队列已满）", info.rc)
         return ok
 
-    def _download_url(self):
-        """配了 KK_PUBLIC_URL 就下发绝对地址：镜像侧零配置也能升级（A6.1）。"""
-        base = getattr(self.s, "public_url", "") or ""
-        path = AGENT_DOWNLOAD_PATH
-        return base + path if base else path
-
     async def _maybe_push_upgrade(self, host, agent_ver):
         # auto 模式专属路径（D2.1）：manual 下服务端不自动推，由人工在「版本与更新」页
         # 选机触发。这里再判一次模式，是为了让「桥接被别处直接调用」也不会绕过策略。
@@ -597,7 +584,9 @@ class MqttBridge:
         return await self.dispatch_upgrade(host, agent_ver, latest, online=True)
 
     def _update_mode(self):
-        return (getattr(self.s, "update_mode", "manual") or "manual").strip().lower()
+        # 归一收口在 config.normalize_update_mode（QR1128-S4）：写错回落 manual
+        # 的安全裁决只有一份，settings 层与消费点不再各写一遍 strip/lower。
+        return normalize_update_mode(getattr(self.s, "update_mode", "manual"))
 
     async def dispatch_upgrade(self, host, from_ver, latest, online=True):
         """建台账 + 投递 `kind=update` 帧（D2.2）。返回台账主键。
@@ -625,7 +614,8 @@ class MqttBridge:
         payload = {"id": uid, "kind": "update",
                    "version": latest.get("version", ""),
                    "sha256": latest.get("sha256", ""),
-                   "size": latest.get("size", 0), "url": self._download_url()}
+                   "size": latest.get("size", 0),
+                   "url": agent_download_url(getattr(self.s, "public_url", ""))}
         if latest.get("sig"):
             # 上传时按二进制本体算好的 HMAC（QR-P0-1）：Agent 推送路径强制验签
             payload["sig"] = latest["sig"]
@@ -677,6 +667,29 @@ class MqttBridge:
         if n:
             self._bump("upgrade_flushed", n)
             log.bind(host=host).info("补投 %d 条离线升级", n)
+        return n
+
+    async def _flush_queued_commands(self, host):
+        """status online 触发点（QR1128-S11）：补投下发失败转 queued 的命令。
+
+        Phase 0 并存路由：SSE 连接在 → 直推队列；否则 MQTT dispatch_command
+        （Broker 持久会话排队）。骨架与 SSE 连接建立触发点共用 downlink.flush_queued。
+        计数沿用 cmd_published / 日志，不新增 _bump 键（getsource 扫描锁纪律，
+        与 sweep 的 queued 档同口径）。
+        """
+        hub = self.sse_hub
+
+        def dispatch(r):
+            if hub is not None and hub.is_connected(host):
+                ok = hub.push_command(host, cmd_payload(r))
+                if ok:
+                    self._bump("cmd_published")
+                return ok
+            return self.dispatch_command(r)
+
+        n = await flush_queued(host, self.store, dispatch)
+        if n:
+            log.bind(host=host).info("补投 %d 条排队命令（status online）", n)
         return n
 
     # ---- 周期任务 ----

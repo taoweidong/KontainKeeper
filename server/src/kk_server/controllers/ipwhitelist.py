@@ -9,13 +9,14 @@
 """
 import asyncio
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from .deps import AdminUser, refresh_agent_ips
+from .deps import AdminUser, refresh_agent_ips, require_admin
 from ..models.helpers import clamp, offset_or_none
 
-router = APIRouter(prefix="/api")
+# router 级默认拒绝（QR-S2 / QR1128-S8）：本组全是管理端点，漏写参数也不裸奔
+router = APIRouter(prefix="/api", dependencies=[Depends(require_admin)])
 
 
 class IpRuleCreate(BaseModel):

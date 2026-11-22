@@ -436,9 +436,18 @@ class _StoreHostsMixin:
             found |= {r["pod"] for r in rows}
         return found
 
-    async def online_count(self):
+    async def online_count(self, grace=ONLINE_GRACE):
+        """在线计数，与 online_set 同款宽限口径（QR1128-S10）。
+
+        旧实现裸 online==1 计数：Broker 崩溃没发 LWT 时僵尸在线被算进去，
+        health 探活（Jenkinsfile / ci_smoke 读它）与 UI 列表的在线数不一致。
+        """
+        now = int(time.time())
+        span = case((3 * containers.c.hb_interval > grace, 3 * containers.c.hb_interval),
+                    else_=grace)
         row = await self._one(select(func.count().label("n")).select_from(containers)
-                              .where(containers.c.online == 1))
+                              .where(containers.c.online == 1)
+                              .where(containers.c.status_ts >= now - span))
         return row["n"] if row else 0
 
     async def online_set(self, grace=ONLINE_GRACE):

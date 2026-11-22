@@ -78,8 +78,4 @@ class _StoreAuthMixin:
     async def delete_session(self, token):
         return await self._run(delete(sessions).where(sessions.c.token == token))
 
-    async def default_admin_exists(self):
-        return await self._one(select(admins.c.username)
-                               .where(admins.c.username == "admin")) is not None
-
     # ---- KV / Agent 版本清单 ----

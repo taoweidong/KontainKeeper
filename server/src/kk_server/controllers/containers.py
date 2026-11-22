@@ -2,7 +2,6 @@
 import asyncio
 import json
 import time
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
@@ -183,11 +182,11 @@ async def container_metrics(pod: str, request: Request, hours: int = 24):
 class LimitBody(BaseModel):
     """单机告警上限（百分比 1–100）；None = 清除自定义、回落全局口径。"""
 
-    mem_limit: Optional[int] = None
-    disk_limit: Optional[int] = None
+    mem_limit: int | None = None
+    disk_limit: int | None = None
 
 
-def _limit_or_none(v: Optional[int], name: str) -> Optional[int]:
+def _limit_or_none(v: int | None, name: str) -> int | None:
     if v is None:
         return None
     if not 1 <= v <= 100:

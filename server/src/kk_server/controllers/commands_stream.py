@@ -55,17 +55,19 @@ async def command_stream(request: Request, host: str):
                 yield "id: %s\ndata: %s\n\n" % (
                     payload.get("id"), json.dumps(payload, ensure_ascii=False))
         finally:
-            hub.disconnect(host)
-            # 秒级离线（SSE 断连即判离线，不等心跳超时）；sweep 180s 兜底。
-            # shield：客户端断连时 uvicorn 会 cancel 请求任务，finally 内裸 await
-            # 会被再次取消而中断落库（连接泄漏）；shield 让离线落库作为独立任务
-            # 完成，不受本生成器取消上下文影响（QR1125 E2E 实测裁决）。
-            try:
-                await asyncio.shield(store.set_online(host, False))
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                log.warning("sse 断连置离线失败 host=%s", host, exc_info=True)
+            # 按队列身份注销（QR1128-S7）：同 host 重连后旧生成器迟到收尾时，
+            # 条目已属新连接——摘除失败即说明主机仍活跃，不得置离线。
+            if hub.disconnect(host, queue):
+                # 秒级离线（SSE 断连即判离线，不等心跳超时）；sweep 180s 兜底。
+                # shield：客户端断连时 uvicorn 会 cancel 请求任务，finally 内裸 await
+                # 会被再次取消而中断落库（连接泄漏）；shield 让离线落库作为独立任务
+                # 完成，不受本生成器取消上下文影响（QR1125 E2E 实测裁决）。
+                try:
+                    await asyncio.shield(store.set_online(host, False))
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    log.warning("sse 断连置离线失败 host=%s", host, exc_info=True)
 
     return StreamingResponse(
         gen(), media_type="text/event-stream",

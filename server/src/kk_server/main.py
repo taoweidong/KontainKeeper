@@ -116,6 +116,9 @@ def create_app(env=None):
     app.state.bridge = bridge
     # QR1125 Phase 0：SSE 下行连接表（空表装配，连接由 /api/v1/commands/stream 注册）
     app.state.sse_hub = SseHub()
+    # QR1128-S11：桥接持有连接表引用，status online 补投 queued 命令时 SSE 优先
+    if bridge is not None:
+        bridge.sse_hub = app.state.sse_hub
     # 初始为 env 快照；lifespan 建库后 refresh_agent_ips 刷成 DB 运行时名单（QR1124）
     app.state.agent_ips = settings.agent_ips
     app.state.cmd_blacklist = settings.cmd_blacklist
@@ -134,13 +137,14 @@ def create_app(env=None):
 def main():
     import uvicorn
     # log_config=None：别让 uvicorn 自带的 dictConfig 覆盖我们的 sink/格式（A7.3）。
-    # 其记录由 logsetup 的 InterceptHandler 统一收取，级别也由 KK_LOG_LEVEL 掌控。
+    # 其记录由 logsetup 的 InterceptHandler 统一收取，级别由 KK_LOG_LEVEL 经
+    # setup_logging 掌控——log_config=None 时 uvicorn 的 log_level 参数不生效，
+    # 传了只会误导（与测试夹具「不传 log_level」的纪律同口径）。
     uvicorn.run(
         create_app(),
         host=os.environ.get("KK_HOST", "0.0.0.0"),
         port=int(os.environ.get("KK_PORT", "8443")),
         log_config=None,
-        log_level=os.environ.get("KK_LOG_LEVEL", "info").lower(),
     )
 
 

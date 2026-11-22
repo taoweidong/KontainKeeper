@@ -82,16 +82,21 @@ class _StoreIpWhitelistMixin:
         if not networks:
             return 0
         now = int(time.time())
-        n = 0
+        fresh = []
         for net in networks:
             cidr = str(net)
             dup = await self._one(select(ip_rules.c.id).where(ip_rules.c.cidr == cidr))
             if not dup:
-                await self._run(insert(ip_rules).values(
-                    cidr=cidr, remark="env 种子", enabled=1, created=now))
-                n += 1
+                fresh.append(cidr)
+        # 批量 insert（QR1128-S9）：逐条 _run 是 N 次事务往返；去重保序防
+        # networks 自身带重复 cidr 时批内撞唯一键（旧实现靠逐条查库天然避开）。
+        fresh = list(dict.fromkeys(fresh))
+        if fresh:
+            await self._run(insert(ip_rules).values(
+                [{"cidr": c, "remark": "env 种子", "enabled": 1, "created": now}
+                 for c in fresh]))
         await self.kv_set("ip_rules_seeded", "1")
-        return n
+        return len(fresh)
 
     # ---- 拦截记录聚合 ----
     async def record_ip_reject(self, ip, pod, kind):

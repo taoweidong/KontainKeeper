@@ -151,12 +151,21 @@ def test_no_stdlib_logging_outside_logsetup():
 
     没有这道锁，新代码很容易顺手写回 `logging.getLogger`，于是同一进程里跑着
     两套后端：一半日志有 component、一半没有，格式与轮转策略各说各话。
+    QR1128-A4：锁扩到 agent/src——Agent 侧唯一日志后端同样是 loguru
+    （logutil.py 自身不 import logging，无需豁免名单）。
     """
-    src = Path(logsetup.__file__).resolve().parent
-    offenders = sorted(p.name for p in src.rglob("*.py")
-                       if p.name != "logsetup.py"
-                       and ("import logging" in p.read_text("utf-8")
-                            or "logging.getLogger" in p.read_text("utf-8")))
+    import kk_agent
+
+    def _offenders(root, exempt=()):
+        return sorted(str(p.relative_to(root)) for p in root.rglob("*.py")
+                      if p.name not in exempt
+                      and ("import logging" in p.read_text("utf-8")
+                           or "logging.getLogger" in p.read_text("utf-8")))
+
+    server_src = Path(logsetup.__file__).resolve().parent
+    agent_src = Path(kk_agent.__file__).resolve().parent
+    offenders = (_offenders(server_src, exempt=("logsetup.py"))
+                 + _offenders(agent_src))
     assert not offenders, (
-        "A7 约定：仅 logsetup.py 可 import logging（InterceptHandler 需要）；"
-        "其余模块改用 logsetup.get_logger()。违规文件：%s" % offenders)
+        "A7 约定：服务端仅 logsetup.py 可 import logging（InterceptHandler 需要），"
+        "Agent 侧一律 logutil.get_logger()。违规文件：%s" % offenders)

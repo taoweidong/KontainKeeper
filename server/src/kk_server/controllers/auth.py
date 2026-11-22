@@ -3,12 +3,15 @@ import threading
 import time
 from collections import defaultdict
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from .deps import CurrentUser
+from .deps import CurrentUser, current_user
 
+# 公开组（login/logout）：login 自带限流，logout 刻意无鉴权（解析 token 留痕）。
+# 受保护组单独挂 router 级默认拒绝（QR-S2 / QR1128-S8），新增端点不再裸奔。
 router = APIRouter(prefix="/api")
+me_router = APIRouter(prefix="/api", dependencies=[Depends(current_user)])
 
 # 登录失败限流（P1-5 / B3）：按**两个维度**各自计数，任一维度达阈值即锁 ——
 # 用户名（"u:<name>"）挡定向爆破，客户端 IP（"i:<ip>"）挡用户名枚举。
@@ -158,7 +161,7 @@ async def logout(request: Request):
     return {"ok": True}
 
 
-@router.get("/me")
+@me_router.get("/me")
 async def me(user: CurrentUser, request: Request):
     """会话身份：鉴权走 CurrentUser 依赖（QR-S2），漏配路由级依赖也会被参数兜住。"""
     role = await request.app.state.store.get_user_role(user)
