@@ -1,0 +1,85 @@
+# KontainKeeper 可选 PostgreSQL 18 服务（QR1126）——compose override，叠加在
+# docker-compose.prod.yml 或 docker-compose.offline.yml 之上，把默认 SQLite 换成
+# 调优后的 PG18。**默认拓扑不变**：不叠加本文件时仍是 SQLite。
+#
+# 用法（仓库根目录）：
+#   cp .env.example .env && 填真实值（KK_AGENT_IPS / KK_ADMIN_PASS 必填；
+#     生产请设强 POSTGRES_PASSWORD）
+#   docker compose -f docker/docker-compose.prod.yml -f docker/docker-compose.pg.yml \
+#     --env-file .env up -d
+#   # 离线栈同理：-f docker/docker-compose.offline.yml -f docker/docker-compose.pg.yml
+#   #   （离线包需 PACK_OPT=1 打入 postgres:18.6，见 docker/offline/manifest.txt）
+#
+# 调优口径与监控巡检 SQL 见 docs/deployment.md §4.6「PG18 部署调优」。要点：
+#   - io_method=worker：PG18 异步 I/O（AIO）。**不用 io_uring**——Docker 默认 seccomp
+#     封禁 io_uring_setup/enter/register 三 syscall（容器逃逸风险），worker 开箱即用
+#     且拿到主要收益。AIO 作用面是顺序扫/bitmap heap scan/vacuum（heartbeats 范围扫、
+#     聚合追赶、cleanup 后 vacuum），索引点查不走 AIO。
+#   - 内存四件套按 2GB 容器预算档（4GB 档值见 deployment.md）；shared_buffers 默认
+#     128MB 对 4-6GB heartbeats 明显偏小。
+#   - wal_compression=lz4 + max_wal_size=2GB：追加型负载 FPW 占 WAL 大头，压缩省写带宽、
+#     放宽 checkpoint 降 FPW 频率。
+#   - track_io_timing/track_wal_io_timing + pg_stat_statements：监控前提（默认 off）。
+#
+# **PGDATA 陷阱**：PG18 官方镜像把默认 PGDATA 改到 /var/lib/postgresql/18/docker、
+#   VOLUME 上移到 /var/lib/postgresql（旧版是 /var/lib/postgresql/data）。这里**显式钉死
+#   PGDATA=/var/lib/postgresql/data** 并把命名卷挂在该路径，版本无关、重启数据持久。
+
+services:
+  db:
+    image: postgres:18.6        # 生产镜像清单钉死；可 bump 时见 deployment.md 版本注
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-kk}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kk}   # 生产请设强口令
+      POSTGRES_DB: ${POSTGRES_DB:-kk}
+      # 显式钉死 PGDATA，规避 PG18 镜像默认路径变更（见头注）
+      PGDATA: /var/lib/postgresql/data
+    command: >
+      postgres
+      -c io_method=worker
+      -c shared_buffers=512MB
+      -c effective_cache_size=1536MB
+      -c work_mem=16MB
+      -c maintenance_work_mem=256MB
+      -c wal_compression=lz4
+      -c max_wal_size=2GB
+      -c min_wal_size=512MB
+      -c checkpoint_timeout=10min
+      -c effective_io_concurrency=32
+      -c maintenance_io_concurrency=32
+      -c track_io_timing=on
+      -c track_wal_io_timing=on
+      -c shared_preload_libraries=pg_stat_statements
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    # 仅 compose 内网可达（kk-server 经 db:5432 连），不对宿主机暴露端口。
+    # 需本机 psql 巡检时临时加 ports: ["127.0.0.1:15432:5432"]。
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+    # 与 kk-server 一致：日志走 docker，必须设轮转上限（A7.4）
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    # 内存预算 2GB 档；按宿主机资源可选设限额（4GB 档调优值见 deployment.md）：
+    # mem_limit: 2g
+
+  kk-server:
+    environment:
+      # KK_DB_URL 优先于 KK_DB_PATH（helpers.normalize_url）；叠加本文件即切到 PG。
+      # 驱动 asyncpg 已 bundled 进服务端镜像（docker/Dockerfile --extra postgres）。
+      KK_DB_URL: postgresql+asyncpg://${POSTGRES_USER:-kk}:${POSTGRES_PASSWORD:-kk}@db:5432/${POSTGRES_DB:-kk}
+    depends_on:
+      mosquitto:
+        condition: service_started
+      db:
+        condition: service_healthy
+
+volumes:
+  pg-data:

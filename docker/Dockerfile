@@ -30,8 +30,11 @@ COPY agent/pyproject.toml agent/pyproject.toml
 COPY server/src ./server/src
 COPY agent/src ./agent/src
 
-# 3) 按锁文件精确安装：只装 kk-server 运行时依赖，不装 dev 组
-RUN uv sync --frozen --no-dev --package kk-server
+# 3) 按锁文件精确安装：只装 kk-server 运行时依赖，不装 dev 组。
+#    --extra postgres：bundled asyncpg，让 PG 开箱可用（QR1126，配合
+#    docker-compose.pg.yml 的 PG18 服务）；asyncpg 是 manylinux wheel 无需编译，
+#    SQLite 默认部署不受影响（驱动装着不用）。MySQL 不在镜像清单，仍按需手动 extra。
+RUN uv sync --frozen --no-dev --package kk-server --extra postgres
 
 ENV PATH="/app/.venv/bin:$PATH" \
     KK_DB_PATH=/data/kk-server.db \

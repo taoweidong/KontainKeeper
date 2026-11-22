@@ -13,6 +13,7 @@
 | `python:3.12` | build | kk-server 镜像的构建基础（docker/Dockerfile 的 `ARG PYTHON_BASE`） | https://hub.docker.com/_/python |
 | `ubuntu:latest` | build | kk-broker 镜像的构建基础（docker/broker/Dockerfile 的 `ARG UBUNTU_BASE`） | https://hub.docker.com/_/ubuntu |
 | `node:20` / `nginx:1.20` | opt | 仅 `web/Dockerfile` 独立部署前端时才需要（默认不需要，前端产物由服务端镜像托管） | https://hub.docker.com/_/node · https://hub.docker.com/_/nginx |
+| `postgres:18.6` | opt | 仅叠加 `docker-compose.pg.yml` 走调优 PG18 时需要（默认 SQLite 不需要，QR1126） | https://hub.docker.com/_/postgres |
 
 **级别说明**：`core` 是内网运行必需；`build` 仅外网构建机需要（产物 tar 已包含其内容，
 内网不重建就不需要）；`opt` 非常规场景。
@@ -70,6 +71,17 @@ docker compose -f docker/docker-compose.offline.yml --env-file .env up -d
 
 **切勿用 `docker-compose.prod.yml up --build`**：build 段会在镜像内 `uv sync` 联网
 安装依赖，内网必然失败；即使命中镜像缓存，缓存 miss 的层一样会尝试联网。
+
+**可选 PG18（QR1126）**：默认 SQLite 无需 postgres 镜像。要把数据库换成调优后的 PG18，
+外网打包时带 `PACK_OPT=1`（把 `postgres:18.6` 打入离线包），内网叠加 override 启动：
+
+```bash
+docker compose -f docker/docker-compose.offline.yml -f docker/docker-compose.pg.yml \
+  --env-file .env up -d
+```
+
+服务端镜像已 bundled asyncpg（`docker/Dockerfile --extra postgres`），无需内网装驱动；
+调优口径与 PGDATA 卷注意事项见 [docs/deployment.md §4.6](../../docs/deployment.md)。
 
 ## 5. 验证与注意事项
 
