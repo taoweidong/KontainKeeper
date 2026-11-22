@@ -5,15 +5,20 @@
 适配层内部做 `msg % args` 再交给 loguru，于是**业务调用点零改动**、回归面最小。
 它同时承担三件事：统一格式、统一轮转策略、把 `bind()` 暴露给上下文（A7/D4）。
 
-公开签名 `get_logger(path, level, name)` 保持不变（main.py 一处调用）。
+公开签名 `get_logger(path, level, name)` 保持不变（main.py 与 collector 两处调用）。
 """
 import os
 import sys
+import threading
 
 from loguru import logger as _logger
 
 # 每个 name 只配置一次：reload / 测试里重复调用不得重复加 sink（否则一条日志打 N 遍）
 _CONFIGURED = {}
+# 装配锁（QR1128-A5）：两个线程并发首调同 name 时，无锁的「判空→加 sink」会
+# 双加——正是 AGENTS.md 警告的「一条日志打几百遍」形态。幂等返回路径也走锁，
+# 无竞争锁开销可忽略（采集 worker 每拍都会调 get_logger）。
+_ASSEMBLY_LOCK = threading.Lock()
 _LEVELS = {"TRACE", "DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL"}
 _DEFAULT_SINK_REMOVED = False
 
@@ -101,39 +106,41 @@ def get_logger(path="", level="INFO", name="kk-agent"):
     - `path` 为空或 "-" 时不建文件 sink（与旧语义一致）
     - 文件轮转/保留交给 loguru：`rotation="1 MB"`, `retention=2`，**不压缩**
       （Agent 受 nice 降权，不做无收益的 gzip）
-    - 幂等：同一 name 重复调用只返回既有门面，不重复加 sink
+    - 幂等：同一 name 重复调用只返回既有门面，不重复加 sink（并发首调也安全）；
+      级别以**首次装配**为准，后续调用传不同 level 不生效
     """
     lv = str(level or "").upper()
     if lv not in _LEVELS:
         lv = "INFO"        # 未知级别回落，不抛（KK_LOG_LEVEL 大小写/取值失配的兜底）
 
-    bound = _logger.bind(name=name, component=name, ctx="")
-    if name in _CONFIGURED:
-        return _Adapter(bound, name)
-
     global _DEFAULT_SINK_REMOVED
-    if not _DEFAULT_SINK_REMOVED:
-        # loguru 自带 sink(id=0) 会用它的格式再打一份到 stderr —— 去掉，格式由我们定
-        try:
-            _logger.remove(0)
-        except ValueError:
-            pass
-        _DEFAULT_SINK_REMOVED = True
+    with _ASSEMBLY_LOCK:
+        bound = _logger.bind(name=name, component=name, ctx="")
+        if name in _CONFIGURED:
+            return _Adapter(bound, name)
 
-    # catch=True：日志自身出错（磁盘满/路径不可写）不炸 Agent，等价旧实现的 except OSError
-    # diagnose=False 是生产红线：True 会把**局部变量值**（可能含口令）写进日志
-    # enqueue=False：不引入 multiprocessing 队列与 feeder 线程，保持现有同步写语义
-    common = dict(level=lv, filter=_name_filter(name), catch=True,
-                  backtrace=True, diagnose=False, enqueue=False)
-    sinks = [_logger.add(sys.stderr, format=_STDERR_FMT, **common)]
-    if path and path != "-":
-        try:
-            os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-            sinks.append(_logger.add(path, format=_FILE_FMT, encoding="utf-8",
-                                     rotation="1 MB", retention=2,
-                                     compression=None, **common))
-        except (OSError, ValueError):
-            # 文件不可写只降级为 stderr，不让 Agent 起不来（与旧实现一致）
-            pass
-    _CONFIGURED[name] = {"sinks": sinks, "level": lv}
-    return _Adapter(bound, name)
+        if not _DEFAULT_SINK_REMOVED:
+            # loguru 自带 sink(id=0) 会用它的格式再打一份到 stderr —— 去掉，格式由我们定
+            try:
+                _logger.remove(0)
+            except ValueError:
+                pass
+            _DEFAULT_SINK_REMOVED = True
+
+        # catch=True：日志自身出错（磁盘满/路径不可写）不炸 Agent，等价旧实现的 except OSError
+        # diagnose=False 是生产红线：True 会把**局部变量值**（可能含口令）写进日志
+        # enqueue=False：不引入 multiprocessing 队列与 feeder 线程，保持现有同步写语义
+        common = dict(level=lv, filter=_name_filter(name), catch=True,
+                      backtrace=True, diagnose=False, enqueue=False)
+        sinks = [_logger.add(sys.stderr, format=_STDERR_FMT, **common)]
+        if path and path != "-":
+            try:
+                os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+                sinks.append(_logger.add(path, format=_FILE_FMT, encoding="utf-8",
+                                         rotation="1 MB", retention=2,
+                                         compression=None, **common))
+            except (OSError, ValueError):
+                # 文件不可写只降级为 stderr，不让 Agent 起不来（与旧实现一致）
+                pass
+        _CONFIGURED[name] = {"sinks": sinks}
+        return _Adapter(bound, name)

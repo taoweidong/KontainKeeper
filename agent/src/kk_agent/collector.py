@@ -7,13 +7,13 @@
 - 进程 CPU 需要短间隔双采样（psutil 在 Process 对象上维护基准），采样在工作线程内完成，
   不阻塞主事件循环
 """
-import os
 import platform
 import threading
 import time
 
 import psutil
 
+from ._util import safe as _safe   # 单点容错收口在 _util（QR1128-A6）
 from .logutil import get_logger
 
 MB = 1048576.0
@@ -25,15 +25,6 @@ _SKIP_FSTYPES = {
     "squashfs", "tmpfs", "devtmpfs", "proc", "sysfs", "cgroup", "cgroup2",
     "devpts", "mqueue", "nsfs", "binfmt_misc", "overlay", "aufs", "ramfs",
 }
-
-
-def _safe(fn, default=None):
-    """采集项级容错：单点异常不能拖垮整帧心跳。"""
-    try:
-        v = fn()
-        return default if v is None else v
-    except Exception:
-        return default
 
 
 def _mb(nbytes):
@@ -302,27 +293,34 @@ def _note_item_success(name):
 
 
 def collect_items(items, state, cfg=None):
-    """按名称采集指定项，返回 (指标字典, 新状态)。未知项忽略。
+    """按名称采集指定项，返回 (指标字典, 差分状态片段)。未知项忽略。
+
+    回写只含本次实际更新的差分项（QR1128-A1），不抄带入参快照：调用方
+    （StateBox.put）按 key 合并进共享基线，心跳与 collect worker 并发时
+    各自只覆盖自己采过的 key。若整体抄回快照，后写者会用自己的旧基线
+    抹掉对方刚更新的 key——磁盘/网络速率差分丢基线、摊到更长 dt 上失真。
 
     单项异常仍只跳过该项（不拖垮整帧），但会留痕（QR1120-A5）：
     首次失败 warning，同项持续失败降 debug，成功清零。
     """
     cfg = cfg or {}
-    out, next_state = {}, dict(state or {})
+    base = dict(state or {})
+    out, diff = {}, {}
     for name in items or []:
         fn = ITEMS.get(name)
         if fn is None:
             continue
         try:
-            part, st = fn(next_state, cfg)
+            part, st = fn(base, cfg)
         except Exception as e:
             _note_item_failure(name, e)
             continue
         _note_item_success(name)
         out.update(part or {})
         if st:
-            next_state.update(st)
-    return out, next_state
+            diff.update(st)
+            base.update(st)   # 同一次调用内后续项仍读到最新基线
+    return out, diff
 
 
 # ---- 完整心跳采集 ----

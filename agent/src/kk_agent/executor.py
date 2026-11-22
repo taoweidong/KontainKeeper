@@ -43,6 +43,49 @@ def mk_result(rc, out, elapsed_ms=0, timed_out=False, truncated=False):
             "elapsed_ms": int(elapsed_ms), "truncated": truncated}
 
 
+def _kill_tree(p):
+    """先 TERM 给进程组一个体面退出的机会，再 KILL 兜底。
+
+    Windows 上没有 killpg/getpgid：AttributeError 会冒泡成 rc=125 且子进程泄漏，
+    故按平台分路——POSIX 杀整个进程组，Windows 用 taskkill /T 杀进程树。
+    模块级（QR1128-A10）：进程树回收与 run_shell 的输出封顶职责解耦，可独立测试。
+    """
+    if os.name != "posix":
+        _kill_tree_windows(p)
+        return
+    try:
+        os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        return
+    try:
+        p.wait(timeout=TERM_GRACE_SEC)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
+
+def _kill_tree_windows(p):
+    # best-effort 回收：taskkill/wait/kill 任一失败都不阻断结果回传（宽捕获是
+    # 有意的——回收路径抛异常会把「超时」误报成「执行错误」，QR29-A10 先例）
+    try:
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=TASKKILL_SEC)
+    except Exception:
+        pass
+    try:
+        p.wait(timeout=TERM_GRACE_SEC)
+    except Exception:
+        try:
+            p.kill()
+        except Exception:
+            pass
+
+
 def run_shell(argv, timeout=30, max_out=4 * 1024 * 1024, use_shell=False):
     """执行 argv（或 shell 字符串），返回 {rc, out, timed_out, elapsed_ms, truncated}。"""
     t0 = time.monotonic()
@@ -64,44 +107,6 @@ def run_shell(argv, timeout=30, max_out=4 * 1024 * 1024, use_shell=False):
                          ("kk-agent: cannot spawn: %s" % e).encode("utf-8", "replace"))
     except OSError as e:
         return mk_result(126, ("kk-agent: spawn error: %s" % e).encode("utf-8", "replace"))
-
-    def _kill_tree():
-        """先 TERM 给进程组一个体面退出的机会，再 KILL 兜底。
-
-        Windows 上没有 killpg/getpgid：AttributeError 会冒泡成 rc=125 且子进程泄漏，
-        故按平台分路——POSIX 杀整个进程组，Windows 用 taskkill /T 杀进程树。
-        """
-        if os.name != "posix":
-            _kill_tree_windows()
-            return
-        try:
-            os.killpg(os.getpgid(p.pid), signal.SIGTERM)
-        except (ProcessLookupError, PermissionError, OSError):
-            return
-        try:
-            p.wait(timeout=TERM_GRACE_SEC)
-            return
-        except subprocess.TimeoutExpired:
-            pass
-        try:
-            os.killpg(os.getpgid(p.pid), signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
-
-    def _kill_tree_windows():
-        try:
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                           timeout=TASKKILL_SEC)
-        except Exception:
-            pass
-        try:
-            p.wait(timeout=TERM_GRACE_SEC)
-        except Exception:
-            try:
-                p.kill()
-            except Exception:
-                pass
 
     def _drain():
         """读取线程：入内存直到 max_out，之后只丢弃。
@@ -138,14 +143,14 @@ def run_shell(argv, timeout=30, max_out=4 * 1024 * 1024, use_shell=False):
         rc = p.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         timed_out = True
-        _kill_tree()
+        _kill_tree(p)
         try:
             p.wait(timeout=KILL_REAP_SEC)
         except subprocess.TimeoutExpired:
             pass
         rc = -1
     except Exception as e:
-        _kill_tree()
+        _kill_tree(p)
         return mk_result(125, ("kk-agent: exec error: %s" % e).encode("utf-8", "replace"),
                          elapsed_ms=(time.monotonic() - t0) * 1000,
                          truncated=bool(state["overflow"]))
@@ -201,12 +206,19 @@ class Runner:
         self.allow_shell = allow_shell
         self._log = log
         self._pool = None
+        self._pool_lock = threading.Lock()
         self._max_workers = max_workers
         self._max_pending = max_pending
 
     def _get_pool(self):
+        # 双重检查锁（QR1128-A2）：当前接线只有 dispatch 线程进入，但建池会
+        # 起 max_workers 条线程——未来任何 worker 线程路径调到此处时，无锁
+        # 懒初始化会双建池、线程数翻倍。装配路径只走一次，锁开销可忽略。
         if self._pool is None:
-            self._pool = _Pool(self._max_workers, self._log, self._max_pending)
+            with self._pool_lock:
+                if self._pool is None:
+                    self._pool = _Pool(self._max_workers, self._log,
+                                       self._max_pending)
         return self._pool
 
     def submit(self, cmd):

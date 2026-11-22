@@ -72,6 +72,44 @@ def test_verify_signature_require_sig_without_key_rejected():
                                      _cfg(update_require_sig=True), None) is False
 
 
+# ---- QR1128-A8：known_sha 跳过重复 sha 计算（下载侧已边写边算并比对）----
+
+def test_verify_path_known_sha_no_key_skips_disk_read(tmp_path):
+    """无 HMAC key 且 sha 已在下载侧比对：零读盘（路径不存在也放行）。
+
+    旧实现把 8~12MB 文件再完整读一遍、sha 重算一次；判定链此刻只剩签名策略。
+    """
+    manifest = {"sha256": "ab" * 32}
+    missing = str(tmp_path / "not-on-disk")
+    assert updater._verify_signature_path(missing, manifest, _cfg(), None,
+                                          known_sha="ab" * 32) is True
+
+
+def test_verify_path_known_sha_require_sig_still_rejected(tmp_path):
+    """require_sig 的拒绝口径不得被 known_sha 绕过：无 key 无签名仍拒。"""
+    manifest = {"sha256": "ab" * 32}
+    missing = str(tmp_path / "not-on-disk")
+    assert updater._verify_signature_path(missing, manifest,
+                                          _cfg(update_require_sig=True), None,
+                                          known_sha="ab" * 32) is False
+
+
+def test_verify_path_known_sha_hmac_still_checked(tmp_path):
+    """有 key 时 known_sha 只省 sha 重算，HMAC 仍按文件内容增量校验：
+    签名不符照拒、相符放行——接受口径与不传 known_sha 完全一致。"""
+    data = b"binary-content"
+    key = "s3cret"
+    sha = hashlib.sha256(data).hexdigest()
+    p = tmp_path / "bin"
+    p.write_bytes(data)
+    good = {"sha256": sha, "sig": _hmac_hex(key, data)}
+    assert updater._verify_signature_path(str(p), good, _cfg(update_hmac_key=key),
+                                          None, known_sha=sha) is True
+    bad = {"sha256": sha, "sig": "00" * 32}
+    assert updater._verify_signature_path(str(p), bad, _cfg(update_hmac_key=key),
+                                          None, known_sha=sha) is False
+
+
 # ---- 原子替换 ----
 
 def _promoted_tmp(tmp_path, data, name="dl-tmp"):
@@ -113,7 +151,7 @@ def _manifest_str(version="9.9.9", sha="abc"):
 
 def test_fetch_latest_available(monkeypatch):
     monkeypatch.setattr(updater, "_http_get", lambda *a, **k: _manifest_str())
-    cfg = {"token": "t", "update_url": "http://api", "update_insecure": False}
+    cfg = {"update_url": "http://api", "update_insecure": False}
     info = updater.fetch_latest(cfg, None)
     assert info["version"] == "9.9.9"
 
@@ -126,14 +164,14 @@ def test_fetch_latest_without_update_url_skips_http(monkeypatch):
         called["n"] += 1
         return _manifest_str()
     monkeypatch.setattr(updater, "_http_get", spy)
-    cfg = {"token": "t", "update_url": "", "update_insecure": False}
+    cfg = {"update_url": "", "update_insecure": False}
     assert updater.fetch_latest(cfg, None) is None
     assert called["n"] == 0, "绝不能拿 broker 地址去拼 HTTP"
 
 
 def test_fetch_latest_unavailable(monkeypatch):
     monkeypatch.setattr(updater, "_http_get", lambda *a, **k: '{"available": false}')
-    cfg = {"token": "t", "update_url": "http://api", "update_insecure": False}
+    cfg = {"update_url": "http://api", "update_insecure": False}
     assert updater.fetch_latest(cfg, None) is None
 
 
@@ -141,7 +179,7 @@ def test_fetch_latest_error_returns_none(monkeypatch):
     def boom(*a, **k):
         raise RuntimeError("net down")
     monkeypatch.setattr(updater, "_http_get", boom)
-    cfg = {"token": "t", "update_url": "http://api", "update_insecure": False}
+    cfg = {"update_url": "http://api", "update_insecure": False}
     assert updater.fetch_latest(cfg, None) is None
 
 
@@ -162,7 +200,7 @@ def test_source_mode_never_touches_interpreter(monkeypatch, tmp_path):
         with open(sys.executable, "rb") as f:
             exe_before = f.read(16)   # with 包裹：裸 open 的句柄 GC 时会炸 ResourceWarning
 
-    cfg = {"token": "t", "update_url": "http://api", "agent_bin": "", "update_insecure": False}
+    cfg = {"update_url": "http://api", "agent_bin": "", "update_insecure": False}
     manifest = {"version": "9.9.9", "sha256": "x", "size": 1, "url": "/x"}
     assert updater.apply_manifest(cfg, None, manifest) is False
     assert called["dl"] == 0, "形态未确认前不得下载"
@@ -177,7 +215,7 @@ def test_refuses_to_replace_interpreter_even_when_forced(monkeypatch, tmp_path):
     monkeypatch.setattr(updater, "download_binary", lambda *a, **k: b"injected")
     monkeypatch.setattr(os, "execv", lambda *a: None)
     for bad in (sys.executable, str(tmp_path / "kk_agent.py")):
-        cfg = {"token": "t", "update_url": "http://api", "agent_bin": bad,
+        cfg = {"update_url": "http://api", "agent_bin": bad,
                "update_insecure": False}
         manifest = {"version": "9.9.9", "sha256": "x", "size": 1, "url": "/x"}
         assert updater.apply_manifest(cfg, None, manifest) is False
@@ -185,7 +223,7 @@ def test_refuses_to_replace_interpreter_even_when_forced(monkeypatch, tmp_path):
 
 def test_refuses_missing_target_file(monkeypatch, tmp_path):
     monkeypatch.setattr(updater, "download_binary", lambda *a, **k: b"x")
-    cfg = {"token": "t", "update_url": "http://api",
+    cfg = {"update_url": "http://api",
            "agent_bin": str(tmp_path / "not-built-yet"), "update_insecure": False}
     manifest = {"version": "9.9.9", "sha256": "x", "size": 1, "url": "/x"}
     assert updater.apply_manifest(cfg, None, manifest) is False
@@ -215,7 +253,7 @@ def test_apply_manifest_updates_and_execv(tmp_path, monkeypatch):
     monkeypatch.setattr(updater, "download_binary", _stub_download(data))
     monkeypatch.setattr(os, "execv", lambda p, argv: captured.setdefault("execv", (p, argv)))
 
-    cfg = {"token": "t", "update_url": "http://api",
+    cfg = {"update_url": "http://api",
            "agent_bin": str(target), "update_insecure": False}
     manifest = {"version": "9.9.9", "sha256": sha, "size": len(data),
                 "url": "/api/system/agent/download"}
@@ -231,7 +269,7 @@ def test_apply_manifest_bad_sha_does_not_replace(tmp_path, monkeypatch):
     target.write_bytes(b"old")
     monkeypatch.setattr(updater, "download_binary", _stub_download(b"tampered"))
     monkeypatch.setattr(os, "execv", lambda *a: None)
-    cfg = {"token": "t", "update_url": "http://api", "agent_bin": str(target),
+    cfg = {"update_url": "http://api", "agent_bin": str(target),
            "update_insecure": False}
     manifest = {"version": "9.9.9", "sha256": "00" * 32, "size": 8, "url": "/x"}
     assert updater.apply_manifest(cfg, None, manifest) is False
@@ -243,7 +281,7 @@ def test_apply_manifest_not_newer_skips(tmp_path, monkeypatch):
     target.write_bytes(b"old")
     called = {"dl": False}
     monkeypatch.setattr(updater, "download_binary", lambda *a, **k: called.__setitem__("dl", True))
-    cfg = {"token": "t", "update_url": "http://api", "agent_bin": str(target),
+    cfg = {"update_url": "http://api", "agent_bin": str(target),
            "update_insecure": False}
     manifest = {"version": "0.0.1", "sha256": "x", "size": 1, "url": "/x"}
     assert updater.apply_manifest(cfg, None, manifest) is False
@@ -502,7 +540,7 @@ def test_update_absolute_url_used_directly(tmp_path, monkeypatch):
 
     monkeypatch.setattr(updater, "download_binary", fake_download)
     monkeypatch.setattr(os, "execv", lambda *a: None)
-    cfg = {"token": "t", "update_url": "", "agent_bin": str(target),
+    cfg = {"update_url": "", "agent_bin": str(target),
            "update_insecure": False}
     manifest = {"version": "9.9.9", "sha256": hashlib.sha256(data).hexdigest(),
                 "size": len(data), "url": "http://10.0.0.1:8443/api/system/agent/download"}
@@ -522,7 +560,7 @@ def test_update_relative_url_falls_back_to_base(tmp_path, monkeypatch):
         return _stub_download(data)(url, log, insecure, max_bytes, to_path)
     monkeypatch.setattr(updater, "download_binary", recording_dl)
     monkeypatch.setattr(os, "execv", lambda *a: None)
-    cfg = {"token": "t", "update_url": "http://srv:8443", "agent_bin": str(target),
+    cfg = {"update_url": "http://srv:8443", "agent_bin": str(target),
            "update_insecure": False}
     manifest = {"version": "9.9.9", "sha256": hashlib.sha256(data).hexdigest(),
                 "size": len(data), "url": "/api/system/agent/download"}
@@ -530,22 +568,34 @@ def test_update_relative_url_falls_back_to_base(tmp_path, monkeypatch):
     assert hit["url"] == "http://srv:8443/api/system/agent/download"
 
 
-def test_update_relative_url_needs_base_warns(tmp_path, caplog):
-    """相对 url + 无 base → WARNING、返回 False、不落盘（不再静默失效）。"""
-    import logging
+def test_update_relative_url_needs_base_warns(tmp_path):
+    """相对 url + 无 base → WARNING、返回 False、不落盘（不再静默失效）。
+
+    QR1128-A3：改用 loguru 临时 sink 捕获（与 test_logutil 同款手法）。
+    旧写法 import logging + caplog 是 agent 侧唯一的 stdlib 日志后端残留，
+    违反 A7「双端只许一个日志后端」——测试也不例外。
+    """
+    from loguru import logger as _loguru
+
+    from kk_agent import logutil
 
     target = tmp_path / "kk-agent-nobase"
     before = b"old"
     target.write_bytes(before)
-    cfg = {"token": "t", "update_url": "", "agent_bin": str(target),
+    cfg = {"update_url": "", "agent_bin": str(target),
            "update_insecure": False}
     manifest = {"version": "9.9.9", "sha256": "x", "size": 1, "url": "/download"}
-    # 必须传真实 logger：log=None 时 updater 走 _Null() 占位，caplog 捕不到任何记录
-    real_log = logging.getLogger("kk-test-updater")
-    with caplog.at_level(logging.WARNING):
+    records = []
+    hid = _loguru.add(lambda m: records.append(m.record), level="WARNING",
+                      filter=lambda r: r["extra"].get("name") == "kk-test-updater")
+    try:
+        # 必须传真实 logger：log=None 时 updater 走 _Null() 占位，捕不到任何记录
+        real_log = logutil.get_logger(name="kk-test-updater")
         assert updater.apply_manifest(cfg, real_log, manifest) is False
+    finally:
+        _loguru.remove(hid)
     assert target.read_bytes() == before, "拿不到地址时不得落盘"
-    assert any("KK_UPDATE_URL" in r.getMessage() for r in caplog.records), caplog.text
+    assert any("KK_UPDATE_URL" in r["message"] for r in records), records
 
 
 # ---- B6.4：下载后比对清单 size ----
@@ -561,7 +611,7 @@ def test_size_mismatch_rejected_before_sha(tmp_path, monkeypatch):
     target.write_bytes(b"old")
     monkeypatch.setattr(updater, "download_binary", _stub_download(data))
     monkeypatch.setattr(os, "execv", lambda *a: None)
-    cfg = {"token": "t", "update_url": "http://api", "agent_bin": str(target),
+    cfg = {"update_url": "http://api", "agent_bin": str(target),
            "update_insecure": False}
     manifest = {"version": "9.9.9", "sha256": hashlib.sha256(data).hexdigest(),
                 "size": 5, "url": "/x"}          # sha 对得上，只有 size 不符
@@ -596,7 +646,7 @@ def test_update_failure_backoff_skips_same_version(tmp_path, monkeypatch):
 
     monkeypatch.setattr(updater, "download_binary", fake_dl)
     monkeypatch.setattr(os, "execv", lambda *a: None)
-    cfg = {"token": "t", "update_url": "http://api", "agent_bin": str(target),
+    cfg = {"update_url": "http://api", "agent_bin": str(target),
            "update_insecure": False}
     bad = {"version": "9.9.9", "sha256": "00" * 32, "size": 8, "url": "/x"}
 
@@ -619,7 +669,7 @@ def test_update_backoff_clears_after_success(tmp_path, monkeypatch):
     target.write_bytes(b"old")
     monkeypatch.setattr(updater, "download_binary", _stub_download(b"tampered"))
     monkeypatch.setattr(os, "execv", lambda *a: None)
-    cfg = {"token": "t", "update_url": "http://api", "agent_bin": str(target),
+    cfg = {"update_url": "http://api", "agent_bin": str(target),
            "update_insecure": False}
     updater.apply_manifest(cfg, None,
                            {"version": "9.9.9", "sha256": "00" * 32, "size": 8, "url": "/x"})
@@ -675,7 +725,7 @@ def test_apply_manifest_execv_failure_restores_old_binary(tmp_path, monkeypatch)
         raise OSError("Exec format error")
     monkeypatch.setattr(os, "execv", boom)
 
-    cfg = {"token": "t", "update_url": "http://api", "agent_bin": str(target),
+    cfg = {"update_url": "http://api", "agent_bin": str(target),
            "update_insecure": False}
     manifest = {"version": "9.9.9", "sha256": hashlib.sha256(data).hexdigest(),
                 "size": len(data), "url": "/x"}
@@ -695,7 +745,7 @@ def test_apply_manifest_execv_failure_without_backup_still_receipts(tmp_path, mo
     monkeypatch.setattr(os, "execv", lambda *a: (_ for _ in ()).throw(OSError("noexec")))
     # 备份先被人为拿走：模拟还原失败的极端路径
     monkeypatch.setattr(updater, "restore_backup", lambda t: False)
-    cfg = {"token": "t", "update_url": "http://api", "agent_bin": str(target),
+    cfg = {"update_url": "http://api", "agent_bin": str(target),
            "update_insecure": False}
     ok, reason = updater.apply_manifest_receipt(cfg, None, {
         "version": "9.9.9", "sha256": hashlib.sha256(data).hexdigest(),
@@ -734,7 +784,7 @@ def test_apply_manifest_missing_sha256_reports_no_sha256(tmp_path, monkeypatch):
     target.write_bytes(b"old")
     monkeypatch.setattr(updater, "download_binary", _stub_download(b"data"))
     monkeypatch.setattr(os, "execv", lambda *a: None)
-    cfg = {"token": "t", "update_url": "http://api", "agent_bin": str(target),
+    cfg = {"update_url": "http://api", "agent_bin": str(target),
            "update_insecure": False}
     ok, reason = updater.apply_manifest_receipt(
         cfg, None, {"version": "9.9.9", "size": 4, "url": "/x"})

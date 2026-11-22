@@ -89,8 +89,12 @@ def send_result(tr, cmd_id, res):
 class StateBox:
     """采集差分基线的容器。
 
-    心跳线程与 kind=collect 命令线程都会读-改-写同一份基线，无锁会让
-    磁盘/网络速率算出尖刺甚至负值。
+    心跳线程与 kind=collect 命令线程都会读-改-写同一份基线：value 取快照，
+    采集完成后 put 回写。put 按 key 合并而非整体替换（QR1128-A1）——两个
+    worker 各持自己的快照，整体替换会用自己的旧快照覆盖对方刚回写的基线
+    key，磁盘/网络速率差分因此丢基线、摊到更长的 dt 上失真。每个 key 是
+    独立的 (t, 计数器) 元组，合并写保持逐 key 一致；锁守卫合并本身。
+    配套契约：回写侧 collect_items 只返回本次更新的差分项、不抄带快照。
     """
 
     def __init__(self, state=None):
@@ -104,7 +108,7 @@ class StateBox:
 
     def put(self, state):
         with self._lock:
-            self._state = state
+            self._state.update(state)
 
 
 def _run_collect(cmd, cfg, state_box):
@@ -150,10 +154,8 @@ def _run_update(tr, cmd, cfg, log):
     def before_restart():
         # B6.1：让服务端能把「正在自更新」与「容器停了」区分开。
         # 用 announce_update（等 PUBACK）而不是裸 publish：execv 会掐断发送队列。
-        try:
-            tr.announce_update()
-        except Exception:
-            pass
+        # announce_update 内部已吞掉一切异常并留 warning（QR1120-A11），无需外层兜。
+        tr.announce_update()
 
     ok, reason = kk_updater.apply_manifest_receipt(cfg, log, cmd,
                                                    on_before_restart=before_restart)

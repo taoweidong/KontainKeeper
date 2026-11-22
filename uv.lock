@@ -448,7 +448,6 @@ wheels = [
 
 [[package]]
 name = "kk-agent"
-version = "0.1.0"
 source = { editable = "agent" }
 dependencies = [
     { name = "loguru" },

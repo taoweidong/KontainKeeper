@@ -230,3 +230,36 @@ def test_runner_timeout_non_numeric_falls_back_30s():
                    "timeout": "abc"})
     res = got.get(timeout=20)
     assert res["rc"] == 0 and b"ok" in res["out"] and res["timed_out"] is False
+
+
+def test_runner_pool_lazy_init_is_thread_safe(monkeypatch):
+    """QR1128-A2：_get_pool 并发首调只建一次池。
+
+    建池会起 max_workers 条线程，旧无锁懒初始化在并发进入时双建池、线程数
+    翻倍。假池刻意放慢构造以扩大竞态窗口，barrier 对齐 8 线程同时进入，
+    有锁时断言恒成立、可稳定重复。
+    """
+    made = []
+
+    class SlowPool:
+        def __init__(self, *a, **k):
+            time.sleep(0.02)
+            made.append(1)
+
+        def submit(self, fn):
+            return True
+
+    monkeypatch.setattr(ex, "_Pool", SlowPool)
+    runner = ex.Runner(lambda cid, res: None)
+    barrier = threading.Barrier(8)
+
+    def hit():
+        barrier.wait(timeout=5)
+        runner._get_pool()
+
+    threads = [threading.Thread(target=hit) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+    assert len(made) == 1, "并发首调建了 %d 次池（应恰好 1 次）" % len(made)

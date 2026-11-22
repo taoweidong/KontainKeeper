@@ -27,7 +27,6 @@ import sys
 import threading
 import time
 import urllib.request
-from urllib.parse import urlparse
 
 from . import config as kk_config
 
@@ -183,37 +182,44 @@ def _build_opener(insecure):
     return urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
 
 
-def _stream_capped(req, timeout, max_bytes, what, insecure=False, deadline_sec=None):
-    """流式读取并**硬性封顶**（QR-A23）：`KK_UPDATE_URL` 指向异变的源时，
-    超大响应体在 `resp.read()` 里一次性成形会把 Agent 顶出内存。
+def _capped_chunks(resp, max_bytes, what, deadline_sec):
+    """逐块封顶 + 总时限的**唯一**下载骨架（QR1128-A8，承接 QR29-A7/QR-A23）。
 
-    清单（KB 级 JSON）与二进制（8~12MB）两个下载路径共用同一骨架（QR29-A7），
-    封顶语义只有一份；`what` 只进报错文案，区分是哪个资源超限。
+    内存版（_stream_capped）与落盘版（download_binary to_path）都消费这个
+    生成器——此前两处各写一遍 deadline/cap 循环，注释声称「共用同一骨架」
+    实际是两份实现。`what` 只进报错文案，区分是哪个资源超限。
 
     deadline_sec（QR1120-A8）：给出时按单调钟计总时限，超限 RuntimeError。
-    `timeout` 只管单次 socket 读，慢速滴答源靠总时限兜底。
+    单次 socket 读超时由 open(timeout=...) 管，慢速滴答源靠总时限兜底。
     """
     deadline = None if deadline_sec is None else time.monotonic() + deadline_sec
+    total = 0
+    while True:
+        chunk = resp.read(_CHUNK)
+        if not chunk:
+            return
+        if deadline is not None and time.monotonic() > deadline:
+            raise RuntimeError("%s download exceeded %ss deadline" % (what, deadline_sec))
+        total += len(chunk)
+        if total > max_bytes:
+            raise RuntimeError("%s too large: >%d bytes" % (what, max_bytes))
+        yield chunk
+
+
+def _stream_capped(req, timeout, max_bytes, what, insecure=False, deadline_sec=None):
+    """流式读取并硬性封顶，整包成形返回 bytes（清单 / 旧契约字节版下载）。"""
     buf = bytearray()
     with _build_opener(insecure).open(req, timeout=timeout) as resp:
-        while True:
-            chunk = resp.read(_CHUNK)
-            if not chunk:
-                break
-            if deadline is not None and time.monotonic() > deadline:
-                raise RuntimeError("%s download exceeded %ss deadline" % (what, deadline_sec))
+        for chunk in _capped_chunks(resp, max_bytes, what, deadline_sec):
             buf.extend(chunk)
-            if len(buf) > max_bytes:
-                raise RuntimeError("%s too large: >%d bytes" % (what, max_bytes))
     return bytes(buf)
 
 
-def _http_get(url, timeout=15, as_bytes=False, insecure=False,
-              max_bytes=MAX_MANIFEST_BYTES):
+def _http_get(url, timeout=15, insecure=False, max_bytes=MAX_MANIFEST_BYTES):
     """清单侧下载：流式封顶 + 解码（QR29-A7 收口后只剩形状差异）。"""
     req = urllib.request.Request(url)
     data = _stream_capped(req, timeout, max_bytes, "manifest", insecure=insecure)
-    return data if as_bytes else data.decode("utf-8", "replace")
+    return data.decode("utf-8", "replace")
 
 
 def fetch_latest(cfg, log):
@@ -277,12 +283,16 @@ def push_update_allowed(cfg):
     return bool(cfg.get("update_allow_unsigned"))
 
 
-def _verify_signature_stream(chunks, manifest, cfg, log):
+def _verify_signature_stream(chunks, manifest, cfg, log, known_sha=None):
     """sha256/HMAC 判定链的唯一实现（QR29-A4）：chunks 是二进制内容的可迭代块。
 
     字节版（推送路径/既有测试）喂 `[data]`，文件版（轮询下载路径）喂分块读——
     判定顺序与拒绝原因共用同一份，两条路径的接受口径才不会各自漂移。
     HMAC 与 sha256 同趟增量计算，不要求内容整体驻留内存。
+
+    known_sha（QR1128-A8）：落盘路径下载时已边写边算 sha256 并与清单比对过，
+    传入即跳过重复的 sha 计算/比对（此前 8~12MB 文件被完整读盘两次、sha 算三次）；
+    有 HMAC key 时 chunks 只喂 mac，无 key 时 chunks 根本不被消费。
     """
     log = _log(log)
     expected = str(manifest.get("sha256") or "")
@@ -290,16 +300,20 @@ def _verify_signature_stream(chunks, manifest, cfg, log):
         log.warning("manifest missing sha256, refuse to replace")
         return False
     key = (cfg.get("update_hmac_key") or "").encode()
-    sha = hashlib.sha256()
     mac = hmac.new(key, digestmod=hashlib.sha256) if key else None
-    for chunk in chunks:
-        sha.update(chunk)
-        if mac:
+    if known_sha is None:
+        sha = hashlib.sha256()
+        for chunk in chunks:
+            sha.update(chunk)
+            if mac:
+                mac.update(chunk)
+        digest = sha.hexdigest()
+        if digest.lower() != expected.lower():
+            log.warning("sha256 mismatch: got %s expect %s", digest, expected)
+            return False
+    elif mac:
+        for chunk in chunks:
             mac.update(chunk)
-    digest = sha.hexdigest()
-    if digest.lower() != expected.lower():
-        log.warning("sha256 mismatch: got %s expect %s", digest, expected)
-        return False
 
     sig = str(manifest.get("sig") or "")
     if mac:
@@ -317,11 +331,17 @@ def _verify_signature(data, manifest, cfg, log):
     return _verify_signature_stream([data], manifest, cfg, log)
 
 
-def _verify_signature_path(path, manifest, cfg, log):
-    """_verify_signature 的文件版：分块读盘，不整包读回内存（QR29-A4）。"""
+def _verify_signature_path(path, manifest, cfg, log, known_sha=None):
+    """_verify_signature 的文件版：分块读盘，不整包读回内存（QR29-A4）。
+
+    known_sha 给出且无 HMAC key 时零读盘（QR1128-A8）：sha 已在下载侧比对，
+    只剩签名策略判定（require_sig 拒绝口径不变），不必再打开文件。
+    """
+    if known_sha is not None and not (cfg.get("update_hmac_key") or "").encode():
+        return _verify_signature_stream([], manifest, cfg, log, known_sha=known_sha)
     with open(path, "rb") as f:
         return _verify_signature_stream(iter(lambda: f.read(_CHUNK), b""),
-                                        manifest, cfg, log)
+                                        manifest, cfg, log, known_sha=known_sha)
 
 
 def download_binary(url, log, insecure=False, max_bytes=MAX_BIN_BYTES, to_path=None,
@@ -344,21 +364,14 @@ def download_binary(url, log, insecure=False, max_bytes=MAX_BIN_BYTES, to_path=N
                               deadline_sec=deadline_sec)
     sha = hashlib.sha256()
     total = 0
-    deadline = time.monotonic() + deadline_sec
     try:
         with _build_opener(insecure).open(req, timeout=60) as resp, \
                 open(to_path, "wb") as f:
-            while True:
-                chunk = resp.read(_CHUNK)
-                if not chunk:
-                    break
-                if time.monotonic() > deadline:
-                    raise RuntimeError("binary download exceeded %ss deadline" % deadline_sec)
-                total += len(chunk)
-                if total > max_bytes:
-                    raise RuntimeError("binary too large: >%d bytes" % max_bytes)
+            # 封顶/时限骨架与内存版共用 _capped_chunks（QR1128-A8）
+            for chunk in _capped_chunks(resp, max_bytes, "binary", deadline_sec):
                 sha.update(chunk)
                 f.write(chunk)
+                total += len(chunk)
             f.flush()
             os.fsync(f.fileno())
     except BaseException:
@@ -543,7 +556,9 @@ def _apply_manifest(cfg, log, manifest, on_before_restart=None):
             if sha.lower() != expected.lower():
                 log.warning("sha256 mismatch, refuse to replace")
                 return False, "sha256_mismatch"
-            if not _verify_signature_path(tmp, manifest, cfg, log):
+            # known_sha：sha 已边下载边算并比对过，校验链不再重复读盘算 sha
+            # （QR1128-A8）；无 key 时零读盘，有 key 时这一趟只算 HMAC。
+            if not _verify_signature_path(tmp, manifest, cfg, log, known_sha=sha):
                 # sha256 已在上面单独判过（含缺失），走到这里只剩签名问题
                 return False, "hmac_mismatch"
             try:

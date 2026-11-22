@@ -14,20 +14,14 @@ import socket
 
 import psutil
 
+from ._util import safe as _safe   # 单点容错收口在 _util（QR1128-A6）
+
 _DOCKERENV = "/.dockerenv"
 _OS_RELEASE = "/etc/os-release"
 _CGROUP = "/proc/1/cgroup"
 # cgroup 路径里出现这些片段即视为「跑在容器里」：docker 与 K8S（kubepods/containerd）
 _CONTAINER_CGROUP_MARKS = ("/docker/", "/docker.slice/", "/kubepods", "/actions_job/",
                            "/lxc/", "/libpod-")
-
-
-def _safe(fn, default=None):
-    try:
-        v = fn()
-        return default if v is None else v
-    except Exception:
-        return default
 
 
 def _clip(text, n=78):
@@ -56,9 +50,12 @@ def _in_container():
     return bool(_safe(lambda: os.environ.get("KUBERNETES_SERVICE_HOST"), ""))
 
 
-def _container_runtime():
-    """容器运行时粗判：只用于给运维一个可读提示，不参与任何逻辑分支。"""
-    if not _in_container():
+def _container_runtime(in_container):
+    """容器运行时粗判：只用于给运维一个可读提示，不参与任何逻辑分支。
+
+    in_container 由调用方传入（host_env 一次探测共用，QR1128-A7）。
+    """
+    if not in_container:
         return ""
     if _safe(lambda: os.path.exists(_DOCKERENV), False):
         return "docker"
@@ -67,14 +64,15 @@ def _container_runtime():
     return "container"
 
 
-def _virt():
+def _virt(in_container):
     """virtualization：container > vm > metal。
 
     CPU hypervisor flag 判虚拟机是用户态可读的最可靠信号之一（/proc/cpuinfo 无需
     权限）；拿不到就保守判 metal。systemd-detect-virt 要起子进程，对每 60s 一次的
     上线帧是纯浪费——只在 status 帧探测一次，但也不值得为此 fork。
+    in_container 由调用方传入（host_env 一次探测共用，QR1128-A7）。
     """
-    if _in_container():
+    if in_container:
         return "container"
     flags = _safe(lambda: _cpuinfo_flags(), set())
     if "hypervisor" in flags:
@@ -124,14 +122,20 @@ def _ips():
 
 
 def host_env():
-    """status 帧的 `env` 字段（v4）。任一项缺失即缺省，调用方按可缺省处理。"""
+    """status 帧的 `env` 字段（v4）。任一项缺失即缺省，调用方按可缺省处理。
+
+    容器判定只探测一次（QR1128-A7）：_virt / _container_runtime / in_container
+    三处共用同一结果——旧实现各调一次 _in_container()，每次都重读
+    /proc/1/cgroup 全文，单次 host_env 内部就重复探测 3 遍。
+    """
+    in_container = _in_container()
     return {
         "os": _pretty_name(),
         "kernel": _clip(_safe(platform.release, ""), 78),
         "arch": _clip(_safe(platform.machine, ""), 20),
-        "virt": _virt(),
-        "in_container": _in_container(),
-        "runtime": _container_runtime(),
+        "virt": _virt(in_container),
+        "in_container": in_container,
+        "runtime": _container_runtime(in_container),
         "hostname": _clip(_safe(socket.gethostname, ""), 78),
         "ips": _ips(),
     }

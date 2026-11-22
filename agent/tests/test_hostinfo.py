@@ -115,7 +115,7 @@ def test_in_container_missing_files(probes):
 def test_runtime_prefers_dockerenv(probes):
     probes.cgroup("12:pids:/kubepods/pod1\n")
     probes.dockerenv()
-    assert hostinfo._container_runtime() == "docker"
+    assert hostinfo._container_runtime(hostinfo._in_container()) == "docker"
 
 
 def test_runtime_kubernetes(probes):
@@ -123,16 +123,16 @@ def test_runtime_kubernetes(probes):
     monkey = pytest.MonkeyPatch()
     monkey.setenv("KUBERNETES_SERVICE_HOST", "10.96.0.1")
     try:
-        assert hostinfo._container_runtime() == "kubernetes"
+        assert hostinfo._container_runtime(hostinfo._in_container()) == "kubernetes"
     finally:
         monkey.undo()
 
 
 def test_runtime_generic_and_empty(probes):
     probes.cgroup("12:pids:/lxc/abc\n")
-    assert hostinfo._container_runtime() == "container"
+    assert hostinfo._container_runtime(hostinfo._in_container()) == "container"
     probes.cgroup("12:pids:/system.slice/sshd.service\n")
-    assert hostinfo._container_runtime() == ""
+    assert hostinfo._container_runtime(hostinfo._in_container()) == ""
 
 
 # ---- _virt：container > vm > metal ----
@@ -141,19 +141,19 @@ def test_virt_container_wins(probes, monkeypatch):
     probes.cgroup("12:pids:/docker/x\n")
     # 即便 cpuinfo 报了 hypervisor，容器判定优先级更高
     monkeypatch.setattr(hostinfo, "_cpuinfo_flags", lambda: {"hypervisor"})
-    assert hostinfo._virt() == "container"
+    assert hostinfo._virt(hostinfo._in_container()) == "container"
 
 
 def test_virt_vm_by_hypervisor_flag(probes, monkeypatch):
     probes.cgroup("12:pids:/system.slice/sshd.service\n")
     monkeypatch.setattr(hostinfo, "_cpuinfo_flags", lambda: {"fpu", "hypervisor"})
-    assert hostinfo._virt() == "vm"
+    assert hostinfo._virt(hostinfo._in_container()) == "vm"
 
 
 def test_virt_metal_fallback(probes, monkeypatch):
     probes.cgroup("12:pids:/system.slice/sshd.service\n")
     monkeypatch.setattr(hostinfo, "_cpuinfo_flags", lambda: set())
-    assert hostinfo._virt() == "metal"
+    assert hostinfo._virt(hostinfo._in_container()) == "metal"
 
 
 # ---- _pretty_name：os-release 解析与退化路径 ----
@@ -234,3 +234,24 @@ def test_host_env_shape(probes, monkeypatch):
     assert env["runtime"] == "docker"
     assert env["hostname"] == "web-01"
     assert env["ips"] == ["10.0.0.5"]
+
+
+def test_host_env_probes_container_once(probes, monkeypatch):
+    """QR1128-A7：host_env 只探测一次 _in_container，结果传给 _virt /
+    _container_runtime 共用——旧实现单次调用内部重复探测 3 遍（每次重读
+    /proc/1/cgroup 全文）。计数替身钉住探测次数，与真实主机环境无关。"""
+    probes.cgroup("12:pids:/docker/x\n")
+    probes.dockerenv()
+    calls = []
+    real = hostinfo._in_container
+
+    def counting():
+        calls.append(1)
+        return real()
+
+    monkeypatch.setattr(hostinfo, "_in_container", counting)
+    env = hostinfo.host_env()
+    assert env["in_container"] is True
+    assert env["virt"] == "container"
+    assert env["runtime"] == "docker"
+    assert len(calls) == 1, "host_env 内部探测了 %d 次（应恰好 1 次）" % len(calls)

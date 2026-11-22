@@ -234,6 +234,24 @@ def test_collect_items_carries_diff_state_back(ps):
     assert "disk_read_mb" in data
 
 
+def test_collect_items_writeback_is_diff_only(ps):
+    """QR1128-A1：回写只含本次更新的差分项，不得抄带入参快照。
+
+    StateBox.put 按 key 合并共享基线；若这里把快照整体抄回，并发 worker
+    的旧快照会抹掉对方刚回写的 key（net_io 基线丢失、速率失真）。
+    """
+    cur = lambda: _Ns(read_bytes=2 * MB, write_bytes=2 * MB, read_count=2, write_count=2)
+    ps(disk_io_counters=cur)
+    prev = {"disk_io": (time.time() - 10, MB, MB, 1, 1),
+            "net_io": {"eth0": (time.time() - 10, 5, 5, 1, 1)},
+            "ts": 1}
+    _, diff = c.collect_items(["disk_io"], prev, {})
+    assert set(diff) == {"disk_io"}, "未采集的 key 不得出现在回写里"
+    # 差分仍基于入参基线计算（读侧不受差分回写影响）
+    data, _ = c.collect_items(["disk_io"], prev, {})
+    assert data["disk_read_mb"] > 0
+
+
 # ---- 完整心跳 ----
 
 def test_collect_full_frame_shape(ps, monkeypatch):

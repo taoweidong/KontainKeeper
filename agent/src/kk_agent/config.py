@@ -2,7 +2,6 @@
 import os
 import re
 import socket
-import sys
 
 AGENT_VER = "0.3.0"
 # v4 = 上报对象从「K8S 容器 IDE」扩为任意 Linux 主机：status 帧新增 env/group/labels/caps，

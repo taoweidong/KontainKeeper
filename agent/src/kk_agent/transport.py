@@ -389,10 +389,7 @@ class Transport:
         转成 "Unspecified error"(128)，与普通网络断开无法区分。因此：显式 142
         给定向提示；其余非正常断开只给通用提示（节流），不瞎猜码值。
         """
-        try:
-            taken_over = reason_code == 142 or str(reason_code) == "Session taken over"
-        except Exception:
-            taken_over = False
+        taken_over = reason_code == 142 or str(reason_code) == "Session taken over"
         if not taken_over and reason_code == 0:
             return
         now = time.monotonic()

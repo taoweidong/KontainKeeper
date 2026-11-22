@@ -349,6 +349,25 @@ def test_statebox_returns_copy_so_callers_cannot_mutate():
     assert box.value["disk_io"] == (1, 2)
 
 
+def test_statebox_put_merges_concurrent_baselines():
+    """QR1128-A1：put 必须按 key 合并而非整体替换。
+
+    与 collect_items 的差分回写配套：心跳回写全量差分 + ts，collect worker
+    只回写自己采过的 key。整体替换会让后写的 collect 差分抹掉心跳刚更新
+    的 net_io 基线（下一次差分退回更旧基线、速率摊到更长 dt 上失真）。
+    """
+    box = m.StateBox({"disk_io": (0, 0, 0, 0, 0),
+                      "net_io": {"eth0": (0, 0, 0, 0, 0)}})
+    # 心跳先完成，回写全量差分 + ts
+    box.put({"disk_io": (1, 10, 10, 1, 1),
+             "net_io": {"eth0": (1, 5, 5, 1, 1)}, "ts": 1})
+    # collect worker 只采了 disk_io：差分回写不得抹掉 net_io / ts
+    box.put({"disk_io": (2, 20, 20, 2, 2)})
+    assert box.value["net_io"] == {"eth0": (1, 5, 5, 1, 1)}
+    assert box.value["disk_io"] == (2, 20, 20, 2, 2)
+    assert box.value["ts"] == 1
+
+
 def test_submit_heartbeat_skips_when_busy_and_clears_after(monkeypatch):
     """上一轮采集没跑完就跳过本轮，避免慢采集堆积成线程洪水。"""
     started = queue.Queue()
