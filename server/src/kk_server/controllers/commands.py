@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from ..config import COLLECT_ITEMS, COMMAND_KINDS
 from ..models.helpers import _b64_tail, clamp, offset_or_none
 from ..services.security import is_blacklisted
+from ..services.downlink import get_downlink
 from .deps import CurrentUser, current_user
 
 # 会话鉴权在 router 级收口（QR-S2）：新增端点默认受保护，需要主体身份的
@@ -136,9 +137,11 @@ async def create_commands(body: CommandBody, request: Request, user: CurrentUser
     created = []
     sent_ids = []
     for cid, pod in zip(ids, pods):
-        # dispatch_command 是 paho 的非阻塞发布（线程安全），不是数据库调用
-        sent = bridge.dispatch_command({"id": cid, "pod": pod, "kind": body.kind,
-                                        "argv": argv_json, "timeout": timeout})
+        # QR1125：经 get_downlink 路由（SSE 连接在→直推；否则回落 bridge paho）。
+        # dispatch_command 同步非阻塞（paho 入队 / SSE put_nowait），不是数据库调用
+        sent = get_downlink(request).dispatch_command(
+            {"id": cid, "pod": pod, "kind": body.kind,
+             "argv": argv_json, "timeout": timeout})
         if sent:
             sent_ids.append(cid)
         created.append({"id": cid, "pod": pod, "status": "sent" if sent else "pending"})

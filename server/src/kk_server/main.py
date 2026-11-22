@@ -6,8 +6,10 @@ MVC 分层：
 - controllers/ HTTP 控制器（REST /api/*）
 - web/        视图：静态管理界面（随包打包，由本服务托管）
 
-Agent 侧的连接保活、鉴权、离线命令排队全部在 Broker（Mosquitto）完成，本进程不再
-持有任何长连接，因此可多实例水平扩容——注意每实例的 KK_MQTT_CLIENT_ID 必须唯一。
+MQTT 通道下 Agent 侧的连接保活、鉴权、离线命令排队在 Broker（Mosquitto）完成，
+上行无状态可多实例水平扩容——注意每实例的 KK_MQTT_CLIENT_ID 必须唯一。
+QR1125 Phase 0 起另有 HTTP ingest 上行 + SSE 下行命令通道并存（docs/design-transport.md）：
+SSE 连接表是单进程内存态，多实例下行靠 DB queued + 重连 flush 保正确性（实时跨实例推留后续）。
 """
 import asyncio
 import os
@@ -24,6 +26,7 @@ from .controllers.deps import refresh_agent_ips
 from .logsetup import get_logger, setup_logging
 from .models.store import Store, normalize_url
 from .services.mqtt_bridge import MqttBridge, SWEEP_INTERVAL
+from .services.sse_hub import SseHub
 
 log = get_logger("kk.server")
 CLEANUP_PASSES = 10   # 每 N 个 sweep 周期做一次存储回收（30s × 10 = 5min）
@@ -93,6 +96,10 @@ def create_app(env=None):
             try:
                 if bridge is not None:
                     await bridge.sweep()
+                # QR1125：回收停止续活的 SSE 死连接（生成器异常退出的兜底）
+                dead = app.state.sse_hub.sweep_dead()
+                if dead:
+                    log.info("sse: 回收 %d 条死连接", dead)
                 # QR1124：多实例兜底——别的实例改了 DB 名单，本实例 30s 内收敛
                 await refresh_agent_ips(app, store, bridge)
                 if n % CLEANUP_PASSES == 0:
@@ -107,6 +114,8 @@ def create_app(env=None):
     app.state.settings = settings
     app.state.store = store
     app.state.bridge = bridge
+    # QR1125 Phase 0：SSE 下行连接表（空表装配，连接由 /api/v1/commands/stream 注册）
+    app.state.sse_hub = SseHub()
     # 初始为 env 快照；lifespan 建库后 refresh_agent_ips 刷成 DB 运行时名单（QR1124）
     app.state.agent_ips = settings.agent_ips
     app.state.cmd_blacklist = settings.cmd_blacklist

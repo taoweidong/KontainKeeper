@@ -29,6 +29,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from .deps import AgentIp, AdminUser, agent_ip_auth, current_user
+from ..services.downlink import get_downlink
 from ..logsetup import get_logger
 from ..models.helpers import AGENT_DOWNLOAD_PATH, clamp
 from ..models.tables import ONLINE_GRACE
@@ -415,7 +416,8 @@ async def upgrade_hosts(body: UpgradeBody, request: Request, user: AdminUser):
         for host, from_ver, is_online in chosen:
             uid = uid_by_host[host]
             if is_online:
-                await bridge.publish_update(host, uid, latest)
+                # QR1125：经 get_downlink（Phase 0 升级帧仍走 MQTT，SSE 升级留 Phase 1+）
+                await get_downlink(request).publish_update(host, uid, latest)
             else:
                 log.bind(host=host, cmd=uid).info(
                     "upgrade queued（主机离线，重连后补投）-> %s", target)
