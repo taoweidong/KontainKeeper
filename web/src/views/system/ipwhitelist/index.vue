@@ -21,6 +21,7 @@ import {
   IconRetry
 } from "@/utils/kkIcons";
 import { errText, tsText } from "@/utils/kk";
+import { useSeq } from "@/utils/kkPoll";
 import {
   createIpRule,
   deleteIpRule,
@@ -80,22 +81,30 @@ const rules_ = {
   ]
 } as FormRules;
 
+/** 手动请求竞态守卫（QR1130-W1，QR-W4 同族）：连续增删/启停各自触发 load，
+ *  慢响应后到会把规则表换成旧快照（刚停用的规则「复活」）——只有最新一次可写回。 */
+const beginLoad = useSeq();
+
 async function load() {
+  const isLatest = beginLoad();
   loading.value = true;
   try {
     // enabled 归一为布尔：后端返回整型 1/0，el-switch 的 :model-value 收到
     // 非布尔值会在初始化时误触发 change（弹出「停用规则」确认），必须转布尔
-    rules.value = (await listIpRules()).items.map(r => ({
+    const items = (await listIpRules()).items.map(r => ({
       ...r,
       enabled: !!r.enabled
     }));
+    if (!isLatest()) return;
+    rules.value = items;
     read.value = true;
     loadFailed.value = false;
   } catch (e: any) {
+    if (!isLatest()) return;
     loadFailed.value = true;
     message("加载白名单失败：" + errText(e), { type: "error" });
   } finally {
-    loading.value = false;
+    if (isLatest()) loading.value = false;
   }
 }
 

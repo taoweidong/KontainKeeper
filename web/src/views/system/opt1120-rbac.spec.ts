@@ -419,3 +419,64 @@ describe("W32：角色创建两段式的失败指引", () => {
     expect(hMocks.updateRole).not.toHaveBeenCalled();
   });
 });
+
+describe("QR1130-W1：load 竞态守卫（useSeq，QR-W4 同族）", () => {
+  /** 连点两次删除 → 两路 load 同时在途；新响应先回、旧响应后到。
+   *  无守卫时旧快照最后写回，刚删的行「复活」——运维按这个列表判断
+   *  账号状态就是事故。守卫后只有最新一次可写回。 */
+  it("用户页：迟到的旧响应不得覆盖新列表", async () => {
+    const w = mount(UserPage, { global: globalStubs });
+    await settle();
+    expect(w.findAll(".row-stub").length).toBe(1);
+
+    let res2: (v: any) => void;
+    let res3: (v: any) => void;
+    hMocks.listUsers
+      .mockImplementationOnce(() => new Promise(r => (res2 = r)))
+      .mockImplementationOnce(() => new Promise(r => (res3 = r)));
+
+    await deleteButtons(w)[0].trigger("click"); // 删 bob → load#2 在途
+    await settle();
+    await deleteButtons(w)[0].trigger("click"); // 列表未写回，bob 行仍在 → load#3
+    await settle();
+    expect(hMocks.deleteUser).toHaveBeenCalledTimes(2);
+
+    //  username 列是 prop 直渲（无 scoped 插槽），table 替身只渲染带 #default
+    //  的列——用 role_label 作可观测判别字段
+    res3!({ items: [userRow({ username: "carol", role_label: "新快照" })] });
+    await settle();
+    expect(w.findAll(".row-stub").map(r => r.text()).join("|")).toContain("新快照");
+
+    res2!({ items: [userRow({ username: "bob", role_label: "旧快照" })] });
+    await settle();
+    const texts = w.findAll(".row-stub").map(r => r.text()).join("|");
+    expect(texts).toContain("新快照");
+    expect(texts).not.toContain("旧快照");
+  });
+
+  it("角色页：迟到的旧响应不得覆盖新列表", async () => {
+    const w = mount(RolePage, { global: globalStubs });
+    await settle();
+
+    let res2: (v: any) => void;
+    let res3: (v: any) => void;
+    hMocks.listRoles
+      .mockImplementationOnce(() => new Promise(r => (res2 = r)))
+      .mockImplementationOnce(() => new Promise(r => (res3 = r)));
+
+    await deleteButtons(w)[0].trigger("click");
+    await settle();
+    await deleteButtons(w)[0].trigger("click");
+    await settle();
+    expect(hMocks.deleteRole).toHaveBeenCalledTimes(2);
+
+    // label 是 scoped 插槽渲染的可观测字段（name 列 prop 直渲不进替身）
+    res3!({ items: [roleRow({ name: "viewer", label: "新快照" })] });
+    await settle();
+    res2!({ items: [roleRow({ name: "ops", label: "旧快照" })] });
+    await settle();
+    const texts = w.findAll(".row-stub").map(r => r.text()).join("|");
+    expect(texts).toContain("新快照");
+    expect(texts).not.toContain("旧快照");
+  });
+});

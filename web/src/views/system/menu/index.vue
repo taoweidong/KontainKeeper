@@ -12,6 +12,7 @@ import KkMenuIcon from "@/components/KkMenuIcon.vue";
 import { useRenderIcon } from "@/components/ReIcon/src/hooks";
 import { IconEdit, IconMenu, IconRetry } from "@/utils/kkIcons";
 import { errText } from "@/utils/kk";
+import { useSeq } from "@/utils/kkPoll";
 import { listMenus, updateMenu, type RbacMenu } from "@/api/rbac";
 
 defineOptions({ name: "SysMenu" });
@@ -58,17 +59,25 @@ const editingComponent = computed(
   () => menus.value.find(m => m.name === dialog.target)?.component ?? ""
 );
 
+/** 手动请求竞态守卫（QR1130-W1，QR-W4 同族）：连续编辑/启停各自触发 load，
+ *  慢响应后到会把菜单表换成旧快照——只有最新一次可写回。 */
+const beginLoad = useSeq();
+
 async function load() {
+  const isLatest = beginLoad();
   loading.value = true;
   try {
-    menus.value = (await listMenus()).items;
+    const items = (await listMenus()).items;
+    if (!isLatest()) return;
+    menus.value = items;
     read.value = true;
     loadFailed.value = false;
   } catch (e: any) {
+    if (!isLatest()) return;
     loadFailed.value = true;
     message("加载菜单失败：" + errText(e), { type: "error" });
   } finally {
-    loading.value = false;
+    if (isLatest()) loading.value = false;
   }
 }
 

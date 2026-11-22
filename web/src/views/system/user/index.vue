@@ -18,6 +18,7 @@ import {
   IconUser
 } from "@/utils/kkIcons";
 import { errText, tsText } from "@/utils/kk";
+import { useSeq } from "@/utils/kkPoll";
 import { useUserStoreHook } from "@/store/modules/user";
 import {
   createUser,
@@ -69,19 +70,26 @@ const editRules: FormRules = {
   password: [{ min: 6, message: "至少 6 位", trigger: "blur" }]
 };
 
+/** 手动请求竞态守卫（QR1130-W1，QR-W4 同族）：连续增删改各自触发 load，
+ *  慢响应后到会把列表换成旧快照（刚删的用户「复活」）——只有最新一次可写回。 */
+const beginLoad = useSeq();
+
 async function load() {
+  const isLatest = beginLoad();
   loading.value = true;
   try {
     const [u, r] = await Promise.all([listUsers(), listRoles()]);
+    if (!isLatest()) return;
     users.value = u.items;
     roles.value = r.items;
     read.value = true;
     loadFailed.value = false;
   } catch (e: any) {
+    if (!isLatest()) return;
     loadFailed.value = true;
     message("加载用户列表失败：" + errText(e), { type: "error" });
   } finally {
-    loading.value = false;
+    if (isLatest()) loading.value = false;
   }
 }
 
