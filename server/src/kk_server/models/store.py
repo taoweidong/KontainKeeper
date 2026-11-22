@@ -65,30 +65,61 @@ def _engine_kwargs(dialect, url):
 # PG 启动调优（_pg_tune 逐条执行，全部幂等）：
 # - 热表 autovacuum：kk_containers 每秒被心跳 UPDATE 数次（500 台 × 60s 间隔），
 #   默认 scale factor 0.2（20% 死元组才触发）对这种强度近乎永不清理，500 行的表
-#   按比例算更是如此——压到行数级让膨胀可控；kk_heartbeats 是追加+批量删，
-#   批删后的死元组同样要更勤的回收。
+#   按比例算更是如此——压到行数级让膨胀可控；kk_heartbeats / kk_audit 是追加+批量删，
+#   批删后的死元组同样要更勤的回收（audit 与 heartbeats 同型，QR1126 补调）。
+#   containers 再压绝对阈值 25：500 行小表 scale 项算出的触发量仍可能偏高，
+#   行数下限兜底让在线状态翻转更早回收（QR1126）。
 # - fillfactor：kk_containers 是**更新最热的表**（每帧心跳 upsert 整行摘要），
 #   100 的默认填充率让每行更新必然拆页、HOT（同页更新，免索引维护）几乎不触发；
 #   压到 80 给页内留更新空间，HOT 比例上去后写放大与索引膨胀同步下降。
 # - BRIN 索引：ts 与写入物理相关，时间范围扫描（cleanup 挑批、聚合窗口）用
 #   KB 级索引替代 btree 的整棵树；CREATE INDEX IF NOT EXISTS 让存量 PG 库
 #   升级即得，无需重建表。kk_audit 同型（只追加、ts 物理相关，保留期清理
-#   按批挑 ts < cutoff 的行）。
+#   按批挑 ts < cutoff 的行）。pages_per_range 压到 64（默认 128 页≈1MB≈全机队
+#   36s 写入，2 天表粒度偏粗）：ALTER INDEX SET 幂等且属主可执行，只影响后续
+#   summarization，存量 range 随写入自然细化（QR1126）。
 # - 部分索引 idx_cmd_inflight：kk_commands 无界增长（500 台 × 每日数千条，
 #   百万行级），而 sweep_command_timeouts 每 30s 扫一遍「在途」子集——
 #   在途行数恒为常数（在途即离开谓词、离开索引），部分索引把它从全表扫
 #   变成常数级命中。谓词必须与 sweep 的 status IN (...) 逐字同步。
+#   idx_upd_inflight 同型（QR1126）：kk_updates 的 in_flight_update / queued_updates /
+#   finish_updates_reaching 每主机上线都按 pod + status IN ('pending','queued') 查，
+#   在途子集恒小，(pod, created_at) 部分索引免排序命中 ORDER BY created_at DESC LIMIT 1。
+# - lz4 TOAST 压缩（QR1126，PG14+）：heartbeats.metrics / containers.last_metrics /
+#   commands.out_b64 都是 2~4KB（out_b64 更大）的文本大字段，默认 pglz 解压 CPU 偏高；
+#   lz4 解压快数倍。SET COMPRESSION 只影响新写入行，存量随保留期自然轮换
+#   （heartbeats 2 天全量生效）。PGDG/官方镜像 PG14+ 均带 --with-lz4。
+# - PG18 autovacuum_vacuum_max_threshold（QR1126，**版本守卫**）：给无界增长的
+#   kk_commands 设死元组触发上限 100 万——默认 GUC 5000 万对 >20M 行表过迟。
+#   该 reloption 是 PG18 新增（PG17 及以下不认），_pg_tune fail-fast 语义下必须按
+#   server_version_num 守卫，否则旧版本启动即炸。当前规模 scale 0.05 仍主导，
+#   此为极端增长的安全 ceiling。
 _PG_TABLE_TUNE = {
     "kk_containers": ("autovacuum_vacuum_scale_factor = 0.05, "
                       "autovacuum_analyze_scale_factor = 0.02, "
+                      "autovacuum_vacuum_threshold = 25, "
+                      "autovacuum_analyze_threshold = 25, "
                       "fillfactor = 80"),
     "kk_heartbeats": "autovacuum_vacuum_scale_factor = 0.02",
     "kk_commands": "autovacuum_vacuum_scale_factor = 0.05",
+    "kk_audit": "autovacuum_vacuum_scale_factor = 0.02",
 }
 
+# lz4 TOAST 压缩的大字段列（表, 列）：全部是幂等的 ALTER COLUMN SET COMPRESSION。
+_PG_LZ4_COLS = (
+    ("kk_heartbeats", "metrics"),
+    ("kk_containers", "last_metrics"),
+    ("kk_commands", "out_b64"),
+)
 
-def _pg_tune_stmts():
-    """PG 启动调优语句清单（纯函数，便于 compile 级回归）。"""
+
+def _pg_tune_stmts(server_version_num=0):
+    """PG 启动调优语句清单（纯函数，便于 compile 级回归）。
+
+    server_version_num：PG 服务端版本整数（如 180006），由 _pg_tune 现查传入；
+    默认 0 表示「未知版本」——只产出 PG14+ 通用语句，PG18 专属 reloption 不产出
+    （compile 级测试不连库，拿不到版本，按保守口径断言基础集合）。
+    """
     stmts = ["ALTER TABLE %s SET (%s)" % (t, o)
              for t, o in _PG_TABLE_TUNE.items()]
     stmts += [
@@ -98,7 +129,21 @@ def _pg_tune_stmts():
         "ON kk_audit USING BRIN (ts)",
         "CREATE INDEX IF NOT EXISTS idx_cmd_inflight ON kk_commands (created_at) "
         "WHERE status IN ('pending', 'sent', 'running')",
+        "CREATE INDEX IF NOT EXISTS idx_upd_inflight ON kk_updates (pod, created_at) "
+        "WHERE status IN ('pending', 'queued')",
     ]
+    # BRIN 粒度：CREATE INDEX IF NOT EXISTS 不改已存在索引的参数，必须 ALTER INDEX
+    # SET（排在 CREATE 之后，保证索引已存在）；只影响后续 summarization，幂等。
+    stmts += [
+        "ALTER INDEX idx_hb_ts_brin SET (pages_per_range = 64)",
+        "ALTER INDEX idx_audit_ts_brin SET (pages_per_range = 64)",
+    ]
+    stmts += ["ALTER TABLE %s ALTER COLUMN %s SET COMPRESSION lz4" % (t, c)
+              for t, c in _PG_LZ4_COLS]
+    # PG18 专属 reloption：版本守卫，PG<18 不产出（fail-fast 语义下旧版本不炸）
+    if server_version_num >= 180000:
+        stmts.append("ALTER TABLE kk_commands SET "
+                     "(autovacuum_vacuum_max_threshold = 1000000)")
     return stmts
 
 
@@ -180,13 +225,19 @@ class Store(_StoreAuthMixin, _StoreAuditMixin, _StoreCommandsMixin,
     async def _pg_tune(self, conn):
         """PG 专属的启动调优（方言汇聚点：与 _ensure_schema 同级，仅 PG 执行）。
 
-        全部是幂等的表级 SET / CREATE INDEX IF NOT EXISTS；表属主即可执行
-        （ALTER TABLE SET 不需要超级用户）。失败按迁移语义上抛——调优落不下去
-        说明账号或实例形态有问题，带病上线不如启动即知。
+        全部是幂等的表级 SET / CREATE INDEX IF NOT EXISTS / ALTER INDEX SET /
+        ALTER COLUMN SET COMPRESSION；表属主即可执行（ALTER TABLE SET 不需要超级
+        用户）。失败按迁移语义上抛——调优落不下去说明账号或实例形态有问题，
+        带病上线不如启动即知。PG18 专属 reloption 按现查的 server_version_num
+        守卫（QR1126），PG<18 自动跳过，不破坏旧版本启动。
         """
-        for stmt in _pg_tune_stmts():
+        ver = int((await conn.exec_driver_sql(
+            "SELECT current_setting('server_version_num')")).scalar())
+        stmts = _pg_tune_stmts(ver)
+        for stmt in stmts:
             await conn.exec_driver_sql(stmt)
-        log.info("pg maintenance tuning applied")
+        log.info("pg maintenance tuning applied: version=%s stmts=%s",
+                 ver, len(stmts))
 
     async def _table_columns(self, conn, table):
         if self.dialect == "sqlite":
