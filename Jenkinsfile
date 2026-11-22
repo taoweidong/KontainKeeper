@@ -608,7 +608,8 @@ set -euo pipefail
 # （方言差异仍由 test_dialects 编译级用例覆盖），节点有 MySQL 镜像时填入即恢复矩阵。
 PG_CT="kk-ci-pg"; MY_CT="kk-ci-my"
 docker rm -f "$PG_CT" "$MY_CT" >/dev/null 2>&1 || true
-docker run -d --name "$PG_CT" -p 127.0.0.1:15432:5432 -e POSTGRES_PASSWORD=kk -e POSTGRES_DB=kk postgres:18.6 >/dev/null
+docker run -d --name "$PG_CT" -p 127.0.0.1:15432:5432 -e POSTGRES_PASSWORD=kk -e POSTGRES_DB=kk postgres:18.6 \
+  postgres -c io_method=worker -c shared_buffers=256MB -c track_io_timing=on -c shared_preload_libraries=pg_stat_statements >/dev/null
 PORTS="15432"
 if [ -n "${MY_IMAGE:-}" ]; then
   docker run -d --name "$MY_CT" -p 127.0.0.1:13306:3306 -e MYSQL_ROOT_PASSWORD=kk -e MYSQL_DATABASE=kk -e MYSQL_USER=kk -e MYSQL_PASSWORD=kk "$MY_IMAGE" >/dev/null
