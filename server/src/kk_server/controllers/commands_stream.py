@@ -17,8 +17,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from .deps import agent_ip_auth
+from ..logsetup import get_logger
 from ..services.mqtt_bridge import MAX_HOST_LEN
 
+log = get_logger("kk.sse")
 agent_router = APIRouter(prefix="/api/v1/commands",
                          dependencies=[Depends(agent_ip_auth)])
 
@@ -54,8 +56,16 @@ async def command_stream(request: Request, host: str):
                     payload.get("id"), json.dumps(payload, ensure_ascii=False))
         finally:
             hub.disconnect(host)
-            # 秒级离线（SSE 断连即判离线，不等心跳超时）；sweep 180s 兜底
-            await store.set_online(host, False)
+            # 秒级离线（SSE 断连即判离线，不等心跳超时）；sweep 180s 兜底。
+            # shield：客户端断连时 uvicorn 会 cancel 请求任务，finally 内裸 await
+            # 会被再次取消而中断落库（连接泄漏）；shield 让离线落库作为独立任务
+            # 完成，不受本生成器取消上下文影响（QR1125 E2E 实测裁决）。
+            try:
+                await asyncio.shield(store.set_online(host, False))
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                log.warning("sse 断连置离线失败 host=%s", host, exc_info=True)
 
     return StreamingResponse(
         gen(), media_type="text/event-stream",

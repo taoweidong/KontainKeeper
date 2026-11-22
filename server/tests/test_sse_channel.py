@@ -195,6 +195,43 @@ async def test_sse_endpoint_flush_and_disconnect_offline(api):
     assert (await api.store.get_container("sse-1"))["online"] == 0
 
 
+async def test_sse_disconnect_offline_survives_cancellation(api):
+    """QR1125 E2E 裁决回归锁：客户端断连时 uvicorn **cancel 请求任务**（非优雅 aclose），
+    生成器 finally 内裸 await set_online 会被再次取消而中断落库（连接泄漏、主机永不
+    离线）。finally 用 asyncio.shield 让离线落库作为独立任务完成——本用例模拟取消
+    上下文（task.cancel 驱动生成器），断言主机仍被置 offline。aclose 路径见上一条。
+    """
+    await api.store.upsert_container("sse-c", "img", "1.0", 60)
+    await api.store.set_online("sse-c", True)
+    scope = {"type": "http", "app": api.app, "method": "GET", "path": "/",
+             "headers": [], "query_string": b"", "client": ("127.0.0.1", 1)}
+
+    async def receive():
+        return {"type": "http.request"}
+
+    resp = await command_stream(Request(scope, receive), "sse-c")
+    it = resp.body_iterator
+    await it.__anext__()                       # retry 帧；生成器停在 wait_for(queue.get)
+
+    async def drive():
+        await it.__anext__()                   # 无命令 → 阻塞等 ping，模拟长连接
+
+    task = asyncio.create_task(drive())
+    await asyncio.sleep(0.05)
+    task.cancel()                              # 模拟 uvicorn 断连取消
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    # shield 内层任务独立完成离线落库（给事件循环 ticks）
+    for _ in range(100):
+        if not (await api.store.get_container("sse-c"))["online"]:
+            break
+        await asyncio.sleep(0.02)
+    assert (await api.store.get_container("sse-c"))["online"] == 0
+    assert not api.hub.is_connected("sse-c")
+
+
 async def test_sse_requires_whitelist(api):
     api.app.state.agent_ips = parse_ip_whitelist("10.0.0.0/24")
     async with api.client.stream(
