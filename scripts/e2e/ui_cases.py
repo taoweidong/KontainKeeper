@@ -209,13 +209,17 @@ def _monitor(page, env) -> str:
     page.get_by_role("button", name="清空筛选").click()
     _wait_rows(page, len(PODS), timeout=15000)
 
-    # 全选 → 读数带出已选台数；批量升级在无待分发版本时应保持禁用
-    page.locator(".el-table__header .el-checkbox").first.click()
+    # 全选 → 读数带出已选台数；批量升级在无待分发版本时应保持禁用。
+    # 表头全选框兼容两代 Element Plus DOM（QR1128-E1）：旧版表头在
+    # .el-table__header，底座升级后表头渲染进 .el-table__body-header——
+    # 选择功能本身没变（「已选 N 台」读数仍在），只是内部层级换了名字。
+    header_cb = ".el-table__body-header .el-checkbox, .el-table__header .el-checkbox"
+    page.locator(header_cb).first.click()
     page.wait_for_function(
         "() => document.body.innerText.includes('已选 3 台')", timeout=8000)
     disabled = page.get_by_role("button", name="批量升级").is_disabled()
     _need(disabled, "无待分发版本时「批量升级」应为禁用态")
-    page.locator(".el-table__header .el-checkbox").first.click()
+    page.locator(header_cb).first.click()
     page.wait_for_function(
         "() => document.body.innerText.includes('已选 0 台')", timeout=8000)
     return "读数带=%r；筛选/清空/全选/反选均生效" % trunc(band, 50)
@@ -302,13 +306,16 @@ def _audit(page, env) -> str:
     bad = page.locator(".kk-state--bad").count()
     _need(bad >= 1, "审计页应有至少一条红点事件（login_fail），实际 %d" % bad)
     text = page.locator(".kk-card, .kk-main").first.inner_text()
-    _need("login_ok" in text, "审计页未见 login_ok")
+    # 动作列自 QR1121-W14..W16 起按 kk.ts 映射显示中文（login_ok→登录成功，
+    # 有 opt1121-audit.spec 前端锁）；关键字仍下推服务端匹配原始 action，
+    # 故筛选词用 login_fail、行断言用其中文标签（QR1128-E2）。
+    _need("登录成功" in text, "审计页未见「登录成功」（login_ok 的中文映射）")
 
     page.get_by_placeholder("按操作者 / 动作 / 明细过滤").fill("login_fail")
     page.wait_for_function(
         """() => {
             const rows = [...document.querySelectorAll('.el-table__row')];
-            return rows.length > 0 && rows.every(r => r.innerText.includes('login_fail'));
+            return rows.length > 0 && rows.every(r => r.innerText.includes('登录失败'));
         }""", timeout=15000)
     filtered = page.locator(".el-table__row").count()
     page.get_by_role("button", name="重置").click()
