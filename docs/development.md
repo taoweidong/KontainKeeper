@@ -5,6 +5,7 @@
 
 > 生产部署（安全加固、镜像制作、TLS 等）请看[生产环境部署指南](deployment.md)，
 > 两者职责不重叠：开发环境用匿名 Broker 与默认口令换取「开箱即起」。
+> 综合指南（使用手册 / 二次开发 / API 参考）见[项目手册](manual.md)。
 
 ## 0. 工程结构总览
 
@@ -20,11 +21,12 @@
 ```
 agent/src/kk_agent/    transport.py(MQTT) / collector.py(psutil) / executor.py /
                        updater.py(自更新) / plugin_loader.py / hostinfo.py / main.py
-server/src/kk_server/  models/(store,tables,version) / services/(mqtt_bridge,security) /
-                       controllers/(auth,rbac,containers,commands,audit,exporting,stats,agent_update,health,deps) /
+server/src/kk_server/  models/(store,tables,version + 域 Mixin：auth/audit/commands/command_queue/metrics/hosts/ipwhitelist/maintenance/rbac) /
+                       services/(mqtt_bridge,security,sse_hub,downlink,frame_gate) /
+                       controllers/(auth,rbac,containers,commands,audit,exporting,stats,agent_update,health,ipwhitelist,ingest,commands_stream,deps) /
                        main.py(create_app 工厂，python -m kk_server 运行)
-web/src/               api/(业务 API 层) / views/(业务页 + system/{user,role,menu} 系统管理三页) / router/modules/(只剩隐藏 Root 记账容器)
-proto/messages.md      双端通信协议契约（v4 MQTT：匿名 Broker + IP 白名单），改协议必读
+web/src/               api/(业务 API 层) / views/(业务页 + system/{user,role,menu,ipwhitelist,iprejects} 系统管理五页) / router/modules/(只剩隐藏 Root 记账容器)
+proto/messages.md      双端通信协议契约（v4 MQTT + §8 HTTP/SSE 绑定），改协议必读
 scripts/               build.sh(管理镜像) / install.sh(非容器主机 systemd 安装) / mqtt_e2e.py(Broker 冒烟) / bench_agent.py / loadtest.py
 docker/mosquitto/      匿名 Broker 配置（mosquitto.conf，开发/生产同源）+ 自建 Broker 镜像说明
 ```
@@ -80,8 +82,14 @@ wsl -d Ubuntu-22.04 -- sudo apt-get install -y mosquitto mosquitto-clients
 ```
 
 v3 起 Broker 统一匿名开放（`allow_anonymous true`，无 passwordfile / ACL），
-开发与生产同一份配置；接入管控由服务端 `KK_AGENT_IPS` 白名单承担
-（开发环境不配白名单 = 放行全部，见 §6）。
+开发与生产同一份配置；接入管控由服务端 IP 白名单承担（开发环境不配白名单 = 放行全部，见 §6）。
+**QR1124 起白名单动态化**：`KK_AGENT_IPS` 退为启动种子，DB `kk_ip_rules` 是运行时真相，
+「系统管理 → IP 白名单」界面配置即时生效无需重启。
+
+> **QR1125 Phase 0 双通道**：除 MQTT 外，服务端已落地 HTTP 上行 ingest（`/api/v1/ingest/*`）+
+> SSE 下行命令通道（`/api/v1/commands/stream`），与 MQTT 并存写同一 store（上行 ingest 仍需配
+> `KK_MQTT_URL`）。Agent 侧传输切换（`KK_TRANSPORT`）属 Phase 1 未实施。详见
+> [design-transport.md](design-transport.md) 与 [手册 §7.3](manual.md#73-协议与通道)。
 
 ## 4. 启动服务端
 
@@ -134,9 +142,11 @@ set KK_DB_URL=postgresql://kk:kk-pg-pass@127.0.0.1:15432/kontainkeeper
 .venv/Scripts/python.exe -m kk_server
 ```
 
-首次连 PG 启动时，`_pg_tune` 会自动落地 PG 专属优化：热表 autovacuum 调参、
-`kk_containers` fillfactor=80（心跳热更新走 HOT）、心跳/审计 ts 的 BRIN 索引、
-在途命令部分索引（`idx_cmd_inflight`，清扫查询从全表扫变常数命中）。
+首次连 PG 启动时，`_pg_tune` 会自动落地 PG 专属优化（QR1126 充分利用 PG18）：四热表
+autovacuum 调参（containers 另压绝对阈值 25、补 audit）、`kk_containers` fillfactor=80（心跳热更新走 HOT）、
+心跳/审计 ts 的 BRIN 索引（`pages_per_range=64`）、在途命令/升级部分索引（`idx_cmd_inflight`/`idx_upd_inflight`）、
+三大字段 lz4 TOAST 压缩、PG18 专属 `autovacuum_vacuum_max_threshold`（按 `server_version_num` 版本守卫，PG<18 自动跳过）。
+全部表级幂等、表属主即可执行。部署侧调优（io_method=worker/内存/WAL/监控）见 [deployment.md](deployment.md) §4.6 与 `docker/docker-compose.pg.yml`。
 
 **测试也可以整套打 PG**：设 `KK_TEST_DB_URL` 后，server/tests 全部夹具改用该库
 （每个测试 TRUNCATE + 重放种子隔离）；不设则维持各用各的 SQLite 文件：
@@ -161,6 +171,8 @@ pnpm dev          # http://localhost:8848，/api/* 代理到 127.0.0.1:8443
 |---|---|
 | `pnpm dev` | Vite 开发服务器（8848 端口，代理已配好，先起后端再起前端） |
 | `pnpm typecheck` | TS 类型检查（`tsc` + `vue-tsc`） |
+| `pnpm test` / `test:watch` / `test:coverage` | vitest 单测（业务 hook/utils，co-located `*.spec.ts`） |
+| `pnpm lint:eslint` | ESLint（`--max-warnings 0`，CI 零豁免） |
 | `pnpm build` | 产物输出到 `web/dist/` |
 
 **产物同步**（改前端后要让自己看到效果，必须做这一步）：
@@ -211,9 +223,10 @@ uv run kk-agent mqtt://127.0.0.1:1883
 验证链路：管理界面「主机总览」出现 `demo-host` → 详情页看曲线（**指标要等
 首帧心跳**，不是上线即有）→ 命令中心下发命令 → 结果回传、审计留痕。
 
-> 接入管控说明：Agent 上行帧携带自报 `ip`（自动探测，`KK_ADVERTISE_IP` 可覆盖），
-> 服务端按 `KK_AGENT_IPS` 白名单校验。开发环境不配白名单即放行全部；
-> 生产环境必须配置（`KK_ENV=production` 未配会拒绝启动），见部署指南 §4.1。
+> 接入管控说明：MQTT 通道 Agent 上行帧携带自报 `ip`（自动探测，`KK_ADVERTISE_IP` 可覆盖），
+> 服务端按 IP 白名单校验；HTTP/SSE 通道按**真实 TCP 源 IP** 校验（更安全）。开发环境不配白名单即放行全部；
+> 生产环境（`KK_ENV=production`）要求 **env `KK_AGENT_IPS` 或 DB 启用规则任一非空**否则拒启（QR1124），
+> 白名单可在「系统管理 → IP 白名单」界面动态配置，见部署指南 §4.4/§4.5。
 
 自定义采集插件：往 `KK_PLUGIN_DIR`（缺省 `<包目录>/plugins/`）放任意 `*.py`，
 实现 `collect() -> dict` 即随心跳自动上报，mtime 变化热加载无需重启：
@@ -226,17 +239,17 @@ def collect():
 ## 7. 测试
 
 ```bash
-# 全量（540 条）
+# 全量（700+ 条，以 pytest 汇总为准；唯一门禁入口 bash scripts/quality_gate.sh）
 .venv/Scripts/python.exe -m pytest agent/tests server/tests -q
 # 分包
 .venv/Scripts/python.exe -m pytest agent/tests -q      # Agent 单测
 .venv/Scripts/python.exe -m pytest server/tests -q     # Server 单测 + 端到端集成
 # 前端
-cd web && pnpm typecheck && pnpm build
+cd web && pnpm typecheck && pnpm test
 ```
 
-- **Broker 可达**时全量 passed；**不可达**时仅 5 条端到端集成用例 skipped
-  （自动跳过，不会误报失败）——跑全量前先起 §3 的 Mosquitto。具体数字以 pytest 汇总为准。
+- **Broker 可达**时全量 passed；**不可达**时恰好 5 条 skipped（4 条 Broker 级集成 + 1 条 POSIX-only
+  命令执行用例，Windows 上跳过）——跑全量前先起 §3 的 Mosquitto。门禁口径 `skipped≤5`，具体数字以 junitxml 为准。
 - `agent/tests` 覆盖 MQTT 传输（主题/QoS/retain/离线队列）、psutil 采集、
   命令执行、插件热加载、自更新；Windows 上直接读真机指标，无需伪造 /proc。
 - `server/tests` 用 `httpx.AsyncClient` + `ASGITransport` 直打 `create_app`，

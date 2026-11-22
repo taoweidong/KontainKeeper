@@ -47,6 +47,12 @@
 服务端 IP 白名单；v4 只往 status 帧加可选的 `env`/`group`/`labels`/`caps`，并有 v3
 兼容窗口，接入管控沿用 v3）。
 
+> **QR1125 Phase 0 双通道（已落地）**：上图 MQTT 仍是生产主通道；服务端另已落地
+> **HTTP 上行 ingest（`/api/v1/ingest/*`）+ SSE 下行命令通道（`/api/v1/commands/stream`）**，
+> 与 MQTT 并存写同一 store，用 DB 补偿层（queued 命令队列 + 重连 flush + sweep 兜底）承担
+> 离线排队/在线判定，目标是逐步减少独立 Broker 依赖。本节框图与 §2 的 MQTT 单通道叙述将在
+> Phase 3 拆除 Broker 时整体改写；当前双通道设计详见 [`design-transport.md`](design-transport.md)。
+
 ## 2. 为什么是 MQTT
 
 | 能力 | v1 自研 WS | v2 MQTT |
@@ -142,24 +148,30 @@ kk_server/
 ├── main.py            # create_app 工厂：装配 M/C/V + lifespan（桥接 + janitor）
 ├── config.py          # KK_* 环境变量解析（Settings），含 COLLECT_ITEMS 白名单
 ├── models/
-│   ├── store.py       # 异步存储门面：引擎装配 + 执行原语 + 方言收敛点（_upsert/_ensure_schema）
-│   ├── _store_*.py    # 业务方法六域 Mixin：auth/audit/commands/metrics/hosts/maintenance
+│   ├── store.py       # 异步存储门面：引擎装配 + 执行原语 + 方言收敛点（_upsert/_ensure_schema/_pg_tune）
+│   ├── _store_*.py    # 业务方法九域 Mixin：auth/audit/commands/command_queue/metrics/hosts/ipwhitelist/maintenance/rbac
 │   ├── tables.py      # 表定义 + _ADD_COLUMNS 迁移清单
 │   └── helpers.py     # 工具
 ├── services/
-│   ├── mqtt_bridge.py # MqttBridge：无状态桥接（替代已删的 hub.py）
+│   ├── mqtt_bridge.py # MqttBridge：MQTT 无状态桥接（替代已删的 hub.py）
+│   ├── sse_hub.py     # QR1125：SSE 下行连接表 + flush_queued_commands
+│   ├── downlink.py    # QR1125：get_downlink 下行路由（SSE 优先 / MQTT 兜底）
+│   ├── frame_gate.py  # QR1125：HTTP ingest 帧闸门（尺寸/JSON/host）
 │   └── security.py    # 命令黑名单校验（安全红线）
 ├── controllers/       # REST /api/*
-│   ├── deps.py        # 会话鉴权
+│   ├── deps.py        # 会话鉴权 / AdminUser / agent_ip_auth（真实源 IP）
 │   ├── health.py      # GET /api/health
 │   ├── auth.py        # 管理员登录/登出
-│   ├── containers.py  # 主机列表（?view=summary）/详情/指标
+│   ├── containers.py  # 主机列表（?view=summary）/详情/指标/上限
 │   ├── commands.py    # 命令下发（含 kind=collect）/结果/采集项
 │   ├── audit.py       # 审计日志
 │   ├── rbac.py        # 用户/角色/菜单管理（AdminUser）+ /api/auth/menus
+│   ├── ipwhitelist.py # QR1124：IP 白名单 CRUD + 拦截记录（AdminUser）
 │   ├── exporting.py   # CSV 导出（公式注入防护、行数上限）
 │   ├── stats.py       # GET /api/system/stats 可观测
-│   └── agent_update.py# Agent 自更新上传/回滚/台账/推送/下载
+│   ├── agent_update.py# Agent 自更新上传/回滚/台账/推送/下载
+│   ├── ingest.py      # QR1125：HTTP 上行 /api/v1/ingest/{status,hb,result}
+│   └── commands_stream.py # QR1125：SSE 下行 /api/v1/commands/stream
 └── web/               # Vue3 构建产物（随包打包，服务端直接托管）
 ```
 
@@ -177,11 +189,12 @@ kk_server/
 ### 4.2 前端
 
 `web/` 是独立 pnpm 工程（Vue3 + TS + Element Plus + Vite + Pinia + ECharts，
-底座 pure-admin-thin v6.2.0）。业务页：主机总览（10s 轮询 + 多选批量）、
+底座 pure-admin-thin v6.2.0）。业务页：主机总览（默认 10s 轮询 + 多选批量）、
 主机详情与使用趋势（ECharts 曲线 + 磁盘/网卡/进程/登录用户，30s）、命令中心
-（采集面板 + 命令面板，5s）、审计日志、系统统计（system，/api/system/stats 可观测）、
-版本与更新（host/update，批量升级入口），以及系统管理三页
-（system/{user,role,menu}：用户 / 角色 / 菜单管理，RBAC）。
+（采集面板 + 命令面板，历史**自适应轮询：有未终态 3s / 全终态 10s**）、审计日志、
+系统统计（system，/api/system/stats 可观测）、版本与更新（host/update，批量升级入口），
+以及系统管理五页（system/{user,role,menu,ipwhitelist,iprejects}：用户 / 角色 / 菜单 /
+IP 白名单 / 拦截记录，RBAC，后两页 QR1124 admin-only）。逐页按钮级说明见[项目手册 §5](manual.md#5-详细使用手册web-界面)。
 
 构建产物同步到 `server/src/kk_server/web/`，`kk-server` 单端口托管全栈，
 也可独立 nginx 反代。菜单**完全由数据库下发**（2026-10-31 RBAC 二阶段）：
@@ -226,12 +239,12 @@ KontainKeeper/
 
 | 层 | 机制 |
 |---|---|
-| Agent 接入 | Broker 匿名开放；上行帧（status/hb/result）统一携带自报 `ip`，服务端按 `KK_AGENT_IPS` 白名单（IP/CIDR）校验，名单外拒收并审计 `ip_rejected` |
-| 自更新下载 | REST 接口按请求**真实 TCP 源 IP** 校验同一白名单（比 MQTT 自报值可靠） |
+| Agent 接入 | Broker 匿名开放；MQTT 上行帧（status/hb/result）携带自报 `ip`，服务端按 IP 白名单（IP/CIDR）校验，名单外拒收并审计 `ip_rejected` + 按 IP 聚合落 `kk_ip_rejects`。**QR1124 动态化**：`KK_AGENT_IPS` 退为启动种子，DB `kk_ip_rules` 是运行时真相，界面配置即时生效无需重启 |
+| 自更新下载 / HTTP/SSE 通道 | REST 自更新与 QR1125 ingest/SSE 按请求**真实 TCP 源 IP** 校验同一白名单（比 MQTT 自报值可靠；经反代源 IP 退化，Agent 应内网直连） |
 | 命令滥用 | 服务端黑名单（`KK_CMD_BLACKLIST`）在源头拦截 + 全量审计；cmdline 经 sh -c（内网灵活优先），argv 直传不经 shell |
 | 自更新完整性 | sha256 强制校验（可选 HMAC），防损坏/篡改 |
 | 管理端 | 会话 token（12h 过期；**重置口令 / 禁用 / 删除用户均即时吊销该账号全部会话**，QR-S44）；RBAC 三表 + 菜单按角色 fail-closed 下发（未授权根本不注册）；生产必须前置 TLS 终结 |
-| 网络边界 | 匿名 Broker 下唯一不可伪造的隔离：防火墙/安全组限制 1883 端口可达范围；`KK_ENV=production` 未配白名单拒绝启动 |
+| 网络边界 | 匿名 Broker 下唯一不可伪造的隔离：防火墙/安全组限制 1883 端口可达范围；`KK_ENV=production` 白名单 **env 或 DB 任一非空**否则拒启（QR1124） |
 
 ## 8. 风险与对策
 

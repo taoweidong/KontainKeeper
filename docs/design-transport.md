@@ -1,6 +1,6 @@
 # 上报/采集机制轻量级 redesign 设计文档（QR1125）
 
-> 状态：**Phase 0 已实施**（QR1125-S1..S3，服务端双通道并存，门禁 713 全绿）；Phase 1–3 待评审推进。
+> 状态：**Phase 0 已实施**（QR1125-S1..S4 + SSE 断连 shield 修复，服务端双通道并存，门禁 714 全绿）；Phase 1–3 待评审推进。
 > 整体估 2–3 人周，分 4 阶段独立可灰度可回滚。
 >
 > **Phase 0 实施安全裁决**（探索 ~55 个 bridge 测试锁后定，偏离本文原稿处均已落地为更稳妥形态）：
@@ -361,7 +361,7 @@ GET /api/v1/commands/stream?host=<host>      Accept: text/event-stream
   控制器最小接线（保留 bridge None→503）+ main 装配 sse_hub/janitor sweep_dead。
 - 计数器 ingest_status/hb/result 经 bridge._bump（调用点在新模块，扫描锁不受影响）；前端动态兜底渲染。
 - proto/messages.md 增 §8 HTTP/SSE 传输绑定 + 修两处漂移（§7 尺寸预检、§3.3 rc=-3 落 done+truncated）。
-- 测试：test_command_queue.py(7) + test_ingest.py(11) + test_sse_channel.py(12)，门禁 713 全绿 skipped=5。
+- 测试：test_command_queue.py(7) + test_ingest.py(11) + test_sse_channel.py(13，含取消上下文断连离线回归锁)，门禁 714 全绿 skipped=5。
 - **留后续**：独立 FrameProcessor 抽取（无 MQTT 独立运行，Phase 0.5）；Last-Event-ID 精确回放 sent 未 ACK 命令
   （Phase 0 续传以 DB queued flush 为准）；前端 COUNTER_META 正式收录 + broker 语义重映射（Phase 2）。
 

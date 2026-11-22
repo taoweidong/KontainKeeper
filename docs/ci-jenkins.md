@@ -167,7 +167,7 @@ git add server/src/kk_server/web && git commit -m "chore(web): 同步前端构�
 | ⑥ 失败 | 构建日志 | PyInstaller 装不上（网络/venv）、paho 子模块未被收集 |
 | ⑧ 失败 | `reports/image-smoke.log`（含容器日志尾部） | 镜像起不来、生产自检不过（口令/白名单）、Broker 连不上、命令链路断 |
 | ⑨ 失败 | 构建日志 | 仓库凭据错、仓库地址不可达、tag 无推权 |
-| ⑩ 失败 | 构建日志（SSH 输出） | 私钥不对、`DEPLOY_DIR` 不是克隆、目标机连不上仓库、`.env` 缺 `KK_AGENT_IPS`（production 自检会拒绝启动） |
+| ⑩ 失败 | 构建日志（SSH 输出） | 私钥不对、`DEPLOY_DIR` 不是克隆、目标机连不上仓库、白名单 env+DB 皆空（production 自检会拒绝启动，QR1124） |
 | ⑪ 失败 | 构建日志 | 服务端没起来、Broker 未连上、口令与目标机 `.env` 不一致 |
 | ⑬ 失败 | 构建日志 | PG 真连建表扩列失败（方言缺陷）；填了 `MY_IMAGE` 时 MySQL 同理 |
 | ⑬ 失败 | `reports/loadtest.log` | 连接成功率 < 98%、或服务端 `agents_online` < 连接成功数（桥接漏收）——脚本现在返回 1，不再只打印 |
@@ -178,8 +178,8 @@ git add server/src/kk_server/web && git commit -m "chore(web): 同步前端构�
 - **登录锁定**：同一用户名**或同一客户端 IP** 连续失败 5 次会锁 300 秒（两个维度
   分别计数）。⑪ 报登录失败时先确认凭据，别连着重跑 —— 尤其注意 Jenkins 节点与
   服务端之间若走了代理，源 IP 会退化为代理地址，等于「全局 5 次」，更容易互相连坐。
-- **`KK_ENV=production` 自检**：目标机口令为默认 `admin123` 或 `KK_AGENT_IPS` 为空时，
-  服务端会**直接拒绝启动**（fail-fast）。⑩ 之后容器反复重启、⑪ 探活失败，多半是这个。
+- **`KK_ENV=production` 自检**：目标机口令为默认 `admin123`，或白名单 **env `KK_AGENT_IPS` 与 DB 启用规则皆空**时，
+  服务端会**直接拒绝启动**（fail-fast，QR1124：env 只是启动种子，DB 有启用规则即可放行）。⑩ 之后容器反复重启、⑪ 探活失败，多半是这个。
 
 ### 6.1 「静默绿灯」反例清单（本轮 ③/⑬ 门禁就是为堵这些洞）
 
