@@ -236,24 +236,66 @@ def test_engine_kwargs_per_dialect(monkeypatch):
 
 
 def test_pg_tune_stmts_are_idempotent():
-    """PG 启动调优语句：全部幂等形态（表级 SET / IF NOT EXISTS），
-    覆盖三张热表 + BRIN 索引 + 在途命令部分索引——升级库与新建库都靠
-    启动时执行这一份。"""
+    """PG 启动调优语句：全部幂等形态（表级 SET / IF NOT EXISTS / ALTER INDEX SET /
+    ALTER COLUMN SET COMPRESSION），覆盖四张热表 + BRIN×2 + 在途命令/升级部分索引
+    + lz4 压缩——升级库与新建库都靠启动时执行这一份（QR1126 扩展）。"""
     from kk_server.models.store import _pg_tune_stmts
     stmts = _pg_tune_stmts()
-    tables = {"kk_containers", "kk_heartbeats", "kk_commands"}
-    assert {x.split()[2] for x in stmts if x.startswith("ALTER")} == tables
-    brin = [x for x in stmts if "BRIN" in x]
+    # ALTER TABLE 覆盖四热表（containers/heartbeats/commands/audit，QR1126 补 audit）
+    tables = {"kk_containers", "kk_heartbeats", "kk_commands", "kk_audit"}
+    assert {x.split()[2] for x in stmts if x.startswith("ALTER TABLE")} == tables
+    # CREATE INDEX 全部 IF NOT EXISTS：BRIN×2 + 在途命令/升级部分索引×2
+    creates = [x for x in stmts if x.startswith("CREATE INDEX")]
+    assert all("IF NOT EXISTS" in x for x in creates)
+    brin = [x for x in creates if "BRIN" in x]
     assert len(brin) == 2 and "kk_heartbeats" in brin[0] and "kk_audit" in brin[1]
-    assert all("IF NOT EXISTS" in x for x in stmts if "CREATE INDEX" in x)
-    # 部分索引的谓词必须与 sweep_command_timeouts 的在途口径逐字同步：
-    # 谓词一变，索引就不再被清扫查询命中（优化器按谓词蕴含判定）
-    inflight = [x for x in stmts if "idx_cmd_inflight" in x]
+    # 部分索引的谓词必须与域查询的在途口径逐字同步：
+    # 谓词一变，索引就不再被查询命中（优化器按谓词蕴含判定）
+    inflight = [x for x in creates if "idx_cmd_inflight" in x]
     assert len(inflight) == 1
     assert "WHERE status IN ('pending', 'sent', 'running')" in inflight[0]
-    # 热更新表给 fillfactor：kk_containers 每帧心跳 upsert，留页内空间让 HOT 生效
-    containers = [x for x in stmts if x.startswith("ALTER TABLE kk_containers")][0]
+    # idx_upd_inflight 对齐 in_flight_update/finish_updates_reaching 的 pending/queued
+    upd = [x for x in creates if "idx_upd_inflight" in x]
+    assert len(upd) == 1
+    assert "WHERE status IN ('pending', 'queued')" in upd[0]
+    assert "(pod, created_at)" in upd[0]
+    # BRIN 粒度走 ALTER INDEX SET（CREATE IF NOT EXISTS 不改已存在索引参数，QR1126）
+    alter_idx = [x for x in stmts if x.startswith("ALTER INDEX")]
+    assert len(alter_idx) == 2
+    assert all("pages_per_range = 64" in x for x in alter_idx)
+    assert {x.split()[2] for x in alter_idx} == {"idx_hb_ts_brin", "idx_audit_ts_brin"}
+    # lz4 TOAST 压缩三个大字段列（ heartbeats.metrics / containers.last_metrics /
+    # commands.out_b64），只影响新写入行，存量随保留期轮换
+    lz4 = [x for x in stmts if "SET COMPRESSION lz4" in x]
+    assert len(lz4) == 3
+    assert all(x.startswith("ALTER TABLE") and "ALTER COLUMN" in x for x in lz4)
+    # 热更新表给 fillfactor + 绝对阈值兜底：kk_containers 每帧心跳 upsert，
+    # 留页内空间让 HOT 生效；500 行小表 threshold 25 让状态翻转更早回收
+    containers = [x for x in stmts
+                  if x.startswith("ALTER TABLE kk_containers SET")][0]
     assert "fillfactor = 80" in containers
+    assert "autovacuum_vacuum_threshold = 25" in containers
+    # 默认（未知版本）不产出 PG18 专属 reloption（版本守卫见下条用例）
+    assert not any("autovacuum_vacuum_max_threshold" in x for x in stmts)
+
+
+def test_pg_tune_pg18_version_gate():
+    """QR1126：autovacuum_vacuum_max_threshold 是 PG18 新增 per-table reloption
+    （CREATE TABLE storage parameters 清单含 toast. 变体；PG17 及以下不认）。
+    _pg_tune fail-fast 语义下必须按 server_version_num 守卫：>=180000 才产出该
+    语句（给无界增长的 kk_commands 设死元组触发上限 100 万），否则跳过，避免
+    旧版本 PG 启动即炸。纯函数直测三档版本。"""
+    from kk_server.models.store import _pg_tune_stmts
+    pg18 = [x for x in _pg_tune_stmts(180006)
+            if "autovacuum_vacuum_max_threshold" in x]
+    assert len(pg18) == 1
+    assert pg18[0].startswith("ALTER TABLE kk_commands SET")
+    assert "autovacuum_vacuum_max_threshold = 1000000" in pg18[0]
+    # PG17 与未知版本（默认 0）都不产出该 reloption
+    assert not any("autovacuum_vacuum_max_threshold" in x
+                   for x in _pg_tune_stmts(170000))
+    assert not any("autovacuum_vacuum_max_threshold" in x
+                   for x in _pg_tune_stmts())
 
 
 def test_heartbeats_brin_index_only_on_pg():

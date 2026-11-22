@@ -25,7 +25,7 @@ import uuid
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "server", "src"))
 
-from sqlalchemy import delete  # noqa: E402
+from sqlalchemy import delete, text  # noqa: E402
 
 from kk_server.models import tables  # noqa: E402
 from kk_server.models.store import Store  # noqa: E402
@@ -33,6 +33,65 @@ from kk_server.models.store import Store  # noqa: E402
 # 单条命令输出的载荷尺寸：base64 后约 26 万字符，**必须越过 MySQL TEXT 的 64KB 上限**，
 # 否则「大字段路径」只是注释里的承诺（此前 4KB 的载荷连 TEXT 都撑不满，等于没验）。
 BIG_BYTES = 200_000
+
+
+async def _verify_pg_tuning(store):
+    """QR1126：PG 真库回读 _pg_tune 落地状态。
+
+    test_dialects 只验语句**形态**（compile 级），这里验真实执行后的 catalog：
+    部分索引/BRIN 存在、热表 reloptions、lz4 TOAST 压缩、PG18 专属 max_threshold
+    （按版本守卫）。仅 PG 执行，MySQL 跳过——不引入三库分叉（只读 PG catalog）。
+    """
+    if store.dialect != "postgresql":
+        return
+    async with store.engine.connect() as conn:
+        ver = int((await conn.execute(
+            text("SELECT current_setting('server_version_num')"))).scalar())
+
+        async def reloptions(t):
+            row = (await conn.execute(text(
+                "SELECT c.reloptions FROM pg_class c"
+                " JOIN pg_namespace n ON c.relnamespace = n.oid"
+                " WHERE c.relname = :t AND n.nspname = current_schema()"),
+                {"t": t})).scalar()
+            return list(row or [])
+
+        idx = {r[0] for r in (await conn.execute(text(
+            "SELECT indexname FROM pg_indexes"
+            " WHERE schemaname = current_schema()"))).fetchall()}
+        for name in ("idx_cmd_inflight", "idx_upd_inflight",
+                     "idx_hb_ts_brin", "idx_audit_ts_brin"):
+            assert name in idx, "PG 调优索引缺失：%s" % name
+
+        ct = await reloptions("kk_containers")
+        assert "fillfactor=80" in ct, "containers fillfactor 未落地：%r" % ct
+        assert "autovacuum_vacuum_threshold=25" in ct, \
+            "containers 绝对阈值未落地：%r" % ct
+        assert "autovacuum_vacuum_scale_factor=0.02" in await reloptions("kk_audit"), \
+            "kk_audit autovacuum 未落地（QR1126 补调）"
+
+        # lz4 TOAST 压缩：pg_attribute.attcompression='l'（'p'=pglz，'\0'=默认）。
+        # asyncpg 把 PG "char" 类型返回为单字节 bytes（b'l'），归一成 str 再比。
+        for t, col in (("kk_heartbeats", "metrics"),
+                       ("kk_containers", "last_metrics"),
+                       ("kk_commands", "out_b64")):
+            comp = (await conn.execute(text(
+                "SELECT a.attcompression FROM pg_attribute a"
+                " JOIN pg_class c ON a.attrelid = c.oid"
+                " JOIN pg_namespace n ON c.relnamespace = n.oid"
+                " WHERE c.relname = :t AND a.attname = :col"
+                " AND n.nspname = current_schema() AND a.attnum > 0"
+                " AND NOT a.attisdropped"), {"t": t, "col": col})).scalar()
+            if isinstance(comp, bytes):
+                comp = comp.decode("ascii", "replace")
+            assert comp == "l", "%s.%s 压缩不是 lz4：%r" % (t, col, comp)
+
+        if ver >= 180000:
+            cmd = await reloptions("kk_commands")
+            assert "autovacuum_vacuum_max_threshold=1000000" in cmd, \
+                "PG18 max_threshold 未落地：%r" % cmd
+    print(">> pg tuning verified: version=%s（索引/reloptions/lz4%s）"
+          % (ver, "/PG18 max_threshold" if ver >= 180000 else ""))
 
 
 async def main():
@@ -45,6 +104,7 @@ async def main():
     store = Store(url)
     try:
         await store.setup()  # 建表 + _ensure_schema 扩列（跨方言最易炸的一步）
+        await _verify_pg_tuning(store)  # QR1126：PG 回读 _pg_tune 落地（MySQL 跳过）
 
         # 走一遍真实读写链路，比单纯 setup 更贴近上线行为
         await store.upsert_container(host, "img:1", "0.3.0", 60)
