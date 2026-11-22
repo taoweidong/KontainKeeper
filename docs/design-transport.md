@@ -1,7 +1,18 @@
 # 上报/采集机制轻量级 redesign 设计文档（QR1125）
 
-> 状态：**设计评审稿**（纯文档，零代码改动）。本轮沉淀探索结论 + 可执行的分阶段迁移路径，
-> 供评审后再实施；不 premature 改代码。实施估 2–3 人周，分 4 阶段独立可灰度可回滚。
+> 状态：**Phase 0 已实施**（QR1125-S1..S3，服务端双通道并存，门禁 713 全绿）；Phase 1–3 待评审推进。
+> 整体估 2–3 人周，分 4 阶段独立可灰度可回滚。
+>
+> **Phase 0 实施安全裁决**（探索 ~55 个 bridge 测试锁后定，偏离本文原稿处均已落地为更稳妥形态）：
+> 1. **组合复用而非 FrameProcessor 抽取**：bridge 处理器本就是 transport-agnostic 的 `(host,body)` 协程，
+>    HTTP ingest 直接 await 即共享核心，**MqttBridge 源码零改动**——保住直调内部方法/读写 stats 同一 dict/
+>    绑定方法身份/`inspect.getsource(MqttBridge)` 静态扫描计数器（test_proto_window.py:176-195）等隐式契约。
+>    真正的独立抽取（无 MQTT 独立运行）留 Phase 0.5，连同扫描锁裁决一起做。
+> 2. **零新依赖**：SSE 用 starlette 原生 `StreamingResponse(text/event-stream)`（非 sse-starlette）；
+>    Agent 侧 HTTP/SSE 客户端将用 stdlib urllib（非 httpx，updater.py 先例）。
+> 3. **publish_update Phase 0 仍走 MQTT**（SSE 升级推送留 Phase 1+）；dispatch_command SSE 优先/paho 兜底。
+> 4. **idx_cmd_inflight 谓词不变**（test_dialects 锁）：queued 走独立 sweep_queued_command_timeouts，
+>    不新增部分索引、不动既有谓词；新计数器调用点在新模块（不在 MqttBridge 源码）→ 扫描锁不受影响。
 >
 > 关联：总体设计 [`design.md`](design.md)（尤其 §2「为什么是 MQTT」的历史教训）、
 > 协议契约 [`proto/messages.md`](../proto/messages.md)（v4）、缺陷账本
@@ -338,14 +349,21 @@ GET /api/v1/commands/stream?host=<host>      Accept: text/event-stream
 
 ## 6. 分阶段迁移路径（双通道并存、可灰度可回滚）
 
-### Phase 0 · 服务端双通道（MqttBridge 原样保留）
-- 抽 FrameProcessor（§5.3）+ Downlink 接口；MqttBridge 改调 FrameProcessor（行为不变，回归锁全绿）。
-- 新增 ingest 路由（/api/v1/ingest/{status,hb,result}，agent_ip_auth）+ SSE endpoint（/api/v1/commands/stream，sse-starlette）。
-- commands 表增 queued 态 + queued_commands/mark_command_sent/flush_queued_commands + sweep queued 档 + KK_CMD_QUEUE_TTL；
-   部分索引谓词裁决 + test_dialects 锁同步；_ADD_COLUMNS 无需（status 是既有列，只是新取值）。
-- SSE 断连置 offline + 连接表 + Last-Event-ID 续传。
-- 两通道写同一 store 混跑；新增按传输维度计数器（**修正：当前无 transport_mqtt_received，需新增 transport_tagged 计数**）。
-- 顺手修 proto/messages.md 两处漂移（§7 尺寸预检、§3.3 rc=-3 落 done+truncated）。
+### Phase 0 · 服务端双通道（MqttBridge 原样保留）✅ 已实施（QR1125-S1..S3）
+- **S1** DB 命令离线队列：`_store_command_queue.py` mixin（queued_commands/mark_command_queued/
+  mark_queued_commands_sent 刷计时/sweep_queued_command_timeouts）+ create_commands_batch status 参数 +
+  `KK_CMD_QUEUE_TTL`（默认 24h）+ bridge.sweep 追加 queued 清扫。idx_cmd_inflight 谓词不变。
+- **S2** HTTP 上行 ingest：`controllers/ingest.py`（/api/v1/ingest/{status,hb,result}，agent_ip_auth 真实源 IP）+
+  `services/frame_gate.py` 共享闸门；**组合复用 bridge._on_status/_on_hb/_on_result**（MqttBridge 零改动）。
+- **S3** SSE 下行：`services/sse_hub.py`（连接表 + flush_queued_commands + sweep_dead）+
+  `controllers/commands_stream.py`（原生 StreamingResponse，15s ping，断连 set_online False）+
+  `services/downlink.py`（get_downlink 动态路由，SSE 优先/paho 兜底；publish_update 仍走 MQTT）+
+  控制器最小接线（保留 bridge None→503）+ main 装配 sse_hub/janitor sweep_dead。
+- 计数器 ingest_status/hb/result 经 bridge._bump（调用点在新模块，扫描锁不受影响）；前端动态兜底渲染。
+- proto/messages.md 增 §8 HTTP/SSE 传输绑定 + 修两处漂移（§7 尺寸预检、§3.3 rc=-3 落 done+truncated）。
+- 测试：test_command_queue.py(7) + test_ingest.py(11) + test_sse_channel.py(12)，门禁 713 全绿 skipped=5。
+- **留后续**：独立 FrameProcessor 抽取（无 MQTT 独立运行，Phase 0.5）；Last-Event-ID 精确回放 sent 未 ACK 命令
+  （Phase 0 续传以 DB queued flush 为准）；前端 COUNTER_META 正式收录 + broker 语义重映射（Phase 2）。
 
 ### Phase 1 · Agent 可选传输
 - KK_TRANSPORT=httpsse（默认 mqtt）；httpsse 传输模块复用 collector/executor/updater/分块/去重。
@@ -431,8 +449,16 @@ Zabbix agent2「长连接」仅核实到设计目标 "Reduce the number of TCP c
 
 ---
 
-## 后续（本轮不做，待评审）
+## 后续（待评审推进）
 
-Phase 0 服务端双通道实施 → Phase 1 Agent 传输 → Phase 2 验证 → Phase 3 拆除 Broker。
-每阶段独立可灰度可回滚。Phase 0 计划（§5.3 FrameProcessor 抽取点 + §5.1/5.2 ingest/SSE 端点签名 +
-§5.2 flush_queued_commands 状态机 + commands queued 态补充）可直接作为下一轮实施依据。
+**Phase 0 已实施**（服务端双通道并存）。后续：
+- **Phase 0.5** 独立 FrameProcessor 抽取：把处理器核心从 MqttBridge 剥成无 paho 依赖的类，
+  使 HTTP/SSE 通道无需 KK_MQTT_URL 即可独立运行（真正减依赖的前置）。需同步裁决
+  `inspect.getsource(MqttBridge)` 静态扫描锁（test_proto_window.py:176-195，改扫 FrameProcessor+MqttBridge）。
+- **Phase 1** Agent 可选传输：KK_TRANSPORT=httpsse（默认 mqtt），stdlib urllib HTTP push + SSE 客户端，
+  复用 collector/executor/updater/分块/去重；按 group/labels 灰度。
+- **Phase 2** 验证收敛：传输计数器治理（mqtt 归零才拆）+ 前端 COUNTER_META 收录 + broker 语义重映射 +
+  E2E 五场景（断网/重连/重启/大输出/自更新）。
+- **Phase 3** 拆除 Broker：删 MqttBridge/mosquitto 部署/ubuntu broker 镜像/Agent paho 依赖，nginx 收敛 SSE 反代。
+
+每阶段独立可灰度可回滚。

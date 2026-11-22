@@ -218,6 +218,7 @@ uv run kk-server                            # 监听 0.0.0.0:8443
 | `KK_UPDATE_HMAC_KEY` | 自更新清单 HMAC 密钥（QR-P0-1）。配了它：上传时对二进制本体算 HMAC 写入清单 `sig`，推送帧与 `/agent/latest` 都携带；**必须与 Agent 侧同名键一致**。不配则 Agent 推送路径默认拒绝未签名更新（除非 Agent 配 `KK_UPDATE_ALLOW_UNSIGNED=1`），见 §9.2.1 | `""` |
 | `KK_UPDATE_MODE` | 自更新策略（D2.1）：`manual`（默认）下 `/agent/latest` 恒答「无需升级」，升级走管理界面「版本与更新」页选机推送；`auto` 恢复自动——Agent 按 `KK_UPDATE_INTERVAL` 轮询拉齐 + 桥接对落后主机自动推送 | `manual` |
 | `KK_UPDATE_QUEUE_TTL` | 升级推送离线队列的保留时长（秒，下限 3600） | `604800`（7 天） |
+| `KK_CMD_QUEUE_TTL` | QR1125：SSE 通道命令离线队列（`commands.status='queued'`）保留时长（秒，下限 3600），超期由 `sweep_queued_command_timeouts` 收敛；与在途命令的 timeout+slack 清扫互不干扰 | `86400`（24h） |
 | `KK_LOG` | 服务端日志文件路径；留空 = 只写 stdout（docker 采集） | `""` |
 | `KK_LOG_LEVEL` | 日志级别 | `INFO` |
 | `KK_LOG_JSON` | 设 `1` 输出 JSON Lines（接日志采集端时打开） | 关闭 |
@@ -427,10 +428,28 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
+
+    # QR1125：SSE 下行命令通道必须关缓冲，否则 ping/命令帧被 nginx 攒住不下发
+    location /api/v1/commands/stream {
+        proxy_pass http://127.0.0.1:8443;
+        proxy_buffering off;                   # 关键：SSE 逐帧透传
+        proxy_cache off;
+        proxy_read_timeout 300s;               # > 15s ping 间隔
+        proxy_set_header Host $host;
+        proxy_set_header Connection "";
+        proxy_http_version 1.1;
+    }
 }
 ```
 
    随后把 8443 从公网暴露中收回，只允许反代访问。
+
+   > **QR1125 HTTP/SSE 通道的源 IP 口径**：ingest（`/api/v1/ingest/*`）与 SSE
+   > （`/api/v1/commands/stream`）的白名单鉴权用 `agent_ip_auth` 读**真实 TCP 源 IP**
+   > （`request.client.host`，不读 X-Forwarded-For）。经上述公网反代时源 IP 会退化为
+   > 代理地址——与自更新接口同口径（§9.2），**Agent 的 `KK_SERVER` 应配置为内网直连
+   > kk-server 的地址**，不走公网反代；若必须经反代，白名单需放行代理地址（会失去
+   > 逐主机 IP 管控意义，不推荐）。MQTT 通道不受此影响（自报 ip + Broker 直连）。
 
 2. **Agent ↔ Broker 的 MQTT 连接**：跨不可信网络必须 `mqtts://`（配
    `KK_MQTT_TLS_CA`，Agent 侧对应 `KK_TLS_CA`）；Broker 与 Agent 同处内网可信区

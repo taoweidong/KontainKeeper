@@ -198,7 +198,7 @@ v4 只往 `status` 帧里**加可选字段**，不删不改语义——这是兼
 | `out_b64` | 该块输出的 base64（v1 的 `data_b64` 已改名） |
 | `ip` | v3 起所有上行帧统一携带的自报出口 IP，白名单校验与 status/hb 同一入口 |
 | `done` | 末块为 `true`，此时携带下方四个字段 |
-| `rc` | 进程退出码；超时被杀为 `-1`；spawn 失败 `126/127`；**未知或非字符串 `kind` 同样恒回 `127` 回执**（QR-A12：此前畸形 kind 不发任何帧，命令会在服务端挂到超时清扫）；**`-3` 表示 Agent 未能正常交出结果**——out-queue 溢出（分块没送达）或工作队列积压满（命令被限流拒绝，`out` 里带 `task queue full`），服务端据此置 `failed` |
+| `rc` | 进程退出码；超时被杀为 `-1`；spawn 失败 `126/127`；**未知或非字符串 `kind` 同样恒回 `127` 回执**（QR-A12：此前畸形 kind 不发任何帧，命令会在服务端挂到超时清扫）；**`-3` 表示 Agent 未能正常交出结果**——out-queue 溢出（分块没送达）或工作队列积压满（命令被限流拒绝，`out` 里带 `task queue full`），服务端据此置 `done` + `truncated=1`（QR1125 校正旧文档漂移：commands 表**无 `failed` 态**，失败语义由 `truncated` 旗标承担，见 `_store_commands.append_result`；`failed` 只属于 updates 台账） |
 | `timed_out` / `elapsed_ms` / `truncated` | 是否超时、耗时毫秒、输出是否被截断 |
 
 关键收敛语义：**任一分块发送失败，Agent 必须补发一个 `rc=-3` 的失败终态**，
@@ -254,8 +254,12 @@ cpu, mem, disk, disk_io, net, proc, user, sys
 - 服务端校验 `items ⊆ COLLECT_ITEMS`，非法项返回 400 并列出白名单；未知项在 Agent 侧忽略。
 - `kind=collect` 不经 shell，直接调 psutil 采集并返回结构化 JSON。
 
-**命令排队**：Agent 离线时命令由 Broker 持久会话排队（QoS1），重连自动补投。
+**命令排队**：MQTT 通道下 Agent 离线时命令由 Broker 持久会话排队（QoS1），重连自动补投。
 服务端**不保留** `pending_for` 补发逻辑（已删），`mark_sent_batch` 语义即「已发布到 Broker」。
+QR1125 Phase 0 起另有 **DB 命令离线队列**（`commands.status='queued'`）服务 SSE 通道：下发时
+主机离线 → queued，SSE 重连由 `flush_queued_commands` 补投（先转 sent 刷计时再推），超
+`KK_CMD_QUEUE_TTL`（默认 24h）由 `sweep_queued_command_timeouts` 收敛——泛化 updates 队列先例，
+与在途命令的 `timeout+slack` 清扫互不干扰（见 §8）。
 
 ## 5. Agent 自更新 REST 接口
 
@@ -294,11 +298,13 @@ sha256，边际收益有限）。`KK_UPDATE_INSECURE=1` 可关闭 TLS 校验（�
 ## 7. 约束
 
 - 帧尺寸由应用层分块机制约束：result 固定 48KB/块（base64 后约 64KB），心跳帧典型 2–4KB。
-  注意 Mosquitto 2.0.x 的 `message_size_limit` **默认 0 = 不限制**（上限仅 MQTT 协议级 256MB），
-  仓库交付的 `docker/mosquitto/mosquitto.conf` 亦未设置该项——Broker 对单帧并无 1MB 上限，
-  应用层也不再有任何独立帧上限（v1 WS 解析器的 16MB 保护阈值已随 `ws.py` 删除）。
-  部署侧如需硬上限，应在 mosquitto.conf 显式配置 `message_size_limit`（读帧方在
-  `json.loads` 前不预检尺寸，超大帧会直抵内存）。
+  Mosquitto 2.0.x 的 `message_size_limit` **默认 0 = 不限制**（上限仅 MQTT 协议级 256MB），
+  仓库交付的 `docker/mosquitto/mosquitto.conf` 亦未设置该项——Broker 对单帧并无 1MB 上限。
+  **但读帧方在 `json.loads` 前有应用层尺寸预检（QR1120-S2/A12，QR1125 校正旧文档漂移）**：
+  服务端 `MqttBridge._route_message` 预检 `MAX_FRAME_BYTES = 1MB`（超限计 `oversized_dropped`
+  并丢弃，HTTP ingest 侧 `frame_gate.decode_frame` 同口径回 413）；Agent `transport.py` 对入站
+  cmd 预检 `MAX_CMD_BYTES = 64KB`。部署侧如需 Broker 级硬上限，仍可在 mosquitto.conf 显式配置
+  `message_size_limit`。
 - 所有 `ts` 为 Unix 秒。
 - 命令输出分块 48KB，总量超 4MB 截断并置 `truncated`。
 - Agent 侧离线 out-queue 上限 `MAX_QUEUED = 128`（`KK_MAX_QUEUED` 可配，预算口径见
@@ -306,3 +312,50 @@ sha256，边际收益有限）。`KK_UPDATE_INSECURE=1` 可关闭 TLS 校验（�
   内单台 Agent 的额外驻留上限。超出会被淘汰，因此大输出场景下 `send_result` 必须感知入队失败
   并回 `rc=-3`（终态走 QoS0，见 §3.3）。
   回归锁：`agent/tests/test_transport.py::test_max_queued_budget_stays_inside_agent_envelope`。
+
+## 8. HTTP/SSE 传输绑定（QR1125 Phase 0，与 MQTT 并存）
+
+去 Broker 的轻量级直连通道（设计见 [`docs/design-transport.md`](../docs/design-transport.md)）。
+**帧格式 v4 不变，仅传输绑定变**；Phase 0 与 MQTT 双通道并存写同一 store，MqttBridge 原样保留，
+可灰度可回滚。Phase 0 上行 ingest 需 bridge 存在（`KK_MQTT_URL` 配置）；无 MQTT 独立运行留后续
+FrameProcessor 抽取阶段。
+
+### 8.1 上行：HTTP push（Agent → Server，出站 POST）
+
+| 方法 | 路径 | 鉴权 | 帧体 |
+|---|---|---|---|
+| POST | `/api/v1/ingest/status` | 请求真实 TCP 源 IP ∈ 白名单 | §3.1 status 帧 |
+| POST | `/api/v1/ingest/hb` | 同上 | §3.2 hb 帧 |
+| POST | `/api/v1/ingest/result` | 同上 | §3.3 result 帧 |
+
+- 鉴权用 `agent_ip_auth`（**真实 TCP 源 IP**，比 MQTT 自报 ip 更安全；不读 X-Forwarded-For，
+  反代口径同 §5 自更新）。帧闸门 `frame_gate`：尺寸 ≤1MB（413）/ JSON 合法（422）/ host ≤120（422）；
+  proto 兼容窗口在 `_on_status` 内自然生效。
+- 落库**组合复用** `MqttBridge._on_status/_on_hb/_on_result`（与 MQTT 共享 store/stats/per-cid 锁/
+  升级三连）。响应 200=已受理（内部拒收如未知主机/proto 窗外仍 200，计 `rejected`）；bridge 未配 → 503。
+- 计数器 `ingest_status/ingest_hb/ingest_result` 与 MQTT 的 `status/hb/result` 并行累加。
+
+### 8.2 下行：SSE 命令通道（Server → Agent，Agent 出站 GET 长连接）
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|---|---|---|---|
+| GET | `/api/v1/commands/stream?host=<host>` | 请求真实 TCP 源 IP ∈ 白名单 | `text/event-stream`，主机不开入站端口 |
+
+- 事件格式 `id: <命令id>\ndata: <cmd 帧 JSON>\n\n`（cmd 帧同 §4.1）；`retry: 3000` 告知重连延迟；
+  每 15s `: ping` 注释帧保活。**nginx 须 `proxy_buffering off`**（响应带 `X-Accel-Buffering: no`）。
+- 连接建立即 `flush_queued_commands` 补投 DB queued 命令；断连 → `set_online(host, False)` 秒级离线
+  （`mark_stale_offline` 180s 双保险）。连接表单进程内存态，多实例靠 DB queued + 重连 flush 保正确性。
+- 下行路由 `get_downlink`：主机有 SSE 连接 → 直推 SSE；否则回落 `bridge.dispatch_command`（paho）。
+  **Phase 0 升级帧（`kind=update`）仍走 MQTT**，SSE 升级推送留 Phase 1+。
+- 命令收敛沿用 §6 裁决（不新增应用层 ACK）：`sweep_command_timeouts` + result 幂等；queued 命令走
+  独立 `sweep_queued_command_timeouts`（`KK_CMD_QUEUE_TTL`）。
+
+### 8.3 与 MQTT 的语义对照
+
+| 能力 | MQTT 通道 | HTTP/SSE 通道 |
+|---|---|---|
+| 离线判定 | Broker LWT + sweep 兜底 | SSE 断连回调秒级 + sweep 兜底 |
+| 上线真相 | retained status + DB | DB（`set_online`/心跳回置） |
+| 命令离线排队 | Broker 持久会话 QoS1 | DB `queued` 态 + 重连 flush |
+| 接入鉴权 | 自报 ip 白名单 | 真实 TCP 源 IP 白名单 |
+| 至少一次幂等 | QoS1 重投 + last_seq 水位 | 同（result 处理器复用） |
