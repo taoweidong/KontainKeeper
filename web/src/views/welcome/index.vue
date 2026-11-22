@@ -639,8 +639,10 @@ onMounted(() => {
 
 .all-online {
   padding: var(--kk-space-md) 0;
-  font-size: 13px;
-  color: var(--el-text-color-placeholder);
+  /* QR1131-W6：字号收 12px 对齐 .kk-sub 次要档（13px 是全站唯一离档字号）；
+     颜色 placeholder 同 W4 对比度理由收 regular。 */
+  font-size: 12px;
+  color: var(--el-text-color-regular);
   text-align: center;
 }
 
@@ -680,7 +682,8 @@ onMounted(() => {
   }
 
   span {
-    font-size: 13px;
+    /* QR1131-W6：交互导航标签收基础档 14px（13px 离档） */
+    font-size: 14px;
   }
 }
 
@@ -692,7 +695,8 @@ onMounted(() => {
   cursor: pointer;
 
   .pod-name {
-    font-size: 13px;
+    /* 主机名是主标识，收基础档 14px（与总览表主机列同档，QR1131-W6） */
+    font-size: 14px;
 
     &:hover {
       color: var(--el-color-primary);
@@ -704,7 +708,8 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   padding: var(--kk-space-sm) 0;
-  font-size: 13px;
+  /* kv 行收 12px 次要档（QR1131-W6） */
+  font-size: 12px;
 
   span:first-child {
     color: var(--el-text-color-secondary);
