@@ -119,7 +119,7 @@ onMounted(load);
 </script>
 
 <template>
-  <div class="kk-page--grow">
+  <div class="kk-page--grow kk-page--fill">
     <el-card shadow="never" class="kk-card">
       <template #header>
         <div class="kk-toolbar">

@@ -448,7 +448,7 @@ export function useMonitor() {
         <>
           <el-link
             type="primary"
-            class="kk-num"
+            class="kk-num kk-hostname"
             onClick={(e: MouseEvent) => {
               e.stopPropagation();
               gotoDetail(row.pod);
@@ -456,7 +456,7 @@ export function useMonitor() {
           >
             {row.pod}
           </el-link>
-          <div class="kk-sub">{row.image || "-"}</div>
+          <div class="kk-sub kk-ellipsis">{row.image || "-"}</div>
         </>
       )
     },

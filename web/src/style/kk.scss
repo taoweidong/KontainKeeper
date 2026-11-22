@@ -99,6 +99,26 @@
   min-height: calc(100vh - var(--kk-page-h));
 }
 
+/* 数据稀疏列表页的撑满变体（QR1131-W1）：RBAC 四页只有 1–3 行数据时，
+ * 旧形态卡片止于内容底缘，卡外到页脚之间一大片灰底死空（1186px 视口 +
+ * 1 行用户实测 866px）。挂本类后卡片承接锚点剩余高度、表格区随之伸展——
+ * 留白落在卡内表格区（「还能装更多行」的观感），页脚贴底。
+ * flex: 1 0 auto 而非 1 1 0：内容超高时（菜单 20 行）照常长高整页滚，不裁切。
+ * 多卡堆叠页（welcome/详情/统计）不挂本类——卡片各自natural高、整页滚。 */
+.kk-page--fill > .kk-card {
+  display: flex;
+  flex: 1 0 auto;
+  flex-direction: column;
+}
+.kk-page--fill > .kk-card > .el-card__body {
+  display: flex;
+  flex: 1 0 auto;
+  flex-direction: column;
+}
+.kk-page--fill > .kk-card > .el-card__body > .el-table {
+  flex: 1 0 auto;
+}
+
 /* 卡片 / 内容区：占满页面剩余高度 */
 .kk-page__body {
   display: flex;
@@ -280,6 +300,19 @@
   margin-top: var(--kk-space-lg);
 }
 
+/* 卡片内边距收口到四档刻度（QR1131-W2）：EP 默认 body 20 / header 18×20
+   不在 4/8/12/16 尺度内（本文件间距契约「新增间距一律取四档」），且与
+   横带 16px 横留白错一档——精度巡检 9 页实测离档。body 收 16
+   （--kk-space-lg）、header 收 12×16（--kk-space-md / --kk-pad-x），
+   头工具行与正文左缘从此同一条线。只作用 .kk-card（业务卡），
+   el-dialog 等 EP 自带容器不受影响。 */
+.kk-card > .el-card__body {
+  padding: var(--kk-space-lg);
+}
+.kk-card > .el-card__header {
+  padding: var(--kk-space-md) var(--kk-pad-x);
+}
+
 /* 卡片头工具行：左标题右操作，窄屏自动换行 */
 .kk-toolbar {
   display: flex;
@@ -306,7 +339,37 @@
 .kk-sub {
   font-size: 12px;
   line-height: 1.6;
-  color: var(--el-text-color-placeholder);
+  /* QR1131-W4：placeholder(#a8abb2) 对白底对比度仅 2.1–2.3，12px 小字
+     远低于 WCAG AA 的 4.5（多视口实测）。收 regular(#606266, ≈5.7) 达标；
+     次要层级改由 12px 字号承载（设计语言「层级靠密度」），不再靠失效的浅色。
+      token 派生，暗色自动适配（dark 下 regular 为浅灰，对比度同样达标）。 */
+  color: var(--el-text-color-regular);
+}
+
+/* 单行截断（QR1131-W5）：长主机名/镜像名旧形态会换行撑高行、拉宽列
+   （总览注入 120 字符主机名实测 rowH 60→105、cellW 231→640），破坏
+   「主机名是扫读基准线」的稳定行高。收 ellipsis：超宽截断，完整名点进
+   详情可见。el-link 内层 span 承载截断（外层 block + min-width:0 让
+   flex/table 单元格里的省略号真生效）。 */
+.kk-ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kk-hostname {
+  display: block;
+  /* 绝对上限：minWidth 列会按内容宽度扩张（el-table 用 max(minWidth,内容宽)
+     做分配基准），只写 max-width:100% 会跟着被撑宽的 td 走、省略号不生效。
+     320px 封顶内容基准，超长主机名在此截断，列宽与行高保持稳定。 */
+  max-width: 320px;
+  overflow: hidden;
+
+  .el-link__inner {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 }
 
 .kk-ml {
@@ -374,10 +437,31 @@
 }
 
 /* el-row 窄屏堆叠纵向缝（QR1123-W10 从 detail/system scoped 下沉）：
-   gutter 只管横向，row-gap 补纵向（el-row 是 flex） */
-.kk-page--grow > .el-row,
+   gutter 只管横向，row-gap 补纵向（el-row 是 flex）。
+   注意：本选择器只供 row-gap——QR1131-W1 曾误把它并进 .kk-system-body
+   的 flex-column 声明块，导致 welcome 的 content-row/stat-row 被强制纵排
+   （2545 实测右栏掉到左栏下方），已拆回。 */
+.kk-page--grow > .el-row {
+  row-gap: var(--kk-space-lg);
+}
+
+/* 统计页 body（QR1131-W1）：flex 列承接锚点剩余高度——内容不足一屏时
+ * 末卡（计数器表）伸展填满，不留页脚前死空；双栏卡片等高（旧形态左栏
+ * 232px 右栏 122px 参差，1186 视口实测）。内容超一屏时 flex-basis:auto
+ * 保持自然高整页滚。卡片纵向缝由页内 scoped `> * + *` 供给，flex 不改变。 */
+.kk-system-body {
+  display: flex;
+  flex: 1 0 auto;
+  flex-direction: column;
+}
 .kk-system-body > .el-row {
   row-gap: var(--kk-space-lg);
+}
+.kk-system-body > .el-row > .el-col > .kk-card {
+  height: 100%;
+}
+.kk-system-body > .kk-card:last-child {
+  flex: 1 0 auto;
 }
 
 /* 总览页：表头统计数字 */

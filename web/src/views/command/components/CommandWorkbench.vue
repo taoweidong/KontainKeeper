@@ -51,6 +51,9 @@ defineOptions({ name: "CommandWorkbench" });
   display: flex;
   flex: 0 0 34%;
   min-width: 320px;
+  /* QR1131-W3：超宽屏封顶——34% 在 2545 下算出 788px，命令表单不需要这么宽
+     （输入框空拉），多出的宽度让给右侧执行历史。1274–1920 落在 320–560 内不变。 */
+  max-width: 560px;
   flex-direction: column;
 }
 

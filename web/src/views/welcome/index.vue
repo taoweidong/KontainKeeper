@@ -574,6 +574,28 @@ onMounted(() => {
   display: flex;
   flex: 1;
   align-items: stretch;
+
+  // QR1131-W3：lg 以上两栏恒并排。el-row 的 gutter 负 margin 把行内容盒
+  // 撑宽 16px，百分比列宽舍入后总和可能超出行宽一丝，flex-wrap 就把右栏
+  // 挤到第二行（2545 实测右栏 top 比左栏低 519px，两栏变上下堆叠）。
+  // nowrap 钉死并排 + 允许列微缩吸收舍入；窄屏（<lg 两栏各 span24）仍纵排。
+  // 选择器带 .el-row 抬特异性（0,2,0）：EP 的 .el-row{flex-wrap:wrap}
+  // 同特异性靠源序赢，单类名压不过（实测 nowrap 不生效）。
+  @media (width >= 1200px) {
+    &.el-row {
+      flex-wrap: nowrap;
+    }
+
+    > .el-col {
+      flex-shrink: 1;
+    }
+  }
+}
+
+// 面板卡内边距对齐 kk-card 四档刻度（QR1131-W3）：.panel 不走 .kk-card，
+// EP 默认 body 20px 离档，与全站 16px 收口不一致。
+.panel :deep(.el-card__body) {
+  padding: var(--kk-space-lg);
 }
 
 .left-col {

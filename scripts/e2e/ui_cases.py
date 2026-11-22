@@ -403,8 +403,87 @@ def _layout_integrity(page, env) -> str:
             bad.append("%s: wrappers=%s depth=%s" % (path, m["wrappers"], m["depth"]))
         elif m["gut"] is not None and m["gut"] > 16:
             bad.append("%s: 左留白=%spx>16" % (path, m["gut"]))
+    # QR1131-W3：welcome 内容行两栏并排且底边对齐（≥lg）——曾被误并的
+    # flex-column 规则打成上下堆叠（2545 实测右栏掉到左栏下方 519px）
+    _goto(page, env, "/welcome")
+    page.wait_for_timeout(1800)
+    comp = page.evaluate("""() => {
+        const lc = document.querySelector('.left-col');
+        const rc = document.querySelector('.right-col');
+        if (!lc || !rc) return null;
+        const l = lc.getBoundingClientRect(), r = rc.getBoundingClientRect();
+        return {dt: Math.round(Math.abs(l.top - r.top)),
+                db: Math.round(Math.abs(l.bottom - r.bottom))};
+    }""")
+    if comp and (comp["dt"] > 2 or comp["db"] > 2):
+        bad.append("welcome 两栏错位 dt=%s db=%s" % (comp["dt"], comp["db"]))
     _need(not bad, "；".join(bad))
-    return "%d 页单层布局（matched 深度 2），内容左留白 ≤16px" % len(_LAYOUT_ROUTES)
+    return "%d 页单层布局（matched 深度 2），左留白 ≤16px；welcome 两栏并排底边对齐" % len(_LAYOUT_ROUTES)
+
+
+def _sparse_fill(page, env) -> str:
+    """QR1131-W1 回归锁：稀疏列表页撑满视口，卡外不留死空。
+
+    旧形态：1 行用户 + 高视口 → 卡片止于内容底缘，卡外到页脚数百 px
+    灰底死空（1186 视口实测 866px）；kk-page--fill 后卡片底缘贴页脚。
+    统计页双栏卡片等高（旧形态左 232 右 122 参差）。
+    """
+    bad = []
+    for path in ("/rbac/users", "/rbac/roles", "/rbac/ip-whitelist"):
+        _goto(page, env, path)
+        page.wait_for_timeout(1500)
+        m = page.evaluate("""() => {
+            const card = document.querySelector('.kk-page--fill > .kk-card');
+            const f = document.querySelector('.lay-footer, footer');
+            if (!card || !f) return null;
+            return Math.round(f.getBoundingClientRect().top
+                              - card.getBoundingClientRect().bottom);
+        }""")
+        if m is None or m > 24:
+            bad.append("%s: 卡-页脚缝=%spx" % (path, m))
+    _goto(page, env, "/system/index")
+    page.wait_for_timeout(1800)
+    cols = page.evaluate("""() => [...document.querySelectorAll(
+        '.kk-system-body > .el-row > .el-col > .kk-card')].map(
+        c => Math.round(c.getBoundingClientRect().height))""")
+    if len(cols) >= 2 and max(cols) - min(cols) > 4:
+        bad.append("统计双栏高差=%s" % cols)
+    _need(not bad, "；".join(bad))
+    return "3 稀疏页卡-页脚缝 ≤24px；统计双栏等高 %s" % cols
+
+
+def _text_contrast(page, env) -> str:
+    """QR1131-W4 回归锁：次要文本（.kk-sub）对白底对比度 ≥ WCAG AA 4.5。
+
+    旧用 placeholder(#a8abb2) 仅 2.1–2.3，12px 小字几乎看不清；
+    收 regular 后达标。计算 WCAG 相对亮度比，钉死可读性下限。
+    """
+    _goto(page, env, "/hosts/monitor")
+    page.wait_for_timeout(1800)
+    ratio = page.evaluate("""() => {
+        const lum = c => {
+            const m = c.match(/\\d+(\\.\\d+)?/g);
+            if (!m || m.length < 3) return null;
+            const [r, g, b] = m.slice(0, 3).map(Number).map(v => {
+                v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+            });
+            return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        };
+        const e = document.querySelector('.kk-sub');
+        if (!e) return null;
+        const fg = getComputedStyle(e).color;
+        let bgEl = e, bg = getComputedStyle(e).backgroundColor;
+        while (bgEl && (bg === 'rgba(0, 0, 0, 0)' || bg === 'transparent')) {
+            bgEl = bgEl.parentElement;
+            bg = bgEl ? getComputedStyle(bgEl).backgroundColor : null;
+        }
+        const l1 = lum(fg), l2 = lum(bg || 'rgb(255,255,255)');
+        if (l1 == null || l2 == null) return null;
+        return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+    }""")
+    _need(ratio is not None and ratio >= 4.5,
+          ".kk-sub 对比度=%s（须 ≥4.5）" % (round(ratio, 2) if ratio else None))
+    return ".kk-sub 对比度=%.2f ≥ 4.5（WCAG AA）" % ratio
 
 
 def run(env: Env, ctx: dict | None = None) -> dict:
@@ -468,6 +547,16 @@ def run(env: Env, ctx: dict | None = None) -> dict:
                   precond="菜单动态注册完成",
                   steps="逐页访问 10 个业务路由，数 app-wrapper 与 matched 深度、量左留白",
                   expect="每页恰好 1 个 app-wrapper、matched 深度 2、内容左留白 ≤16px", logs=logs)
+            _case(env, page, "UI-10", "稀疏页撑满：卡外无死空 / 统计双栏等高（QR1131）",
+                  lambda: _sparse_fill(page, env),
+                  precond="RBAC 数据稀疏（1 用户 / 2 角色 / 少量白名单）",
+                  steps="访问用户/角色/白名单页量卡片底缘与页脚间距；统计页量双栏高差",
+                  expect="卡-页脚缝 ≤24px；统计双栏高差 ≤4px", logs=logs)
+            _case(env, page, "UI-11", "次要文本可读性：.kk-sub 对比度 ≥4.5（QR1131-W4）",
+                  lambda: _text_contrast(page, env),
+                  precond="浅色主题",
+                  steps="总览页取 .kk-sub 前景/背景色，算 WCAG 相对亮度比",
+                  expect="对比度 ≥4.5（WCAG AA 正文）", logs=logs)
             out["hash"] = page.evaluate("location.hash")
         finally:
             context.close()
