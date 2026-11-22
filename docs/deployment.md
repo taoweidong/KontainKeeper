@@ -235,13 +235,128 @@ uv run kk-server                            # 监听 0.0.0.0:8443
 - **PostgreSQL 专属调优（启动自动生效，无需手工执行）**：
   引擎侧批量 INSERT 由 SQLAlchemy 2.0 insertmanyvalues 自动拼单条多值语句
   （asyncpg 不支持也不需要 `executemany_mode`，传入会被引擎直接拒绝）与
-  连接池（`KK_DB_POOL_SIZE`/`KK_DB_MAX_OVERFLOW`）；维护侧启动时对三张热表
-  设置行数级 autovacuum scale factor 与 `kk_containers` fillfactor=80（心跳热更新
-  走 HOT；`kk_containers` 每秒被心跳 UPDATE 数次，默认 0.2 比例近乎永不触发），
-  并补 `kk_heartbeats.ts` / `kk_audit.ts` 的 BRIN 索引（时间范围扫描用 KB 级索引）
-  与在途命令部分索引 `idx_cmd_inflight`（超时清扫从全表扫变常数命中）；
-  批删在 PG 上走「子查询挑批」的单语句变体，每批省一次
-  往返。表属主账号即可执行（ALTER TABLE SET 不需要超级用户）。
+  连接池（`KK_DB_POOL_SIZE`/`KK_DB_MAX_OVERFLOW`）。维护侧 `_pg_tune` 在 `setup()`
+  事务内逐条执行幂等语句（表属主账号即可，不需超级用户；失败上抛 fail-fast）：
+  - **autovacuum**：四张热表行数级 scale factor——`kk_containers` 0.05/analyze 0.02
+    （每秒被心跳 UPDATE 数次，默认 0.2 比例近乎永不触发）、`kk_heartbeats`/`kk_audit`
+    0.02（追加+批删，批删后死元组要更勤回收，QR1126 补 audit）、`kk_commands` 0.05；
+    `kk_containers` 再压绝对阈值 `autovacuum_vacuum_threshold=25`/`analyze_threshold=25`
+    （500 行小表 scale 项算出的触发量仍偏高，行数下限兜底让状态翻转更早回收）。
+  - **fillfactor=80**（`kk_containers`）：更新最热的表每帧心跳 upsert 整行摘要，
+    留页内空间让 HOT（同页更新、免索引维护）生效，写放大与索引膨胀同步下降。
+  - **BRIN 索引** `kk_heartbeats.ts`/`kk_audit.ts`：ts 与写入物理相关，时间范围扫描
+    （cleanup 挑批/聚合窗口）用 KB 级索引替代整棵 btree；`pages_per_range=64`
+    （默认 128 页≈全机队 36s 写入，2 天表粒度偏粗，QR1126 经 `ALTER INDEX SET` 细化，
+    只影响后续 summarization，存量 range 随写入自然细化）。
+  - **部分索引**：`idx_cmd_inflight`（`kk_commands(created_at) WHERE status IN
+    ('pending','sent','running')`，超时清扫从全表扫变常数命中）、`idx_upd_inflight`
+    （`kk_updates(pod, created_at) WHERE status IN ('pending','queued')`，QR1126，
+    每主机上线的在途升级查询免排序命中）。**谓词与域查询逐字同步**（test_dialects 锁）。
+  - **lz4 TOAST 压缩**（QR1126，PG14+）：`kk_heartbeats.metrics`/`kk_containers.last_metrics`/
+    `kk_commands.out_b64` 三个大字段 `SET COMPRESSION lz4`，解压 CPU 比默认 pglz 低数倍；
+    只影响新写入行，存量随保留期自然轮换（heartbeats 2 天全量生效）。PGDG/官方镜像
+    PG14+ 均带 `--with-lz4`。
+  - **PG18 `autovacuum_vacuum_max_threshold`**（QR1126，**版本守卫**）：给无界增长的
+    `kk_commands` 设死元组触发上限 100 万（默认 GUC 5000 万对 >20M 行表过迟）。该
+    reloption 是 PG18 新增，`_pg_tune` 现查 `server_version_num`，**PG<18 自动跳过**，
+    不破坏旧版本启动。当前规模 scale 0.05 仍主导，此为极端增长的安全 ceiling。
+  - **批删**在 PG 上走「子查询挑批」的单语句变体，每批省一次往返。
+
+  以上全部是表级幂等语句，升级库与新建库都靠启动时执行这一份；CI 夜测
+  `scripts/db_smoke.py` 在真 PG18 上回读 catalog（reloptions/pg_indexes/attcompression）
+  验证落地，不止 compile 级。
+
+#### PG18 部署调优（可选 PG 服务）
+
+`_pg_tune` 只承接**表级**调优；PG18 旗舰特性**异步 I/O（AIO）**与内存/WAL/监控参数是
+**postmaster/实例级**，落部署而非代码（`ALTER SYSTEM` 需超级用户 + 重启，违背 `_pg_tune`
+「表属主即可」口径）。仓库提供 turnkey 的 `docker/docker-compose.pg.yml` override，叠加在
+prod/offline 之上把默认 SQLite 换成调优后的 PG18（**不叠加则默认拓扑不变**）：
+
+```bash
+docker compose -f docker/docker-compose.prod.yml -f docker/docker-compose.pg.yml \
+  --env-file .env up -d        # 离线栈换 -f docker-compose.offline.yml（需 PACK_OPT=1 打入 PG 镜像）
+```
+
+服务端镜像已 bundled asyncpg（`docker/Dockerfile --extra postgres`），PG 开箱可用；
+`KK_DB_URL` 由 override 自动拼好指向 `db` 服务。外置 PG（不由本 compose 管）时，把下表
+参数交给运维写进 `postgresql.conf` 或超级用户 `ALTER SYSTEM` 后重启即可。
+
+调优值（`docker-compose.pg.yml` 默认 **2GB 容器内存预算档**；4GB 档见右列）：
+
+| 参数 | 2GB 档 | 4GB 档 | 级别 | 作用 |
+|---|---|---|---|---|
+| `io_method` | `worker` | `worker` | postmaster | PG18 AIO；**不用 io_uring**（见下） |
+| `shared_buffers` | `512MB` | `1GB` | postmaster | 默认 128MB 对 4-6GB heartbeats 偏小，覆盖热集 |
+| `effective_cache_size` | `1536MB` | `3GB` | sighup | 规划器口径（含 OS page cache） |
+| `work_mem` | `16MB` | `32MB` | user | 500 组 hash 聚合很小；并行 worker 各算一份，别给太大 |
+| `maintenance_work_mem` | `256MB` | `512MB` | user | vacuum/建索引 |
+| `wal_compression` | `lz4` | `lz4` | sighup | 追加负载 FPW 占 WAL 大头，压缩省写带宽 |
+| `max_wal_size`/`min_wal_size` | `2GB`/`512MB` | 同 | sighup | 降 checkpoint 频率→更少 FPW |
+| `checkpoint_timeout` | `10min` | `10min` | sighup | 默认 5min；追加负载放宽（代价：崩溃恢复变长） |
+| `effective_io_concurrency`/`maintenance_io_concurrency` | `32` | `32` | user | 默认 16；SSD/NVMe 可 32-64 |
+| `track_io_timing`/`track_wal_io_timing` | `on` | `on` | superuser | 默认 off；监控前提（现代 Linux 开销可忽略） |
+| `shared_preload_libraries` | `pg_stat_statements` | 同 | postmaster | 慢查询统计前提 |
+
+- **AIO 作用面与 io_uring**：AIO 加速**顺序扫/bitmap heap scan/vacuum**（heartbeats BRIN
+  范围扫、`_aggregate_hours` 宕机后追赶窗口、cleanup 批删后 vacuum 直接受益）；**索引点查
+  不走 AIO**——别指望列表接口 3x（官方 3x 是 bulkread 场景）。`io_method=io_uring` 需内核
+  ≥5.1 + liburing，但 **Docker 默认 seccomp 封禁 `io_uring_setup/enter/register` 三 syscall**
+  （容器逃逸风险，moby/moby#46762），设了会启动 EPERM 失败；解封需 `seccomp=unconfined`
+  扩大内核攻击面，**不建议**。`worker` 是容器内稳妥且默认的选择，已拿主要收益。
+- **PGDATA 路径陷阱**：PG18 官方镜像把默认 `PGDATA` 改到 `/var/lib/postgresql/18/docker`、
+  `VOLUME` 上移到 `/var/lib/postgresql`（旧版 `/var/lib/postgresql/data`）。沿用旧挂载路径会
+  **起空库**。override 已**显式钉死 `PGDATA=/var/lib/postgresql/data`** 并把命名卷挂在该路径，
+  版本无关、重启数据持久；自管 conf 时 likewise 显式设 `PGDATA`。
+- **版本注**：环境镜像清单钉死 `postgres:18.6`（全部 PG18 特性都在）；18 当前 minor 为
+  18.7，可 bump 时建议 18.7 或滚动 `postgres:18`。**18.x 小版本升级换二进制重启即可，无需
+  pg_upgrade**；未来 18→19 大版本升级时 PG18 的 `pg_upgrade` 保留优化器统计（升完即有正常
+  计划，消除「升完计划抖动」）。认证保持 SCRAM（md5 在 18 弃用）；asyncpg 走协议 3.0，
+  服务端 3.2 向后兼容，零动作。
+
+#### 监控巡检（只读 SQL，PG18 增强视图）
+
+```sql
+-- AIO 与 I/O 全景（PG18 新增 read_bytes/write_bytes/extend_bytes + WAL 行）：
+-- context=bulkread 看 heartbeats 大扫，vacuum 看批删回收；evictions 高→shared_buffers 偏小
+SELECT backend_type, object, context, reads, read_bytes, read_time,
+       writes, write_bytes, hits, evictions, fsyncs, fsync_time
+FROM pg_stat_io WHERE object = 'relation' ORDER BY read_bytes DESC NULLS LAST;
+
+-- 在途 AIO（PG18 新视图） / 单后端 I/O（PG18 新函数，定位慢查询所属连接）
+SELECT * FROM pg_aios;
+SELECT * FROM pg_stat_get_backend_io(pg_backend_pid());
+
+-- containers HOT 比例（验证 fillfactor=80 生效）+ 死元组/autovacuum 触发
+SELECT relname, n_tup_upd, n_tup_hot_upd,
+       round(100.0*n_tup_hot_upd/nullif(n_tup_upd,0),1) AS hot_pct,
+       n_dead_tup, last_autovacuum, last_autoanalyze
+FROM pg_stat_user_tables
+WHERE relname IN ('kk_containers','kk_heartbeats','kk_commands','kk_audit');
+
+-- pg_stat_statements（PG18 新增并行计数列）：to_launch 远大于 launched→worker 池不够
+SELECT queryid, calls, mean_exec_time, rows, shared_blks_hit, shared_blks_read,
+       parallel_workers_to_launch, parallel_workers_launched
+FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 20;
+SELECT datname, parallel_workers_to_launch, parallel_workers_launched FROM pg_stat_database;
+```
+
+判读口径见官方 monitoring-stats 文档：`read_time` 非零前提是 `track_io_timing` 全程开启；
+client backend 大量 `writes`/`fsyncs` → checkpointer/bgwriter 配置问题。
+
+#### 评估过暂不采用的 PG18 特性（留触发条件）
+
+下列特性对当前 500 台单实例工作负载要么无收益、要么破坏三库方言收敛（AGENTS.md：差异
+只许在 store 既定汇聚点），评估后缓行：
+
+| 特性 | 不采用理由 | 触发条件 |
+|---|---|---|
+| `uuidv7()` 主键 | heartbeats/audit 自增 Integer 本就时间有序；`commands.id` String(32) 装不下 36 字符 UUID 且是 MQTT 协议关联键；session token 必须不可预测（v7 时间可猜是安全退化）；三库无统一 uuid 类型 | 真要时间有序字符串 ID 时，应用层 `ts+random` 前缀三库通用，优于 PG 专属 |
+| JSONB 列 + GIN | 现查询只做时间范围扫+标量聚合+四列 LIKE，无 JSON 内检索；TEXT→JSONB 需 144 万行重写+锁；MySQL/SQLite 三库分叉 | 产品要「按 metrics 内字段过滤/聚合」时再评估 |
+| `FOR UPDATE SKIP LOCKED` | 单实例 kk-server，命令经 MQTT 桥下发、sweep 单条 UPDATE，无多消费者认领竞争；SQLite 无行锁 | kk-server 水平扩展 + 命令改 DB 认领时 |
+| 虚拟生成列 | PG18 虚拟列**不能索引**（500 行表本该全表扫，省不了）；`COALESCE(disk_limit,85)` 会改总览页全局 85 口径；STORED 版给最热表加写放大 | containers 涨到万级且 disk_alert 筛选成瓶颈，先统一 disk_limit 语义 |
+| `MERGE`/`RETURNING old/new` | MERGE 是 PG 专属语法（MySQL/SQLite 无），开分支违反收敛；状态翻转审计应用层比较前后值更简单 | 审计链路要求单语句原子前后值时 |
+| temporal constraints | 无「有效期区间」语义（containers 当前态、commands 状态机） | 出现区间重叠约束需求时 |
 
 ### 4.7 启用 MQTT 鉴权（可选加固）
 
