@@ -21,6 +21,7 @@ from .helpers import mask_url, normalize_url
 from ._store_auth import _StoreAuthMixin
 from ._store_audit import _StoreAuditMixin
 from ._store_commands import _StoreCommandsMixin
+from ._store_command_queue import _StoreCommandQueueMixin
 from ._store_hosts import DISK_ALERT_PCT, _StoreHostsMixin
 from ._store_ipwhitelist import _StoreIpWhitelistMixin
 from ._store_maintenance import _StoreMaintenanceMixin
@@ -159,8 +160,8 @@ def _column_ddl(ddl, dialect):
 
 
 class Store(_StoreAuthMixin, _StoreAuditMixin, _StoreCommandsMixin,
-            _StoreMetricsMixin, _StoreHostsMixin, _StoreIpWhitelistMixin,
-            _StoreMaintenanceMixin, _StoreRbacMixin):
+            _StoreCommandQueueMixin, _StoreMetricsMixin, _StoreHostsMixin,
+            _StoreIpWhitelistMixin, _StoreMaintenanceMixin, _StoreRbacMixin):
     """异步存储门面（QR29-G 第二轮拆分）。
 
     基座只留三样东西：引擎装配（__init__/setup/close）、执行原语（_all/_one/

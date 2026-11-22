@@ -67,6 +67,12 @@ class Settings:
     # Agent 因版本号上涨而全部掉线。置 1 关闭窗口后仅接受 PROTO_VER=4 的帧，
     # 存量 Agent 的上报会被拒并审计 proto_mismatch（升级完成后才该这么干）。
     accept_proto_vers: tuple = ACCEPT_PROTO_VERS
+    # ---- 命令离线队列（QR1125 Phase 0，放末尾不破坏按位置构造）----
+    # queued 命令（下发时主机离线、等 SSE 重连补投）的存活上限。与 updates 的
+    # update_queue_ttl 同型但独立：命令时效性更强，默认 24h（updates 是 7d）。
+    # pending/sent/running 仍按 sweep_command_timeouts 的 timeout+slack 收敛，
+    # queued 走独立的 sweep_queued_command_timeouts（互不干扰）。
+    cmd_queue_ttl: int = 86400
 
 
 def _env_int(env, key, default):
@@ -168,6 +174,7 @@ def load_settings(env=None) -> Settings:
                     log_path=env.get("KK_LOG", "").strip(),
                     log_json=_env_bool(env, "KK_LOG_JSON"),
                     update_hmac_key=env.get("KK_UPDATE_HMAC_KEY", "").strip(),
+                    cmd_queue_ttl=max(3600, _env_int(env, "KK_CMD_QUEUE_TTL", 86400)),
                     # 关窗口是单向门：关了再开也不影响已掉线的存量 Agent，所以这里
                     # 只做显式开关，不做「自动探测全网升级完毕」的聪明逻辑
                     accept_proto_vers=((PROTO_VER,)

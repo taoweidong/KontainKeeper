@@ -25,19 +25,22 @@ class _StoreCommandsMixin:
         return (await self.create_commands_batch([pod], kind, argv, timeout, created_by))[0][0]
 
     async def create_commands_batch(self, pods, kind, argv, timeout, created_by,
-                                    batch_id=None):
+                                    batch_id=None, status="pending"):
         """批量建命令：单事务 + 参数列表（驱动侧走 executemany）。
 
         返回 `(ids, batch_id)`：一次调用一个批次，全部行共享同一个 batch_id。
         显式返回元组而不是挂在 self 上的隐式状态——批量下发后要按批次聚合核验，
         调用方（控制器）必须拿到这个号，隐式状态在并发下会串。
+
+        status 默认 pending（在线即发）；QR1125 Phase 0 离线主机可建 queued，
+        等 SSE 重连由 flush_queued_commands 补投（泛化 updates 队列先例）。
         """
         now = int(time.time())
         ids = ["c-" + secrets.token_hex(6) for _ in pods]
         batch_id = batch_id or ("b-" + secrets.token_hex(8))
         argv_json = json.dumps(argv, ensure_ascii=False)
         rows = [{"id": cid, "pod": pod, "kind": kind, "argv": argv_json,
-                 "timeout": timeout, "status": "pending", "created_by": created_by,
+                 "timeout": timeout, "status": status, "created_by": created_by,
                  "created_at": now, "out_b64": "", "out_tail": "", "batch_id": batch_id}
                 for cid, pod in zip(ids, pods)]
         async with self.engine.begin() as conn:

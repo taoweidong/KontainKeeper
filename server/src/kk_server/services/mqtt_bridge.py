@@ -688,6 +688,11 @@ class MqttBridge:
         # 结果是丢了回执的台账永远停在 pending、把该主机的 in_flight 去重永久卡死。
         upd = await self.store.sweep_update_timeouts(
             queued_ttl=max(3600, int(getattr(self.s, "update_queue_ttl", 7 * 86400) or 0)))
+        # QR1125 Phase 0：queued 命令（离线排队等 SSE 补投）按独立 TTL 收敛，
+        # 与在途命令的 timeout+slack 清扫互不干扰。计数并入日志而非新增 _bump 键
+        # （新增键会触发 getsource 扫描锁的前端 COUNTER_META 收录要求，留 Phase 2）。
+        cmd_q = await self.store.sweep_queued_command_timeouts(
+            ttl=max(3600, int(getattr(self.s, "cmd_queue_ttl", 86400) or 0)))
         # 10 分钟没有新帧的 result 锁视为死命令残留：正常分块流最多间隔数秒，
         # 保守取值只为绝不误收活跃锁。pop 不会销毁正在持有的 Lock 对象，
         # 极端迟到帧只是重建一把新锁，仍有水位去重兜底
@@ -700,6 +705,7 @@ class MqttBridge:
         self._bump("swept_timeouts", n)
         self._bump("swept_offline", stale)
         self._bump("swept_updates", upd)
-        if n or stale or upd:
-            log.info("sweep: %d 条命令置 timeout, %d 台判离线, %d 条升级收敛", n, stale, upd)
+        if n or stale or upd or cmd_q:
+            log.info("sweep: %d 条命令置 timeout, %d 台判离线, %d 条升级收敛, %d 条排队命令过期",
+                     n, stale, upd, cmd_q)
         return n, stale
