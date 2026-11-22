@@ -91,7 +91,7 @@ function onRemove() {
     :model="form"
     :rules="rules"
     label-width="88px"
-    class="pr-8"
+    class="pr-4"
   >
     <el-form-item label="版本号" prop="version">
       <el-input

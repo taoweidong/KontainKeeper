@@ -40,8 +40,8 @@ defineOptions({ name: "CommandWorkbench" });
   flex: 1;
   min-height: 0;
 
-  /* 顶部 12px 与右栏搜索条的 pt-3 同档（卡片顶边、搜索条顶边齐平）；
-     左侧 32px 与列表页横带（pl-8/pr-8）同宽——原先卡片 0px 贴死内容区左缘，
+  /* 顶部 8px 与右栏搜索条的 pt-2 同档（卡片顶边、搜索条顶边齐平）；
+     左侧 16px 与列表页横带（pl-4/pr-4）同宽——原先卡片 0px 贴死内容区左缘，
      与同屏右栏的 32px 内缩不在一条线上（2026-10-31 收口）。 */
   padding: var(--kk-space-md) 0 var(--kk-space-md) var(--kk-pad-x);
 }

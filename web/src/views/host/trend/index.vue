@@ -125,7 +125,7 @@ function gotoDetail() {
            磁盘的画线口径（覆盖 ?? 全局 85）由服务端算好放进 metrics 响应。
            结构对齐 monitor（QR1121）：单层 kk-band（fleet + actions），
            不再 kk-toolbar 套 kk-band 两层 space-between -->
-      <div class="bg-bg_color w-full pl-8 pr-8 pt-3 pb-3">
+      <div class="bg-bg_color w-full pl-4 pr-4 pt-2 pb-3">
         <div class="kk-band">
           <div class="kk-band__fleet">
             <el-button
@@ -291,7 +291,7 @@ function gotoDetail() {
   flex-direction: column;
   min-height: 0;
 
-  /* 横向留白与页头横带（pl-8/pr-8）对齐，两条图表的左右缘与上方读数在同一条线上 */
+  /* 横向留白与页头横带（pl-4/pr-4）对齐，两条图表的左右缘与上方读数在同一条线上 */
   padding: var(--kk-space-md) var(--kk-pad-x) var(--kk-space-sm);
 }
 

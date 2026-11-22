@@ -368,6 +368,45 @@ def _update_page(page, env) -> str:
     return "空态/回滚禁用正确；上传对话框对 v1.2.3 原地报错并取消关闭"
 
 
+_LAYOUT_ROUTES = ["/welcome", "/hosts/monitor", "/hosts/detail/%s" % PODS[0],
+                  "/hosts/trend/%s" % PODS[0], "/hosts/update", "/command/shell",
+                  "/command/collect", "/audit/index", "/system/index", "/rbac/users"]
+
+
+def _layout_integrity(page, env) -> str:
+    """QR1129-W1/W2 回归锁：全站单层布局 + 边距统一。
+
+    W1：分组父级带 children 注册时，同名嵌套记录会顶掉扁平叶子，页面落进
+    第二层 Layout（左 +210px / 顶 +81px，1920 实测 audit/shell/stats/users）；
+    锁「app-wrapper 恰好 1 个 + matched 深度 2」钉死扁平注册。
+    W2：横向留白收口 16px（--kk-pad-x / pl-4），内容左缘不得超 16px。
+    """
+    bad = []
+    for path in _LAYOUT_ROUTES:
+        _goto(page, env, path)
+        page.wait_for_timeout(1200)
+        m = page.evaluate("""() => {
+            const app = document.querySelector('#app').__vue_app__;
+            const router = app.config.globalProperties.$router;
+            const wrap = document.querySelector('.app-main .el-scrollbar__wrap');
+            const card = document.querySelector(
+                '.kk-card, .el-card, .pure-table, .bg-bg_color');
+            const wr = wrap && wrap.getBoundingClientRect();
+            const cr = card && card.getBoundingClientRect();
+            return {
+                wrappers: document.querySelectorAll('.app-wrapper').length,
+                depth: router.currentRoute.value.matched.length,
+                gut: wr && cr ? Math.round(cr.left - wr.left) : null,
+            };
+        }""")
+        if m["wrappers"] != 1 or m["depth"] != 2:
+            bad.append("%s: wrappers=%s depth=%s" % (path, m["wrappers"], m["depth"]))
+        elif m["gut"] is not None and m["gut"] > 16:
+            bad.append("%s: 左留白=%spx>16" % (path, m["gut"]))
+    _need(not bad, "；".join(bad))
+    return "%d 页单层布局（matched 深度 2），内容左留白 ≤16px" % len(_LAYOUT_ROUTES)
+
+
 def run(env: Env, ctx: dict | None = None) -> dict:
     from playwright.sync_api import sync_playwright
 
@@ -424,6 +463,11 @@ def run(env: Env, ctx: dict | None = None) -> dict:
                   precond="尚未上传任何版本",
                   steps="打开页面；开上传框填 v1.2.3；取消",
                   expect="空态提示上传；版本号原地报错；回滚按钮禁用", logs=logs)
+            _case(env, page, "UI-09", "布局完整性：全站单层布局 / 边距统一（QR1129）",
+                  lambda: _layout_integrity(page, env),
+                  precond="菜单动态注册完成",
+                  steps="逐页访问 10 个业务路由，数 app-wrapper 与 matched 深度、量左留白",
+                  expect="每页恰好 1 个 app-wrapper、matched 深度 2、内容左留白 ≤16px", logs=logs)
             out["hash"] = page.evaluate("location.hash")
         finally:
             context.close()

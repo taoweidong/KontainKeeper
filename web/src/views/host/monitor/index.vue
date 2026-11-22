@@ -63,7 +63,7 @@ const {
     <!-- 机队仪表带：整屏最重要的判断，常驻视口顶部（R4/R5）——
          旧结构挂在 el-card #header 里随 500 行表格滚走（10-15 实测 5469px 整页滚）。
          刷新入口只留 PureTableBar 那一枚（Task 7 评审口径），这里的动作只剩间隔档位。 -->
-    <div class="bg-bg_color w-full pl-8 pr-8 pt-3 pb-3">
+    <div class="bg-bg_color w-full pl-4 pr-4 pt-2 pb-3">
       <div class="kk-band">
         <div class="kk-band__fleet">
           <!-- 首次加载失败时一个读数都没有：条与四个格子一律不渲染 0（QR-W16）。
@@ -140,7 +140,7 @@ const {
          「白块 → 灰缝 → 白块」的上下节奏一致，不再白贴白连成一张大白板。 -->
     <el-form
       :inline="true"
-      class="kk-search-form bg-bg_color w-full mt-2 pl-8 pr-8 pt-3 overflow-auto"
+      class="kk-search-form bg-bg_color w-full mt-2 pl-4 pr-4 pt-2 overflow-auto"
     >
       <el-form-item label="关键字：">
         <el-input

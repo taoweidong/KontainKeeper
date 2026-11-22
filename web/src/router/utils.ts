@@ -175,11 +175,22 @@ function handleAsyncRoutes(routeList) {
         ) {
           return;
         } else {
+          // QR1129-W1：分组父级（component="Layout"）注册时必须剥掉 children。
+          // 叶子路由已逐一扁平注册；若父级带着 children 进 addRoute，会再建一套
+          // 「父 Layout → 叶子」的嵌套记录，而 Vue Router 同名记录先删后加——
+          // 最终谁赢取决于 ascending 排序后父级与叶子的注册先后：父级排在叶子
+          // 之后时（Audit/System/Rbac/CommandShell 等），嵌套记录顶掉扁平记录，
+          // 页面被渲染进**第二层 Layout**，凭空多出 210px 左边距 + 81px 顶距
+          // （1920 实测 /audit/index matched=[Root, Audit(Layout), AuditIndex]）。
+          // 菜单树不受影响：handleWholeMenus 吃的是原始 routeList。
+          // rest 解构会丢失 RouteRecordRaw 判别联合的关联，断言回原类型
+          const { children: _children, ...rest } = v;
+          const flat = rest as RouteRecordRaw;
           // 切记将路由push到routes后还需要使用addRoute，这样路由才能正常跳转
-          router.options.routes[0].children.push(v);
+          router.options.routes[0].children.push(flat);
           // 最终路由进行升序
           ascending(router.options.routes[0].children);
-          if (!router.hasRoute(v?.name)) router.addRoute(v);
+          if (!router.hasRoute(flat?.name)) router.addRoute(flat);
           const flattenRouters: any = router
             .getRoutes()
             .find(n => n.path === "/");

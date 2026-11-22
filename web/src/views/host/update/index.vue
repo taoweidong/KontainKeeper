@@ -201,7 +201,7 @@ async function onRollback() {
   <div v-loading="loading" class="kk-main">
     <!-- 页头读数条（W5：pollFailed 进这条读数、不弹 toast；与搜索条同构挂 kk-search-form） -->
     <div
-      class="kk-search-form bg-bg_color w-full overflow-auto pl-8 pr-8 pt-3 pb-3"
+      class="kk-search-form bg-bg_color w-full overflow-auto pl-4 pr-4 pt-2 pb-3"
     >
       <div class="kk-toolbar">
         <div class="kk-stat">
@@ -248,7 +248,7 @@ async function onRollback() {
          「主机/状态」与下方主表同名**不冲突**：列设置唯一性只需在同一 bar 内成立。
          mt-2：与页头读数条之间露一条 8px 灰缝（页面背景），对齐 audit 页
          「搜索条 → 灰缝 → 表格卡」的上下节奏，不再白贴白连成一张大白板 -->
-    <div class="bg-bg_color w-full mt-2 mb-2 pl-8 pr-8 pt-3 pb-3">
+    <div class="bg-bg_color w-full mt-2 mb-2 pl-4 pr-4 pt-2 pb-3">
       <div class="kk-toolbar">
         <h4 class="kk-h4">
           <el-icon><component :is="useRenderIcon(IconUpgrade)" /></el-icon

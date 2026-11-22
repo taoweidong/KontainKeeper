@@ -58,7 +58,7 @@ defineExpose({ reload: () => loadCommands(), focusBatch });
   <div class="kk-main">
     <el-form
       :inline="true"
-      class="kk-search-form bg-bg_color w-full pl-8 pr-8 pt-3 overflow-auto"
+      class="kk-search-form bg-bg_color w-full pl-4 pr-4 pt-2 overflow-auto"
     >
       <el-form-item label="关键字：">
         <el-input
